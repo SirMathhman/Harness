@@ -20,6 +20,20 @@ export interface LLMCallOptions {
   timeoutMs?: number;
 }
 
+/**
+ * Port for the LLM backend (spec §1.3). The agent loop depends on this
+ * abstraction rather than the concrete `chatCompletion`, so it can be unit
+ * tested with a fake client and swapped for other backends.
+ */
+export interface LLMClient {
+  chat(opts: LLMCallOptions): Promise<LLMResponse>;
+}
+
+/** The default client backed by the llama.cpp OpenAI-compatible endpoint. */
+export const defaultLLMClient: LLMClient = {
+  chat: (opts) => chatCompletion(opts),
+};
+
 const DEFAULT_TIMEOUT_MS = 300_000;
 
 /**

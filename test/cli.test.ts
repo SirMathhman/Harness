@@ -11,15 +11,12 @@ describe("CLI startup (AC 1)", () => {
     const env = { ...process.env };
     delete env.HARNESS_MODEL;
     delete env.HARNESS_BASE_URL;
-    const proc = Bun.spawn(
-      ["bun", "run", "src/index.ts"],
-      {
-        cwd: process.cwd(),
-        env,
-        stdout: "pipe",
-        stderr: "pipe",
-      },
-    );
+    const proc = Bun.spawn(["bun", "run", "src/index.ts"], {
+      cwd: process.cwd(),
+      env,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
     const exitCode = await proc.exited;
     const stderr = await new Response(proc.stderr).text();
     expect(exitCode).toBe(1);

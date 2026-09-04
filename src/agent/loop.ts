@@ -1,5 +1,9 @@
 import type { Message, Session } from "../types.js";
-import { chatCompletion, type TokenCallback } from "../llm/client.js";
+import {
+  defaultLLMClient,
+  type LLMClient,
+  type TokenCallback,
+} from "../llm/client.js";
 import { LLMError } from "../llm/errors.js";
 import {
   applyRecap,
@@ -43,6 +47,7 @@ export async function runTurn(
   registry: ToolRegistry,
   callbacks: AgentCallbacks = {},
   signal?: AbortSignal,
+  client: LLMClient = defaultLLMClient,
 ): Promise<TurnResult> {
   const { config } = session;
   session.messages.push({ role: "user", content: task });
@@ -52,9 +57,9 @@ export async function runTurn(
     if (signal?.aborted) throw new Error("Turn aborted.");
 
     // Compaction before each LLM call (spec §3.5).
-    await maybeCompact(session, registry, callbacks, signal);
+    await maybeCompact(session, registry, callbacks, signal, client);
 
-    const response = await chatCompletion({
+    const response = await client.chat({
       config,
       messages: session.messages,
       tools: registry.all(),
@@ -143,6 +148,7 @@ async function maybeCompact(
   registry: ToolRegistry,
   callbacks: AgentCallbacks,
   signal?: AbortSignal,
+  client: LLMClient = defaultLLMClient,
 ): Promise<void> {
   if (!shouldCompact(session.lastPromptTokens, session.config)) return;
 
@@ -154,7 +160,7 @@ async function maybeCompact(
   if (older.length === 0) return;
 
   try {
-    const recap = await chatCompletion({
+    const recap = await client.chat({
       config: session.config,
       messages: buildRecapPrompt(older),
       tools: [],

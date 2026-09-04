@@ -53,15 +53,15 @@ Press `Ctrl-C` during a turn to abort it (any running foreground command is kill
 
 ## Scripts
 
-| Script              | Description                          |
-| ------------------- | ------------------------------------ |
-| `bun run build`     | Compile TypeScript to `dist/`        |
-| `bun run dev`       | Run the agent from source            |
-| `bun run start`     | Run the compiled agent               |
+| Script              | Description                             |
+| ------------------- | --------------------------------------- |
+| `bun run build`     | Compile TypeScript to `dist/`           |
+| `bun run dev`       | Run the agent from source               |
+| `bun run start`     | Run the compiled agent                  |
 | `bun test`          | Run the test suite (unit + integration) |
-| `bun run lint`      | Lint with ESLint                     |
-| `bun run lint:fix`  | Lint and auto-fix                    |
-| `bun run typecheck` | Type-check without emitting          |
+| `bun run lint`      | Lint with ESLint                        |
+| `bun run lint:fix`  | Lint and auto-fix                       |
+| `bun run typecheck` | Type-check without emitting             |
 
 ## Configuration
 
@@ -81,21 +81,21 @@ Create an optional `harness.config.json` in the working directory (or point to o
 
 ### Keys
 
-| Key                  | Type                  | Default                 | Env var                    | Description |
-| -------------------- | --------------------- | ----------------------- | -------------------------- | ----------- |
-| `baseUrl`            | string                | `http://localhost:8080` | `HARNESS_BASE_URL`         | LLM server base URL. |
-| `model`              | string (required)     | `null`                  | `HARNESS_MODEL`            | Model name. Must be set via flag, env, or file. |
-| `apiKey`             | string                | `""`                    | `HARNESS_API_KEY`          | Bearer token (optional). |
-| `temperature`        | number                | `0.2`                   | `HARNESS_TEMPERATURE`      | Sampling temperature. |
-| `maxContext`         | number                | `8192`                  | `HARNESS_MAX_CONTEXT`      | Context window size in tokens. |
-| `compactThreshold`   | number (0, 1]         | `0.8`                   | `HARNESS_COMPACT_THRESHOLD`| Fraction of `maxContext` that triggers compaction. |
-| `compactKeepMessages`| number                | `6`                     | `HARNESS_COMPACT_KEEP`     | Recent messages kept verbatim during compaction. |
-| `commandTimeoutMs`   | number                | `60000`                 | `HARNESS_COMMAND_TIMEOUT_MS`| Default foreground command timeout. |
-| `maxToolOutputChars` | number                | `20000`                 | `HARNESS_MAX_TOOL_OUTPUT`  | Truncation limit for tool output. |
-| `systemPrompt`       | string \| null        | `null` (built-in)       | `HARNESS_SYSTEM_PROMPT`    | Override the system prompt. |
-| `parallelToolCalls`  | boolean               | `true`                  | `HARNESS_PARALLEL_TOOLS`   | Allow the model to batch tool calls. |
-| `shell`              | string                | `"auto"`                | `HARNESS_SHELL`            | `auto`, `powershell`, `bash`, or `sh`. |
-| `maxIterations`      | number \| null        | `null`                  | `HARNESS_MAX_ITERATIONS`   | Cap on tool-call iterations per turn. |
+| Key                   | Type              | Default                 | Env var                      | Description                                        |
+| --------------------- | ----------------- | ----------------------- | ---------------------------- | -------------------------------------------------- |
+| `baseUrl`             | string            | `http://localhost:8080` | `HARNESS_BASE_URL`           | LLM server base URL.                               |
+| `model`               | string (required) | `null`                  | `HARNESS_MODEL`              | Model name. Must be set via flag, env, or file.    |
+| `apiKey`              | string            | `""`                    | `HARNESS_API_KEY`            | Bearer token (optional).                           |
+| `temperature`         | number            | `0.2`                   | `HARNESS_TEMPERATURE`        | Sampling temperature.                              |
+| `maxContext`          | number            | `8192`                  | `HARNESS_MAX_CONTEXT`        | Context window size in tokens.                     |
+| `compactThreshold`    | number (0, 1]     | `0.8`                   | `HARNESS_COMPACT_THRESHOLD`  | Fraction of `maxContext` that triggers compaction. |
+| `compactKeepMessages` | number            | `6`                     | `HARNESS_COMPACT_KEEP`       | Recent messages kept verbatim during compaction.   |
+| `commandTimeoutMs`    | number            | `60000`                 | `HARNESS_COMMAND_TIMEOUT_MS` | Default foreground command timeout.                |
+| `maxToolOutputChars`  | number            | `20000`                 | `HARNESS_MAX_TOOL_OUTPUT`    | Truncation limit for tool output.                  |
+| `systemPrompt`        | string \| null    | `null` (built-in)       | `HARNESS_SYSTEM_PROMPT`      | Override the system prompt.                        |
+| `parallelToolCalls`   | boolean           | `true`                  | `HARNESS_PARALLEL_TOOLS`     | Allow the model to batch tool calls.               |
+| `shell`               | string            | `"auto"`                | `HARNESS_SHELL`              | `auto`, `powershell`, `bash`, or `sh`.             |
+| `maxIterations`       | number \| null    | `null`                  | `HARNESS_MAX_ITERATIONS`     | Cap on tool-call iterations per turn.              |
 
 ### CLI flags
 
@@ -113,16 +113,16 @@ Create an optional `harness.config.json` in the working directory (or point to o
 
 The agent exposes eight tools:
 
-| Tool           | Mutating | Parameters | Description |
-| -------------- | -------- | ---------- | ----------- |
-| `read_file`    | no       | `path`, `startLine?`, `endLine?` | Read a file, optionally a 1-based line range. |
-| `write_file`   | yes      | `path`, `content` | Write a file, creating parent directories. |
-| `edit_file`    | yes      | `path`, `oldString`, `newString`, `replaceAll?` | Replace an exact string; errors on 0 or >1 matches unless `replaceAll`. |
-| `list_dir`     | no       | `path`, `recursive?` | List directory entries with file/dir markers. |
-| `search`       | no       | `pattern`, `mode` (`text`\|`glob`), `path?`, `includePattern?`, `isRegexp?` | Search file contents (`file:line:content`) or file paths. |
-| `run_command`  | yes      | `command`, `timeoutMs?`, `background?`, `cwd?` | Run a shell command (foreground by default; `background=true` returns an id). |
-| `check_command`| no       | `id` | Check the status/output of a background command. |
-| `finish`       | no       | `answer` | Terminal tool: ends the turn with a final answer. |
+| Tool            | Mutating | Parameters                                                                  | Description                                                                   |
+| --------------- | -------- | --------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| `read_file`     | no       | `path`, `startLine?`, `endLine?`                                            | Read a file, optionally a 1-based line range.                                 |
+| `write_file`    | yes      | `path`, `content`                                                           | Write a file, creating parent directories.                                    |
+| `edit_file`     | yes      | `path`, `oldString`, `newString`, `replaceAll?`                             | Replace an exact string; errors on 0 or >1 matches unless `replaceAll`.       |
+| `list_dir`      | no       | `path`, `recursive?`                                                        | List directory entries with file/dir markers.                                 |
+| `search`        | no       | `pattern`, `mode` (`text`\|`glob`), `path?`, `includePattern?`, `isRegexp?` | Search file contents (`file:line:content`) or file paths.                     |
+| `run_command`   | yes      | `command`, `timeoutMs?`, `background?`, `cwd?`                              | Run a shell command (foreground by default; `background=true` returns an id). |
+| `check_command` | no       | `id`                                                                        | Check the status/output of a background command.                              |
+| `finish`        | no       | `answer`                                                                    | Terminal tool: ends the turn with a final answer.                             |
 
 **Execution ordering:** mutating tools (`write_file`, `edit_file`, `run_command`) run
 sequentially in model order; read-only tools run concurrently. Results are always returned
@@ -139,21 +139,21 @@ required.
 
 ### Acceptance-criteria → test mapping (spec §9)
 
-| AC | Covered by test |
-| -- | --------------- |
-| 1. Startup / setup hint | `cli.test.ts` (setup hint + non-zero exit), `config.test.ts` (E16) |
-| 2. Happy path | `integration.test.ts` (finish directly; tool round-trip) |
-| 3. Multi-turn history | `integration.test.ts` (history retained) |
-| 4. Tool correctness | `tools.test.ts` (file/search tools), `commands.test.ts` |
-| 5. Self-correction | `integration.test.ts` (bad args fed back), `tools.test.ts` (dispatch) |
-| 6. Tool failure (no abort) | `integration.test.ts` (tool failure), `tools.test.ts` (dispatch) |
-| 7. Server-down abort | `integration.test.ts` (server-down) |
-| 8. Compaction | `compaction.test.ts` (trigger, boundary pairing, truncation) |
-| 9. Command timeout | `commands.test.ts` (foreground timeout) |
-| 10. Background commands | `commands.test.ts` (background + check + killAll) |
-| 11. Parallel tool calls | `sse.test.ts` (multi tool-call accumulation), `tools.test.ts` (ordering) |
-| 12. Config precedence | `config.test.ts` (defaults/env/flags, coercion) |
-| 13. No persistence | `cli.test.ts` (in-memory session, no config file created) |
+| AC                         | Covered by test                                                          |
+| -------------------------- | ------------------------------------------------------------------------ |
+| 1. Startup / setup hint    | `cli.test.ts` (setup hint + non-zero exit), `config.test.ts` (E16)       |
+| 2. Happy path              | `integration.test.ts` (finish directly; tool round-trip)                 |
+| 3. Multi-turn history      | `integration.test.ts` (history retained)                                 |
+| 4. Tool correctness        | `tools.test.ts` (file/search tools), `commands.test.ts`                  |
+| 5. Self-correction         | `integration.test.ts` (bad args fed back), `tools.test.ts` (dispatch)    |
+| 6. Tool failure (no abort) | `integration.test.ts` (tool failure), `tools.test.ts` (dispatch)         |
+| 7. Server-down abort       | `integration.test.ts` (server-down)                                      |
+| 8. Compaction              | `compaction.test.ts` (trigger, boundary pairing, truncation)             |
+| 9. Command timeout         | `commands.test.ts` (foreground timeout)                                  |
+| 10. Background commands    | `commands.test.ts` (background + check + killAll)                        |
+| 11. Parallel tool calls    | `sse.test.ts` (multi tool-call accumulation), `tools.test.ts` (ordering) |
+| 12. Config precedence      | `config.test.ts` (defaults/env/flags, coercion)                          |
+| 13. No persistence         | `cli.test.ts` (in-memory session, no config file created)                |
 
 ## Troubleshooting
 
