@@ -236,25 +236,25 @@ user: "Now make it reject duplicate emails"
 
 ## 4. Edge Cases and Error Handling
 
-| #   | Scenario                                                               | Required Behavior                                                                                                                    |
-| --- | ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| E1  | Tool fails (file missing, command non-zero exit)                       | Return the error as the tool result; model reacts. No abort.                                                                         |
-| E2  | Malformed tool call (bad JSON / unknown tool / bad params)             | Return a descriptive error as the tool result; model self-corrects. No abort.                                                        |
-| E3  | llama.cpp server unreachable / connection refused                      | **Abort the turn immediately** with a clear message (e.g. "Cannot reach llama.cpp server at <baseUrl>. Is it running?"). No retries. |
-| E4  | LLM request times out                                                  | **Abort the turn immediately** with a clear timeout message. No retries.                                                             |
-| E5  | LLM returns an HTTP error (4xx/5xx) mid-loop                           | **Abort the turn immediately**, surfacing the status + body. No retries.                                                             |
-| E6  | Conversation exceeds context window                                    | Compact per §3.5 before the next call.                                                                                               |
-| E7  | Compaction summarization call fails                                    | Fall back to truncation (§3.5); do not abort.                                                                                        |
-| E8  | Foreground command exceeds its timeout                                 | Kill the process; return a timeout error as the tool result.                                                                         |
-| E9  | `check_command` with an unknown id                                     | Return an error result ("unknown command id").                                                                                       |
-| E10 | Model never calls `finish` (loops on tools)                            | No cap by design (§8). The user can interrupt with Ctrl-C. Risk documented.                                                          |
-| E11 | Model returns text with no tool calls and no `finish`                  | Treat the text as the final answer; end the turn.                                                                                    |
-| E12 | `edit_file` `oldString` matches 0 or >1 times (and `replaceAll` false) | Return an error result describing the match count; model adjusts.                                                                    |
-| E13 | `read_file` on a binary file                                           | Return a notice that the file is binary (do not dump bytes).                                                                         |
-| E14 | Tool/command output exceeds `maxToolOutputChars`                       | Truncate and append a truncation notice.                                                                                             |
-| E15 | User presses Ctrl-C during a turn                                      | Interrupt the current turn (kill any running foreground command), return to the REPL prompt.                                         |
-| E16 | Config file missing                                                    | Use built-in defaults; if `baseUrl`/`model` are then unset, print a clear setup hint and exit.                                       |
-| E17 | Config file present but invalid (bad JSON / unknown keys)              | Print a clear error naming the problem and exit (do not start the REPL).                                                             |
+| #   | Scenario                                                               | Required Behavior                                                                                                                                                |
+| --- | ---------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| E1  | Tool fails (file missing, command non-zero exit)                       | Return the error as the tool result; model reacts. No abort.                                                                                                     |
+| E2  | Malformed tool call (bad JSON / unknown tool / bad params)             | Return a descriptive error as the tool result; model self-corrects. No abort.                                                                                    |
+| E3  | llama.cpp server unreachable / connection refused                      | **Abort the turn immediately** with a clear message (e.g. "Cannot reach llama.cpp server at <baseUrl>. Is it running?"). No retries.                             |
+| E4  | LLM request times out                                                  | **Abort the turn immediately** with a clear timeout message. No retries.                                                                                         |
+| E5  | LLM returns an HTTP error (4xx/5xx) mid-loop                           | **Abort the turn immediately**, surfacing the status + body. No retries.                                                                                         |
+| E6  | Conversation exceeds context window                                    | Compact per §3.5 before the next call.                                                                                                                           |
+| E7  | Compaction summarization call fails                                    | Fall back to truncation (§3.5); do not abort.                                                                                                                    |
+| E8  | Foreground command exceeds its timeout                                 | Kill the process; return a timeout error as the tool result.                                                                                                     |
+| E9  | `check_command` with an unknown id                                     | Return an error result ("unknown command id").                                                                                                                   |
+| E10 | Model never calls `finish` (loops on tools)                            | No cap by design (§8). The user can interrupt with Ctrl-C. Risk documented.                                                                                      |
+| E11 | Model returns text with no tool calls and no `finish`                  | Treat the text as the final answer; end the turn.                                                                                                                |
+| E12 | `edit_file` `oldString` matches 0 or >1 times (and `replaceAll` false) | Return an error result describing the match count; model adjusts.                                                                                                |
+| E13 | `read_file` on a binary file                                           | Return a notice that the file is binary (do not dump bytes).                                                                                                     |
+| E14 | Tool/command output exceeds `maxToolOutputChars`                       | Truncate and append a truncation notice.                                                                                                                         |
+| E15 | User presses Ctrl-C during a turn                                      | Interrupt the current turn (kill any running foreground command), return to the REPL prompt.                                                                     |
+| E16 | No model resolvable                                                    | If `model` is unset, query the running server's `GET /v1/models` and use the first loaded model. If that also yields nothing, print a clear setup hint and exit. |
+| E17 | Config file present but invalid (bad JSON / unknown keys)              | Print a clear error naming the problem and exit (do not start the REPL).                                                                                         |
 
 ---
 
@@ -296,21 +296,21 @@ Resolved from, in priority order: \*\*CLI flags > environment variables > config
 JSON is the primary format (no extra dependency). YAML is an optional extension if a
 parser is available; JSON MUST always work.
 
-| Key                   | Type           | Default                 | Env override                 | Description                                                                              |
-| --------------------- | -------------- | ----------------------- | ---------------------------- | ---------------------------------------------------------------------------------------- |
-| `baseUrl`             | string         | `http://localhost:8080` | `HARNESS_BASE_URL`           | llama.cpp server base URL.                                                               |
-| `model`               | string         | _(none — required)_     | `HARNESS_MODEL`              | Model name/id to request.                                                                |
-| `apiKey`              | string         | `""`                    | `HARNESS_API_KEY`            | Bearer token if the server uses `--api-key`.                                             |
-| `temperature`         | number         | `0.2`                   | `HARNESS_TEMPERATURE`        | Sampling temperature.                                                                    |
-| `maxContext`          | number         | `8192`                  | `HARNESS_MAX_CONTEXT`        | Model context window in tokens (must match the served model).                            |
-| `compactThreshold`    | number         | `0.8`                   | `HARNESS_COMPACT_THRESHOLD`  | Fraction of `maxContext` at which compaction triggers.                                   |
-| `compactKeepMessages` | number         | `6`                     | `HARNESS_COMPACT_KEEP`       | Recent messages kept verbatim during compaction.                                         |
-| `commandTimeoutMs`    | number         | `60000`                 | `HARNESS_COMMAND_TIMEOUT_MS` | Default foreground command timeout.                                                      |
-| `maxToolOutputChars`  | number         | `20000`                 | `HARNESS_MAX_TOOL_OUTPUT`    | Truncation limit for tool/command output.                                                |
-| `systemPrompt`        | string \| null | built-in default        | `HARNESS_SYSTEM_PROMPT`      | Replaces the built-in system prompt if set.                                              |
-| `parallelToolCalls`   | boolean        | `true`                  | `HARNESS_PARALLEL_TOOLS`     | Enable parallel tool calls.                                                              |
-| `shell`               | string         | `"auto"`                | `HARNESS_SHELL`              | Shell for `run_command` (`auto`, `powershell`, `bash`, `sh`, or a path).                 |
-| `maxIterations`       | number \| null | `null` (no cap)         | `HARNESS_MAX_ITERATIONS`     | Optional safety cap on tool-loop iterations per turn. `null` = no cap (default, per §8). |
+| Key                   | Type           | Default                    | Env override                 | Description                                                                                         |
+| --------------------- | -------------- | -------------------------- | ---------------------------- | --------------------------------------------------------------------------------------------------- |
+| `baseUrl`             | string         | `http://localhost:8080`    | `HARNESS_BASE_URL`           | llama.cpp server base URL.                                                                          |
+| `model`               | string         | _(none — auto-discovered)_ | `HARNESS_MODEL`              | Model name/id to request. If unset, the first model from the running server's `/v1/models` is used. |
+| `apiKey`              | string         | `""`                       | `HARNESS_API_KEY`            | Bearer token if the server uses `--api-key`.                                                        |
+| `temperature`         | number         | `0.2`                      | `HARNESS_TEMPERATURE`        | Sampling temperature.                                                                               |
+| `maxContext`          | number         | `8192`                     | `HARNESS_MAX_CONTEXT`        | Model context window in tokens (must match the served model).                                       |
+| `compactThreshold`    | number         | `0.8`                      | `HARNESS_COMPACT_THRESHOLD`  | Fraction of `maxContext` at which compaction triggers.                                              |
+| `compactKeepMessages` | number         | `6`                        | `HARNESS_COMPACT_KEEP`       | Recent messages kept verbatim during compaction.                                                    |
+| `commandTimeoutMs`    | number         | `60000`                    | `HARNESS_COMMAND_TIMEOUT_MS` | Default foreground command timeout.                                                                 |
+| `maxToolOutputChars`  | number         | `20000`                    | `HARNESS_MAX_TOOL_OUTPUT`    | Truncation limit for tool/command output.                                                           |
+| `systemPrompt`        | string \| null | built-in default           | `HARNESS_SYSTEM_PROMPT`      | Replaces the built-in system prompt if set.                                                         |
+| `parallelToolCalls`   | boolean        | `true`                     | `HARNESS_PARALLEL_TOOLS`     | Enable parallel tool calls.                                                                         |
+| `shell`               | string         | `"auto"`                   | `HARNESS_SHELL`              | Shell for `run_command` (`auto`, `powershell`, `bash`, `sh`, or a path).                            |
+| `maxIterations`       | number \| null | `null` (no cap)            | `HARNESS_MAX_ITERATIONS`     | Optional safety cap on tool-loop iterations per turn. `null` = no cap (default, per §8).            |
 
 **Built-in system prompt (default):** a concise coding-agent persona instructing the
 model to: use the provided tools to accomplish the task; read before editing; run
@@ -396,7 +396,9 @@ is complete**. `Config.systemPrompt`, when set, replaces this default.
 The implementation is correct when all of the following hold:
 
 1. **Startup:** `harness` with a reachable server and valid config starts the REPL
-   and shows a prompt. With no `model` configured, it prints a setup hint and exits.
+   and shows a prompt. With no `model` configured, it auto-discovers the first model
+   from the running server's `/v1/models`; only if discovery also fails does it print a
+   setup hint and exit.
 2. **Happy path:** Given a task, the agent calls tools, streams text, prints a line
    per tool call, and ends by printing the `finish` answer; the REPL returns to the
    prompt.

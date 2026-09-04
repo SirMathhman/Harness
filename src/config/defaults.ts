@@ -17,7 +17,8 @@ Guidelines:
 Use the tools to do the work; do not just describe it.`;
 
 /**
- * Built-in defaults (spec §6.1). `model` is intentionally null (required).
+ * Built-in defaults (spec §6.1). `model` is intentionally null: when unset, the
+ * harness auto-discovers the first model from the running server's /v1/models.
  */
 export const DEFAULT_CONFIG: Config = {
   baseUrl: "http://localhost:8080",

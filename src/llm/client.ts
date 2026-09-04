@@ -37,6 +37,39 @@ export const defaultLLMClient: LLMClient = {
 const DEFAULT_TIMEOUT_MS = 300_000;
 
 /**
+ * Query the llama.cpp server's `GET /v1/models` endpoint and return the id of
+ * the first loaded model, or null if the server is unreachable or reports no
+ * models. Used to auto-resolve the model when the user has not configured one
+ * (spec §6.1: model is optional when a server is already running).
+ */
+export async function discoverModel(
+  baseUrl: string,
+  apiKey?: string,
+): Promise<string | null> {
+  const url = `${baseUrl.replace(/\/$/, "")}/v1/models`;
+  const headers: Record<string, string> = { Accept: "application/json" };
+  if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+
+  let response: Response;
+  try {
+    response = await fetch(url, { method: "GET", headers });
+  } catch {
+    return null;
+  }
+  if (!response.ok) return null;
+
+  try {
+    const data = (await response.json()) as {
+      data?: { id: string }[];
+    };
+    const first = data.data?.[0]?.id;
+    return typeof first === "string" && first.length > 0 ? first : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Build the /v1/chat/completions request payload (spec §1.3.1).
  */
 export function buildRequestPayload(

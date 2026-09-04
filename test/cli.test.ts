@@ -6,11 +6,13 @@ import { createSession } from "../src/agent/session.js";
 import { DEFAULT_CONFIG } from "../src/config/defaults.js";
 
 describe("CLI startup (AC 1)", () => {
-  test("prints a setup hint and exits non-zero when no model is configured", async () => {
-    // Run the entry point in a clean env (no HARNESS_MODEL, no config file).
+  test("prints a setup hint and exits non-zero when no model is resolvable", async () => {
+    // Run the entry point in a clean env (no HARNESS_MODEL, no config file) and
+    // point at a port nothing is listening on so model auto-discovery fails
+    // deterministically, regardless of whether a real server is running.
     const env = { ...process.env };
     delete env.HARNESS_MODEL;
-    delete env.HARNESS_BASE_URL;
+    env.HARNESS_BASE_URL = "http://127.0.0.1:1";
     const proc = Bun.spawn(["bun", "run", "src/index.ts"], {
       cwd: process.cwd(),
       env,
@@ -20,7 +22,7 @@ describe("CLI startup (AC 1)", () => {
     const exitCode = await proc.exited;
     const stderr = await new Response(proc.stderr).text();
     expect(exitCode).toBe(1);
-    expect(stderr).toContain("No model configured");
+    expect(stderr).toContain("No model could be resolved");
   });
 });
 

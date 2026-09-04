@@ -26,14 +26,18 @@ async function main(): Promise<void> {
 
   let config;
   try {
-    config = resolveConfig(flags, flags.config);
+    config = await resolveConfig(flags, flags.config);
   } catch (err) {
     if (err instanceof ModelNotConfiguredError) {
       console.error(
-        "No model configured. Set one via:\n" +
-          "  - the --model flag, or\n" +
-          "  - the HARNESS_MODEL environment variable, or\n" +
-          "  - a harness.config.json file (see README).\n",
+        "No model could be resolved.\n" +
+          "The harness looks for a model in this order:\n" +
+          "  1. the --model flag\n" +
+          "  2. the HARNESS_MODEL environment variable\n" +
+          "  3. a harness.config.json file (see README)\n" +
+          "  4. auto-discovery from the running server's /v1/models\n" +
+          "None of these yielded a model. Start a llama.cpp server with a model\n" +
+          "loaded, or set one explicitly.\n",
       );
       process.exitCode = 1;
       return;
@@ -58,7 +62,7 @@ function printHelp(): void {
       "",
       "Options:",
       "  --config <path>        Path to a config file (default ./harness.config.json)",
-      "  --model <name>         Model name (overrides config/env)",
+      "  --model <name>         Model name (default: auto-discovered from the running server)",
       "  --base-url <url>       LLM server base URL (default http://localhost:8080)",
       "  --temperature <n>      Sampling temperature (default 0.2)",
       "  --max-context <n>      Context window size in tokens (default 8192)",
