@@ -42,19 +42,18 @@ export async function startRepl(
     await executeTurn(session, registry, manager, callbacks, initialTask);
   }
 
+  const ctx: ReplContext = { session };
   for (;;) {
     if (closed) break;
     const line = await prompt(rl, "harness> ");
     if (closed) break;
     const input = line.trim();
     if (input === "") continue;
-    if (input === "exit" || input === "quit") break;
-    if (input === "/help") {
-      process.stdout.write(helpText() + "\n");
-      continue;
-    }
-    if (input === "/context") {
-      process.stdout.write(contextUsageLine(session) + "\n");
+    const cmd = findCommand(input);
+    if (cmd) {
+      const out = cmd.run(ctx);
+      if (out !== undefined) process.stdout.write(out + "\n");
+      if (cmd.exits) break;
       continue;
     }
     await executeTurn(session, registry, manager, callbacks, input);
@@ -122,17 +121,74 @@ function prompt(rl: Interface, label: string): Promise<string> {
 }
 
 /**
- * The text shown by the `/help` command: the REPL commands and how to use them.
+ * The context a REPL command receives when it runs.
+ */
+export interface ReplContext {
+  session: ReturnType<typeof createSession>["session"];
+}
+
+/**
+ * A REPL slash command. The registry is the single source of truth for both
+ * dispatch (in the REPL loop) and the `/help` listing, so the two can never
+ * drift apart.
+ */
+export interface ReplCommand {
+  /** The command name, including the leading `/`. */
+  name: string;
+  /** One-line description shown by `/help`. */
+  summary: string;
+  /** Run the command; return text to print, or undefined to print nothing. */
+  run: (ctx: ReplContext) => string | undefined;
+  /** If true, the REPL exits after running the command. */
+  exits?: boolean;
+}
+
+/**
+ * The REPL command registry. Adding a command here is all that's needed for it
+ * to be dispatched and listed by `/help`.
+ */
+export const REPL_COMMANDS: ReplCommand[] = [
+  {
+    name: "/help",
+    summary: "Show this help.",
+    run: () => helpText(),
+  },
+  {
+    name: "/context",
+    summary: "Show context tokens used vs. the total window.",
+    run: (ctx) => contextUsageLine(ctx.session),
+  },
+  {
+    name: "/exit",
+    summary: "End the session (also: exit, quit, Ctrl-D).",
+    run: () => undefined,
+    exits: true,
+  },
+];
+
+/**
+ * Look up a command by its exact input. Bare `exit`/`quit` are aliases for
+ * `/exit` (standard REPL convention).
+ */
+export function findCommand(input: string): ReplCommand | undefined {
+  if (input === "exit" || input === "quit") {
+    return REPL_COMMANDS.find((c) => c.name === "/exit");
+  }
+  return REPL_COMMANDS.find((c) => c.name === input);
+}
+
+/**
+ * The text shown by the `/help` command, generated from the command registry
+ * so it always matches what the REPL actually dispatches.
  */
 export function helpText(): string {
-  return [
-    "Commands:",
-    "  <task>     Run a coding task (any text that isn't a command).",
-    "  /help      Show this help.",
-    "  /context   Show context tokens used vs. the total window.",
-    "  exit       End the session (also: quit, Ctrl-D).",
-    "  Ctrl-C     Abort the current turn.",
-  ].join("\n");
+  const lines = ["Commands:"];
+  for (const cmd of REPL_COMMANDS) {
+    lines.push(`  ${cmd.name.padEnd(10)} ${cmd.summary}`);
+  }
+  lines.push("  <task>     Run a coding task (any text that isn't a command).");
+  lines.push("  Ctrl-C     Abort the current turn.");
+  return lines.join("\n");
 }
 
 /**

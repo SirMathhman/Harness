@@ -48,8 +48,9 @@ bun run dev "add a retry helper to src/utils.ts"
 harness "your task"
 ```
 
-At the `harness> ` prompt, type a task and press Enter. Type `exit` or `quit` to leave.
-Press `Ctrl-C` during a turn to abort it (any running foreground command is killed).
+At the `harness> ` prompt, type a task and press Enter. Type `/exit` (or `exit` /
+`quit`) to leave. Press `Ctrl-C` during a turn to abort it (any running foreground
+command is killed).
 
 Type `/help` to list the available commands. Type `/context` to see how much of the
 context window is in use (prompt tokens from the last LLM call vs. the configured

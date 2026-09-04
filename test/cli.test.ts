@@ -3,7 +3,12 @@ import { mkdtempSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createSession } from "../src/agent/session.js";
-import { contextUsageLine, helpText } from "../src/cli/repl.js";
+import {
+  contextUsageLine,
+  findCommand,
+  helpText,
+  REPL_COMMANDS,
+} from "../src/cli/repl.js";
 import { DEFAULT_CONFIG } from "../src/config/defaults.js";
 
 describe("CLI startup (AC 1)", () => {
@@ -27,12 +32,30 @@ describe("CLI startup (AC 1)", () => {
   });
 });
 
-describe("/help command", () => {
-  test("lists the available commands", () => {
+describe("REPL command registry", () => {
+  test("contains the expected commands", () => {
+    const names = REPL_COMMANDS.map((c) => c.name);
+    expect(names).toContain("/help");
+    expect(names).toContain("/context");
+    expect(names).toContain("/exit");
+  });
+
+  test("dispatch resolves each command and the exit aliases", () => {
+    expect(findCommand("/help")?.name).toBe("/help");
+    expect(findCommand("/context")?.name).toBe("/context");
+    expect(findCommand("/exit")?.name).toBe("/exit");
+    // Bare exit/quit are aliases for /exit.
+    expect(findCommand("exit")?.name).toBe("/exit");
+    expect(findCommand("quit")?.name).toBe("/exit");
+    // Unknown input is not a command.
+    expect(findCommand("do something")).toBeUndefined();
+  });
+
+  test("/help lists every command in the registry", () => {
     const text = helpText();
-    expect(text).toContain("/help");
-    expect(text).toContain("/context");
-    expect(text).toContain("exit");
+    for (const cmd of REPL_COMMANDS) {
+      expect(text).toContain(cmd.name);
+    }
   });
 });
 
