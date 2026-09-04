@@ -1,6 +1,6 @@
 # System Specification: Hooks System
 
-**Version:** 0.1.0
+**Version:** 0.2.0
 **Date:** 2026-09-04
 **Builds on:** N/A (first spec for this subsystem)
 
