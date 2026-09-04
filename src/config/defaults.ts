@@ -34,6 +34,7 @@ export const DEFAULT_CONFIG: Config = {
   parallelToolCalls: true,
   shell: "auto",
   maxIterations: null,
+  dynamicTools: false,
 };
 
 /** Map of config key -> environment variable name (spec §6.1). */
@@ -51,6 +52,7 @@ export const ENV_KEYS: Record<keyof Config, string> = {
   parallelToolCalls: "HARNESS_PARALLEL_TOOLS",
   shell: "HARNESS_SHELL",
   maxIterations: "HARNESS_MAX_ITERATIONS",
+  dynamicTools: "HARNESS_DYNAMIC_TOOLS",
 };
 
 /** The set of valid config keys, used for unknown-key detection. */

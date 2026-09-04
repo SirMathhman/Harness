@@ -98,6 +98,7 @@ Only set it explicitly when you need to pick among several loaded models.
 | `maxToolOutputChars`  | number         | `20000`                  | `HARNESS_MAX_TOOL_OUTPUT`    | Truncation limit for tool output.                                                     |
 | `systemPrompt`        | string \| null | `null` (built-in)        | `HARNESS_SYSTEM_PROMPT`      | Override the system prompt.                                                           |
 | `parallelToolCalls`   | boolean        | `true`                   | `HARNESS_PARALLEL_TOOLS`     | Allow the model to batch tool calls.                                                  |
+| `dynamicTools`        | boolean        | `false`                  | `HARNESS_DYNAMIC_TOOLS`      | Advertise a constant tool surface + `search_tools`/`call_tool` instead of the full catalog (spec §3.3.1). |
 | `shell`               | string         | `"auto"`                 | `HARNESS_SHELL`              | `auto`, `powershell`, `bash`, or `sh`.                                                |
 | `maxIterations`       | number \| null | `null`                   | `HARNESS_MAX_ITERATIONS`     | Cap on tool-call iterations per turn.                                                 |
 

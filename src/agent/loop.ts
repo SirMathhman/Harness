@@ -62,7 +62,7 @@ export async function runTurn(
     const response = await client.chat({
       config,
       messages: session.messages,
-      tools: registry.all(),
+      tools: registry.advertised(),
       signal,
       onToken: callbacks.onToken,
     });

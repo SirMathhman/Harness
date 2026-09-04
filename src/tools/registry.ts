@@ -6,6 +6,11 @@ import { truncate } from "../utils.js";
  */
 export class ToolRegistry {
   private tools = new Map<string, Tool>();
+  /**
+   * When set, only these tool names are advertised to the LLM (dynamic mode,
+   * spec §3.3.1). `dispatch` still resolves against the full catalog.
+   */
+  private advertisedNames: Set<string> | null = null;
 
   register(tool: Tool): this {
     this.tools.set(tool.name, tool);
@@ -20,9 +25,21 @@ export class ToolRegistry {
     return [...this.tools.values()];
   }
 
+  /** Restrict the advertised set to the given names (dynamic mode). */
+  setAdvertised(names: string[]): this {
+    this.advertisedNames = new Set(names);
+    return this;
+  }
+
+  /** The tools to advertise to the LLM (all, or the restricted set). */
+  advertised(): Tool[] {
+    if (this.advertisedNames === null) return this.all();
+    return this.all().filter((t) => this.advertisedNames!.has(t.name));
+  }
+
   /** The OpenAI `tools` array to send to the LLM. */
   toOpenAITools(): unknown[] {
-    return this.all().map((t) => ({
+    return this.advertised().map((t) => ({
       type: "function",
       function: {
         name: t.name,

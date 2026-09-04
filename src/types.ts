@@ -54,7 +54,7 @@ export interface JsonSchema {
 }
 
 export interface JsonSchemaProperty {
-  type: "string" | "number" | "integer" | "boolean";
+  type: "string" | "number" | "integer" | "boolean" | "object";
   description?: string;
   enum?: (string | number)[];
   default?: unknown;
@@ -84,6 +84,13 @@ export interface Config {
   parallelToolCalls: boolean;
   shell: string;
   maxIterations: number | null;
+  /**
+   * When true, the harness advertises a constant, minimal tool surface
+   * (search_tools + call_tool + core tools) and exposes the rest of the
+   * catalog on demand, keeping the request prefix stable for KV-cache reuse
+   * (spec §3.3.1).
+   */
+  dynamicTools: boolean;
 }
 
 /** One REPL invocation. Holds the running conversation. */

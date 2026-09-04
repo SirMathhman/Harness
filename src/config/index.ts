@@ -115,6 +115,7 @@ function envValue(key: keyof Config, env: NodeJS.ProcessEnv): unknown {
     case "maxToolOutputChars":
       return Number(raw);
     case "parallelToolCalls":
+    case "dynamicTools":
       return raw === "true" || raw === "1";
     case "maxIterations":
       return raw === "" || raw === "null" ? null : Number(raw);
@@ -221,6 +222,9 @@ export function validateConfig(cfg: Config): Config {
 
   if (typeof cfg.parallelToolCalls !== "boolean") {
     errors.push("parallelToolCalls must be a boolean.");
+  }
+  if (typeof cfg.dynamicTools !== "boolean") {
+    errors.push("dynamicTools must be a boolean.");
   }
   if (typeof cfg.shell !== "string") errors.push("shell must be a string.");
   if (cfg.systemPrompt !== null && typeof cfg.systemPrompt !== "string") {

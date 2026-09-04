@@ -52,6 +52,18 @@ describe("config resolution & precedence (AC 12)", () => {
     expect(cfg.parallelToolCalls).toBe(false);
   });
 
+  test("dynamicTools defaults to false and is coerced from env", () => {
+    const off = resolveConfig(emptyFlags, "./does-not-exist.json", {
+      HARNESS_MODEL: "m",
+    });
+    expect(off.dynamicTools).toBe(false);
+    const on = resolveConfig(emptyFlags, "./does-not-exist.json", {
+      HARNESS_MODEL: "m",
+      HARNESS_DYNAMIC_TOOLS: "true",
+    });
+    expect(on.dynamicTools).toBe(true);
+  });
+
   test("a null model is allowed by resolveConfig (discovery happens in index.ts)", () => {
     const env: NodeJS.ProcessEnv = {};
     const cfg = resolveConfig(emptyFlags, "./does-not-exist.json", env);

@@ -10,10 +10,19 @@ import {
 import { finishTool } from "./finish.js";
 import { searchTool } from "./search.js";
 import { ToolRegistry } from "./registry.js";
+import {
+  CORE_TOOL_NAMES,
+  makeCallToolTool,
+  makeSearchToolsTool,
+} from "./metaTools.js";
 
 /**
  * Build the full tool registry for a session (spec §3.3).
  * The background command manager is created per session (in-memory only).
+ *
+ * When `config.dynamicTools` is set, the registry advertises only a constant
+ * surface (core tools + search_tools + call_tool) while the full catalog stays
+ * reachable through call_tool (spec §3.3.1).
  */
 export function buildToolRegistry(config: Config): {
   registry: ToolRegistry;
@@ -37,6 +46,14 @@ export function buildToolRegistry(config: Config): {
     )
     .register(makeCheckCommandTool(manager, config.maxToolOutputChars))
     .register(finishTool);
+
+  if (config.dynamicTools) {
+    registry
+      .register(makeSearchToolsTool(registry))
+      .register(makeCallToolTool(registry, config.maxToolOutputChars))
+      .setAdvertised([...CORE_TOOL_NAMES, "search_tools", "call_tool"]);
+  }
+
   return { registry, manager };
 }
 

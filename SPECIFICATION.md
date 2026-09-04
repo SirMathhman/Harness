@@ -119,7 +119,8 @@ For each user task, the harness MUST:
 1. Append the user's task as a `user` Message.
 2. Call the LLM (`POST /v1/chat/completions`) with:
    - the full `messages` array,
-   - the `tools` array (the 8 tool definitions, §3.3),
+   - the `tools` array (the 8 tool definitions, §3.3; or the constant advertised
+     surface when `dynamicTools` is set, §3.3.1),
    - `tool_choice: "auto"`,
    - `parallel_tool_calls: true`,
    - `stream: true`,
@@ -162,6 +163,30 @@ as **strings** (success output or a descriptive error).
   gave them, to avoid file/command races. **Read-only tools** (`read_file`,
   `list_dir`, `search`, `check_command`) may run concurrently. Results are returned
   to the model in the same order as the original tool calls.
+
+#### 3.3.1 Dynamic Tool Loading (optional, `dynamicTools`)
+
+By default the harness advertises all 8 tools in the request's `tools` array. When
+`Config.dynamicTools` is `true`, the harness instead advertises a **constant surface**
+and exposes the rest of the catalog on demand. This keeps the request prefix stable
+across turns so the server's KV cache stays warm (the `tools` array is part of the
+prompt prefix; mutating it invalidates the shared prefix and forces full reprocessing).
+
+- **Advertised surface (constant):** the core tools `read_file`, `write_file`,
+  `edit_file`, `list_dir`, `search`, `finish`, plus two meta tools:
+  - `search_tools` — `query` (str, req); `limit` (int, opt, default `5`). Returns the
+    matching tool definitions (name, description, parameter schema) as a JSON string,
+    ranked by token overlap (name matches weigh more than description matches).
+  - `call_tool` — `name` (str, req); `args` (object, opt). Dispatches to any tool in
+    the full catalog by name and returns its result string. Unknown names return an
+    error string.
+- **Catalog-as-data:** the full tool catalog is always present in the registry and
+  dispatchable; only the *advertised* set sent to the LLM is restricted. `call_tool`
+  and `search_tools` resolve against the full catalog, so every tool remains reachable.
+- **Caveat:** because tool definitions are appended to the conversation tail (not the
+  prefix), a compaction that summarizes the tail can drop a previously discovered
+  definition. The model can re-discover it with `search_tools`; this is acceptable
+  because discovery is cheap and idempotent.
 
 ### 3.4 Tool Execution & Error Semantics
 
@@ -309,6 +334,7 @@ parser is available; JSON MUST always work.
 | `maxToolOutputChars`  | number         | `20000`                    | `HARNESS_MAX_TOOL_OUTPUT`    | Truncation limit for tool/command output.                                                           |
 | `systemPrompt`        | string \| null | built-in default           | `HARNESS_SYSTEM_PROMPT`      | Replaces the built-in system prompt if set.                                                         |
 | `parallelToolCalls`   | boolean        | `true`                     | `HARNESS_PARALLEL_TOOLS`     | Enable parallel tool calls.                                                                         |
+| `dynamicTools`        | boolean        | `false`                    | `HARNESS_DYNAMIC_TOOLS`      | Advertise a constant tool surface + `search_tools`/`call_tool` instead of the full catalog (§3.3.1). |
 | `shell`               | string         | `"auto"`                   | `HARNESS_SHELL`              | Shell for `run_command` (`auto`, `powershell`, `bash`, `sh`, or a path).                            |
 | `maxIterations`       | number \| null | `null` (no cap)            | `HARNESS_MAX_ITERATIONS`     | Optional safety cap on tool-loop iterations per turn. `null` = no cap (default, per §8).            |
 
