@@ -5,7 +5,6 @@ import {
   makeCallToolTool,
   makeSearchToolsTool,
 } from "../src/tools/metaTools.js";
-import { ToolRegistry } from "../src/tools/registry.js";
 import { buildToolRegistry } from "../src/tools/index.js";
 import { readFileTool } from "../src/tools/fileTools.js";
 import { DEFAULT_CONFIG } from "../src/config/defaults.js";

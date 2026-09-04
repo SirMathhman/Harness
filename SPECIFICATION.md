@@ -181,7 +181,7 @@ prompt prefix; mutating it invalidates the shared prefix and forces full reproce
     the full catalog by name and returns its result string. Unknown names return an
     error string.
 - **Catalog-as-data:** the full tool catalog is always present in the registry and
-  dispatchable; only the *advertised* set sent to the LLM is restricted. `call_tool`
+  dispatchable; only the _advertised_ set sent to the LLM is restricted. `call_tool`
   and `search_tools` resolve against the full catalog, so every tool remains reachable.
 - **Caveat:** because tool definitions are appended to the conversation tail (not the
   prefix), a compaction that summarizes the tail can drop a previously discovered
@@ -321,22 +321,22 @@ Resolved from, in priority order: \*\*CLI flags > environment variables > config
 JSON is the primary format (no extra dependency). YAML is an optional extension if a
 parser is available; JSON MUST always work.
 
-| Key                   | Type           | Default                    | Env override                 | Description                                                                                         |
-| --------------------- | -------------- | -------------------------- | ---------------------------- | --------------------------------------------------------------------------------------------------- |
-| `baseUrl`             | string         | `http://localhost:8080`    | `HARNESS_BASE_URL`           | llama.cpp server base URL.                                                                          |
-| `model`               | string         | _(none — auto-discovered)_ | `HARNESS_MODEL`              | Model name/id to request. If unset, the first model from the running server's `/v1/models` is used. |
-| `apiKey`              | string         | `""`                       | `HARNESS_API_KEY`            | Bearer token if the server uses `--api-key`.                                                        |
-| `temperature`         | number         | `0.2`                      | `HARNESS_TEMPERATURE`        | Sampling temperature.                                                                               |
-| `maxContext`          | number         | `8192`                     | `HARNESS_MAX_CONTEXT`        | Model context window in tokens (must match the served model).                                       |
-| `compactThreshold`    | number         | `0.8`                      | `HARNESS_COMPACT_THRESHOLD`  | Fraction of `maxContext` at which compaction triggers.                                              |
-| `compactKeepMessages` | number         | `6`                        | `HARNESS_COMPACT_KEEP`       | Recent messages kept verbatim during compaction.                                                    |
-| `commandTimeoutMs`    | number         | `60000`                    | `HARNESS_COMMAND_TIMEOUT_MS` | Default foreground command timeout.                                                                 |
-| `maxToolOutputChars`  | number         | `20000`                    | `HARNESS_MAX_TOOL_OUTPUT`    | Truncation limit for tool/command output.                                                           |
-| `systemPrompt`        | string \| null | built-in default           | `HARNESS_SYSTEM_PROMPT`      | Replaces the built-in system prompt if set.                                                         |
-| `parallelToolCalls`   | boolean        | `true`                     | `HARNESS_PARALLEL_TOOLS`     | Enable parallel tool calls.                                                                         |
+| Key                   | Type           | Default                    | Env override                 | Description                                                                                          |
+| --------------------- | -------------- | -------------------------- | ---------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `baseUrl`             | string         | `http://localhost:8080`    | `HARNESS_BASE_URL`           | llama.cpp server base URL.                                                                           |
+| `model`               | string         | _(none — auto-discovered)_ | `HARNESS_MODEL`              | Model name/id to request. If unset, the first model from the running server's `/v1/models` is used.  |
+| `apiKey`              | string         | `""`                       | `HARNESS_API_KEY`            | Bearer token if the server uses `--api-key`.                                                         |
+| `temperature`         | number         | `0.2`                      | `HARNESS_TEMPERATURE`        | Sampling temperature.                                                                                |
+| `maxContext`          | number         | `8192`                     | `HARNESS_MAX_CONTEXT`        | Model context window in tokens (must match the served model).                                        |
+| `compactThreshold`    | number         | `0.8`                      | `HARNESS_COMPACT_THRESHOLD`  | Fraction of `maxContext` at which compaction triggers.                                               |
+| `compactKeepMessages` | number         | `6`                        | `HARNESS_COMPACT_KEEP`       | Recent messages kept verbatim during compaction.                                                     |
+| `commandTimeoutMs`    | number         | `60000`                    | `HARNESS_COMMAND_TIMEOUT_MS` | Default foreground command timeout.                                                                  |
+| `maxToolOutputChars`  | number         | `20000`                    | `HARNESS_MAX_TOOL_OUTPUT`    | Truncation limit for tool/command output.                                                            |
+| `systemPrompt`        | string \| null | built-in default           | `HARNESS_SYSTEM_PROMPT`      | Replaces the built-in system prompt if set.                                                          |
+| `parallelToolCalls`   | boolean        | `true`                     | `HARNESS_PARALLEL_TOOLS`     | Enable parallel tool calls.                                                                          |
 | `dynamicTools`        | boolean        | `false`                    | `HARNESS_DYNAMIC_TOOLS`      | Advertise a constant tool surface + `search_tools`/`call_tool` instead of the full catalog (§3.3.1). |
-| `shell`               | string         | `"auto"`                   | `HARNESS_SHELL`              | Shell for `run_command` (`auto`, `powershell`, `bash`, `sh`, or a path).                            |
-| `maxIterations`       | number \| null | `null` (no cap)            | `HARNESS_MAX_ITERATIONS`     | Optional safety cap on tool-loop iterations per turn. `null` = no cap (default, per §8).            |
+| `shell`               | string         | `"auto"`                   | `HARNESS_SHELL`              | Shell for `run_command` (`auto`, `powershell`, `bash`, `sh`, or a path).                             |
+| `maxIterations`       | number \| null | `null` (no cap)            | `HARNESS_MAX_ITERATIONS`     | Optional safety cap on tool-loop iterations per turn. `null` = no cap (default, per §8).             |
 
 **Built-in system prompt (default):** a concise coding-agent persona instructing the
 model to: use the provided tools to accomplish the task; read before editing; run

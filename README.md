@@ -85,22 +85,22 @@ Only set it explicitly when you need to pick among several loaded models.
 
 ### Keys
 
-| Key                   | Type           | Default                  | Env var                      | Description                                                                           |
-| --------------------- | -------------- | ------------------------ | ---------------------------- | ------------------------------------------------------------------------------------- |
-| `baseUrl`             | string         | `http://localhost:8080`  | `HARNESS_BASE_URL`           | LLM server base URL.                                                                  |
-| `model`               | string         | `null` (auto-discovered) | `HARNESS_MODEL`              | Model name. If unset, the first model from the running server's `/v1/models` is used. |
-| `apiKey`              | string         | `""`                     | `HARNESS_API_KEY`            | Bearer token (optional).                                                              |
-| `temperature`         | number         | `0.2`                    | `HARNESS_TEMPERATURE`        | Sampling temperature.                                                                 |
-| `maxContext`          | number         | `8192`                   | `HARNESS_MAX_CONTEXT`        | Context window size in tokens.                                                        |
-| `compactThreshold`    | number (0, 1]  | `0.8`                    | `HARNESS_COMPACT_THRESHOLD`  | Fraction of `maxContext` that triggers compaction.                                    |
-| `compactKeepMessages` | number         | `6`                      | `HARNESS_COMPACT_KEEP`       | Recent messages kept verbatim during compaction.                                      |
-| `commandTimeoutMs`    | number         | `60000`                  | `HARNESS_COMMAND_TIMEOUT_MS` | Default foreground command timeout.                                                   |
-| `maxToolOutputChars`  | number         | `20000`                  | `HARNESS_MAX_TOOL_OUTPUT`    | Truncation limit for tool output.                                                     |
-| `systemPrompt`        | string \| null | `null` (built-in)        | `HARNESS_SYSTEM_PROMPT`      | Override the system prompt.                                                           |
-| `parallelToolCalls`   | boolean        | `true`                   | `HARNESS_PARALLEL_TOOLS`     | Allow the model to batch tool calls.                                                  |
+| Key                   | Type           | Default                  | Env var                      | Description                                                                                               |
+| --------------------- | -------------- | ------------------------ | ---------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `baseUrl`             | string         | `http://localhost:8080`  | `HARNESS_BASE_URL`           | LLM server base URL.                                                                                      |
+| `model`               | string         | `null` (auto-discovered) | `HARNESS_MODEL`              | Model name. If unset, the first model from the running server's `/v1/models` is used.                     |
+| `apiKey`              | string         | `""`                     | `HARNESS_API_KEY`            | Bearer token (optional).                                                                                  |
+| `temperature`         | number         | `0.2`                    | `HARNESS_TEMPERATURE`        | Sampling temperature.                                                                                     |
+| `maxContext`          | number         | `8192`                   | `HARNESS_MAX_CONTEXT`        | Context window size in tokens.                                                                            |
+| `compactThreshold`    | number (0, 1]  | `0.8`                    | `HARNESS_COMPACT_THRESHOLD`  | Fraction of `maxContext` that triggers compaction.                                                        |
+| `compactKeepMessages` | number         | `6`                      | `HARNESS_COMPACT_KEEP`       | Recent messages kept verbatim during compaction.                                                          |
+| `commandTimeoutMs`    | number         | `60000`                  | `HARNESS_COMMAND_TIMEOUT_MS` | Default foreground command timeout.                                                                       |
+| `maxToolOutputChars`  | number         | `20000`                  | `HARNESS_MAX_TOOL_OUTPUT`    | Truncation limit for tool output.                                                                         |
+| `systemPrompt`        | string \| null | `null` (built-in)        | `HARNESS_SYSTEM_PROMPT`      | Override the system prompt.                                                                               |
+| `parallelToolCalls`   | boolean        | `true`                   | `HARNESS_PARALLEL_TOOLS`     | Allow the model to batch tool calls.                                                                      |
 | `dynamicTools`        | boolean        | `false`                  | `HARNESS_DYNAMIC_TOOLS`      | Advertise a constant tool surface + `search_tools`/`call_tool` instead of the full catalog (spec §3.3.1). |
-| `shell`               | string         | `"auto"`                 | `HARNESS_SHELL`              | `auto`, `powershell`, `bash`, or `sh`.                                                |
-| `maxIterations`       | number \| null | `null`                   | `HARNESS_MAX_ITERATIONS`     | Cap on tool-call iterations per turn.                                                 |
+| `shell`               | string         | `"auto"`                 | `HARNESS_SHELL`              | `auto`, `powershell`, `bash`, or `sh`.                                                                    |
+| `maxIterations`       | number \| null | `null`                   | `HARNESS_MAX_ITERATIONS`     | Cap on tool-call iterations per turn.                                                                     |
 
 ### CLI flags
 
