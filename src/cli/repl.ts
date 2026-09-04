@@ -21,6 +21,10 @@ export async function startRepl(
 ): Promise<void> {
   const { session, registry, manager } = createSession(config);
   const rl = createInterface({ input: process.stdin, output: process.stdout });
+  let closed = false;
+  rl.on("close", () => {
+    closed = true;
+  });
 
   const callbacks: AgentCallbacks = {
     onToken: (t) => process.stdout.write(t),
@@ -39,7 +43,9 @@ export async function startRepl(
   }
 
   for (;;) {
+    if (closed) break;
     const line = await prompt(rl, "harness> ");
+    if (closed) break;
     const input = line.trim();
     if (input === "") continue;
     if (input === "exit" || input === "quit") break;
@@ -92,11 +98,18 @@ async function executeTurn(
 }
 
 /**
- * Promise-based readline prompt.
+ * Promise-based readline prompt. Resolves with an empty string if the
+ * interface closes before a line is entered (e.g. stdin EOF / Ctrl-D), so the
+ * caller can detect the closed state and exit cleanly instead of hanging.
  */
 function prompt(rl: Interface, label: string): Promise<string> {
   return new Promise((resolve) => {
-    rl.question(label, (answer) => resolve(answer));
+    const onClose = () => resolve("");
+    rl.once("close", onClose);
+    rl.question(label, (answer) => {
+      rl.removeListener("close", onClose);
+      resolve(answer);
+    });
   });
 }
 
