@@ -148,6 +148,25 @@ describe("registry & dispatch (AC 5, 6)", () => {
     expect(problems.length).toBeGreaterThan(0);
   });
 
+  test("validateArgs number/integer symmetry", () => {
+    // A number-typed param accepts both integer and float values.
+    const numSchema = {
+      type: "object",
+      properties: { n: { type: "number" } },
+      required: ["n"],
+    };
+    expect(validateArgs(numSchema, { n: 5 })).toHaveLength(0);
+    expect(validateArgs(numSchema, { n: 5.5 })).toHaveLength(0);
+    // An integer-typed param accepts integers but rejects floats.
+    const intSchema = {
+      type: "object",
+      properties: { i: { type: "integer" } },
+      required: ["i"],
+    };
+    expect(validateArgs(intSchema, { i: 5 })).toHaveLength(0);
+    expect(validateArgs(intSchema, { i: 5.5 })).toHaveLength(1);
+  });
+
   test("dispatch unknown tool -> error string (E2)", async () => {
     const reg = new ToolRegistry().register(finishTool);
     const res = await dispatch(

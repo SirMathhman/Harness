@@ -6,12 +6,12 @@ import {
   type CliFlags,
 } from "../src/config/index.js";
 import { DEFAULT_CONFIG } from "../src/config/defaults.js";
-import type { Config, LLMResponse, ToolCall } from "../src/types.js";
+import type { Config, LLMResponse, Session, ToolCall } from "../src/types.js";
 import { makeSpawnSubagentTool } from "../src/tools/spawnSubagent.js";
 import { makeSubagentRunner } from "../src/agent/subagent.js";
 import { createSession } from "../src/agent/session.js";
 import { runTurn } from "../src/agent/loop.js";
-import { executeToolCalls } from "../src/tools/index.js";
+import { buildToolRegistry, executeToolCalls } from "../src/tools/index.js";
 import { ServerUnreachableError } from "../src/llm/errors.js";
 import type { LLMClient } from "../src/llm/client.js";
 
@@ -219,6 +219,44 @@ describe("subagent runner (§3.8.2, §3.8.5)", () => {
     const out = await runner({ task: "t", maxIterations: 5, depth: 1 });
     expect(out).toContain("subagent failed:");
     expect(out).toContain("Cannot reach llama.cpp server");
+  });
+
+  test("typed turn outcome distinguishes cap from plain text (E10 vs E11)", async () => {
+    const cfg = makeConfig({ maxIterations: 2 });
+    const { registry } = buildToolRegistry(cfg);
+    const mkSession = (): Session => ({
+      messages: [{ role: "system", content: "sys" }],
+      config: cfg,
+      lastPromptTokens: null,
+    });
+
+    // CAP: two non-finish tool calls exhaust the cap -> kind "cap".
+    const capResult = await runTurn(
+      mkSession(),
+      "t",
+      registry,
+      {},
+      undefined,
+      stubClient([
+        toolCall("1", "read_file", { path: "a" }, "thinking..."),
+        toolCall("2", "read_file", { path: "b" }, "still thinking..."),
+      ]),
+    );
+    expect(capResult.kind).toBe("cap");
+    expect(capResult.finished).toBe(false);
+
+    // TEXT: a single plain-text response (no tool calls) -> kind "text".
+    const textResult = await runTurn(
+      mkSession(),
+      "t",
+      registry,
+      {},
+      undefined,
+      stubClient([{ content: "just an answer", toolCalls: [], usage: null }]),
+    );
+    expect(textResult.kind).toBe("text");
+    expect(textResult.finished).toBe(false);
+    expect(textResult.answer).toBe("just an answer");
   });
 
   test("emits render events in order (spec §3.8.6)", async () => {
