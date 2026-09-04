@@ -1,5 +1,5 @@
 /**
- * Core domain types for the Harness agent runtime.
+ * Core domain types for the Vise agent runtime.
  * Mirrors §2 of SPECIFICATION.md.
  */
 import type { HookManager } from "./hooks/manager.js";
@@ -70,7 +70,11 @@ export interface BackgroundCommand {
   stderr: string;
 }
 
-/** Resolved runtime settings (see §6.1). */
+/**
+ * The resolved settings one agent (or subagent) runs under: the non-graph
+ * runtime settings merged with the parameters of the profile's model
+ * (profiles spec §3.5).
+ */
 export interface Config {
   baseUrl: string;
   model: string | null;
@@ -86,7 +90,7 @@ export interface Config {
   shell: string;
   maxIterations: number | null;
   /**
-   * When true, the harness advertises a constant, minimal tool surface
+   * When true, Vise advertises a constant, minimal tool surface
    * (search_tools + call_tool + core tools) and exposes the rest of the
    * catalog on demand, keeping the request prefix stable for KV-cache reuse
    * (spec §3.3.1).
@@ -98,15 +102,10 @@ export interface Config {
    */
   subagentMaxIterations: number;
   /**
-   * Maximum subagent nesting depth; a subagent at depth `N` may spawn only if
-   * `N < this` (spec §3.8.4).
+   * Global backstop on subagent nesting, applied to any profile that sets no
+   * `subagent.maxDepth` of its own (profiles spec §3.12.3).
    */
   maxSubagentDepth: number;
-  /**
-   * Paths to hook files (hooks spec §3.9). Relative paths are resolved from
-   * the project root. Omitted or empty means no hooks are loaded at all.
-   */
-  hooks?: string[];
 }
 
 /** One REPL invocation. Holds the running conversation. */
@@ -119,6 +118,11 @@ export interface Session {
   hooks: HookManager;
   /** Subagent nesting depth; 0 for the main session (hooks spec §3.7). */
   depth: number;
+  /**
+   * The name of the profile this session is running under; `""` for the
+   * implicit default profile (profiles spec §3.8).
+   */
+  profile: string;
 }
 
 /** Token usage reported by the LLM on the final stream chunk. */

@@ -1,13 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import {
-  resolveConfig,
-  validateConfig,
-  ConfigError,
-  type CliFlags,
-} from "../src/config/index.js";
 import { DEFAULT_CONFIG } from "../src/config/defaults.js";
-import type { Config, LLMResponse, Session, ToolCall } from "../src/types.js";
-import { makeSpawnSubagentTool } from "../src/tools/spawnSubagent.js";
+import type { LLMResponse, Session, ToolCall } from "../src/types.js";
+import {
+  makeSpawnSubagentTool,
+  type SpawnSubagentOptions,
+  type SubagentRunner,
+} from "../src/tools/spawnSubagent.js";
 import { makeSubagentRunner } from "../src/agent/subagent.js";
 import { createSession } from "../src/agent/session.js";
 import { runTurn } from "../src/agent/loop.js";
@@ -15,8 +13,7 @@ import { buildToolRegistry, executeToolCalls } from "../src/tools/index.js";
 import { ServerUnreachableError } from "../src/llm/errors.js";
 import type { LLMClient } from "../src/llm/client.js";
 import { HookManager } from "../src/hooks/index.js";
-
-const emptyFlags: CliFlags = {};
+import { modelGraph } from "./helpers.js";
 
 /** A scripted LLM client: returns responses in order, repeating the last. */
 function stubClient(responses: LLMResponse[]): LLMClient {
@@ -47,56 +44,39 @@ const toolCall = (
   usage: null,
 });
 
-function makeConfig(overrides: Partial<Config> = {}): Config {
-  return { ...DEFAULT_CONFIG, model: "test-model", ...overrides };
+/** A spawn tool with the boring options filled in. */
+function spawnTool(
+  runner: SubagentRunner,
+  overrides: Partial<SpawnSubagentOptions> = {},
+) {
+  return makeSpawnSubagentTool({
+    runner,
+    depth: 0,
+    parentProfile: "",
+    fallbackMaxDepth: 3,
+    subagentMaxIterations: 50,
+    knownProfiles: [],
+    ...overrides,
+  });
 }
 
-describe("config: subagent keys (AC 12, §6.1)", () => {
-  test("defaults are present", () => {
-    const cfg = resolveConfig(emptyFlags, "./does-not-exist.json", {
-      HARNESS_MODEL: "m",
-    });
-    expect(cfg.subagentMaxIterations).toBe(50);
-    expect(cfg.maxSubagentDepth).toBe(3);
-  });
+/** A subagent runner over a graph whose default profile uses `client`. */
+function runnerFor(client: LLMClient) {
+  return makeSubagentRunner({ graph: modelGraph(), client });
+}
 
-  test("env values are coerced to numbers", () => {
-    const cfg = resolveConfig(emptyFlags, "./does-not-exist.json", {
-      HARNESS_MODEL: "m",
-      HARNESS_SUBAGENT_MAX_ITER: "12",
-      HARNESS_MAX_SUBAGENT_DEPTH: "2",
-    });
-    expect(cfg.subagentMaxIterations).toBe(12);
-    expect(cfg.maxSubagentDepth).toBe(2);
-  });
-
-  test("validateConfig rejects non-positive subagentMaxIterations", () => {
-    const cfg: Config = {
-      ...DEFAULT_CONFIG,
-      model: "m",
-      subagentMaxIterations: 0,
-    };
-    expect(() => validateConfig(cfg)).toThrow(ConfigError);
-  });
-
-  test("validateConfig rejects negative maxSubagentDepth", () => {
-    const cfg: Config = { ...DEFAULT_CONFIG, model: "m", maxSubagentDepth: -1 };
-    expect(() => validateConfig(cfg)).toThrow(ConfigError);
-  });
-});
+/** The options a bare subagent run needs, under the default profile. */
+function runOpts(maxIterations: number) {
+  return { task: "t", maxIterations, depth: 1, profile: "" };
+}
 
 describe("spawn_subagent tool (§3.3 #9, §3.8)", () => {
   test("returns the runner's result verbatim (DONE)", async () => {
     const seen: unknown[] = [];
-    const tool = makeSpawnSubagentTool(
-      async (opts) => {
-        seen.push(opts);
-        return "subagent answer";
-      },
-      0,
-      3,
-      50,
-    );
+    const tool = spawnTool(async (opts) => {
+      seen.push(opts);
+      return "subagent answer";
+    });
     const out = await tool.handler({ task: "do it", maxIterations: 10 });
     expect(out).toBe("subagent answer");
     expect(seen[0]).toMatchObject({
@@ -108,14 +88,12 @@ describe("spawn_subagent tool (§3.3 #9, §3.8)", () => {
 
   test("caps maxIterations to the configured ceiling (§3.8.4)", async () => {
     const seen: { maxIterations: number }[] = [];
-    const tool = makeSpawnSubagentTool(
+    const tool = spawnTool(
       async (opts) => {
         seen.push(opts);
         return "ok";
       },
-      0,
-      3,
-      5,
+      { subagentMaxIterations: 5 },
     );
     await tool.handler({ task: "t", maxIterations: 100 });
     expect(seen[0].maxIterations).toBe(5);
@@ -123,30 +101,20 @@ describe("spawn_subagent tool (§3.3 #9, §3.8)", () => {
 
   test("clamps maxIterations to at least 1", async () => {
     const seen: { maxIterations: number }[] = [];
-    const tool = makeSpawnSubagentTool(
-      async (opts) => {
-        seen.push(opts);
-        return "ok";
-      },
-      0,
-      3,
-      50,
-    );
+    const tool = spawnTool(async (opts) => {
+      seen.push(opts);
+      return "ok";
+    });
     await tool.handler({ task: "t", maxIterations: 0 });
     expect(seen[0].maxIterations).toBe(1);
   });
 
   test("passes an optional systemPrompt through", async () => {
     const seen: { systemPrompt?: string }[] = [];
-    const tool = makeSpawnSubagentTool(
-      async (opts) => {
-        seen.push(opts);
-        return "ok";
-      },
-      0,
-      3,
-      50,
-    );
+    const tool = spawnTool(async (opts) => {
+      seen.push(opts);
+      return "ok";
+    });
     await tool.handler({
       task: "t",
       maxIterations: 5,
@@ -157,56 +125,46 @@ describe("spawn_subagent tool (§3.3 #9, §3.8)", () => {
 
   test("depth breach returns an error string, never throws (E20)", async () => {
     let called = false;
-    const tool = makeSpawnSubagentTool(
+    const tool = spawnTool(
       async () => {
         called = true;
         return "should not run";
       },
-      3,
-      3,
-      50,
+      { depth: 3 },
     );
     const out = await tool.handler({ task: "t", maxIterations: 5 });
     expect(called).toBe(false);
-    expect(out).toContain("max subagent depth reached");
+    expect(out).toContain("Subagent depth limit reached (max: 3)");
   });
 });
 
 describe("subagent runner (§3.8.2, §3.8.5)", () => {
   test("DONE: returns the subagent's finish answer verbatim", async () => {
-    const runner = makeSubagentRunner(
-      makeConfig(),
-      stubClient([finish("done!")]),
-      undefined,
-    );
-    const out = await runner({ task: "t", maxIterations: 10, depth: 1 });
+    const runner = runnerFor(stubClient([finish("done!")]));
+    const out = await runner(runOpts(10));
     expect(out).toBe("done!");
   });
 
   test("CAP_REACHED: returns the last assistant text", async () => {
     // Two iterations of a non-finish tool call, each carrying assistant text.
-    const runner = makeSubagentRunner(
-      makeConfig({ maxIterations: 2 }),
+    const runner = runnerFor(
       stubClient([
         toolCall("1", "read_file", { path: "a" }, "thinking..."),
         toolCall("2", "read_file", { path: "b" }, "still thinking..."),
       ]),
-      undefined,
     );
-    const out = await runner({ task: "t", maxIterations: 2, depth: 1 });
+    const out = await runner(runOpts(2));
     expect(out).toBe("still thinking...");
   });
 
   test("CAP_REACHED with no assistant text returns a fallback note", async () => {
-    const runner = makeSubagentRunner(
-      makeConfig({ maxIterations: 2 }),
+    const runner = runnerFor(
       stubClient([
         toolCall("1", "read_file", { path: "a" }),
         toolCall("2", "read_file", { path: "b" }),
       ]),
-      undefined,
     );
-    const out = await runner({ task: "t", maxIterations: 2, depth: 1 });
+    const out = await runner(runOpts(2));
     expect(out).toBe("iteration cap reached");
   });
 
@@ -216,14 +174,14 @@ describe("subagent runner (§3.8.2, §3.8.5)", () => {
         throw new ServerUnreachableError("http://localhost:1");
       },
     };
-    const runner = makeSubagentRunner(makeConfig(), client, undefined);
-    const out = await runner({ task: "t", maxIterations: 5, depth: 1 });
+    const runner = runnerFor(client);
+    const out = await runner(runOpts(5));
     expect(out).toContain("subagent failed:");
     expect(out).toContain("Cannot reach llama.cpp server");
   });
 
   test("typed turn outcome distinguishes cap from plain text (E10 vs E11)", async () => {
-    const cfg = makeConfig({ maxIterations: 2 });
+    const cfg = { ...DEFAULT_CONFIG, model: "test-model", maxIterations: 2 };
     const { registry } = buildToolRegistry(cfg);
     const mkSession = (): Session => ({
       messages: [{ role: "system", content: "sys" }],
@@ -231,6 +189,7 @@ describe("subagent runner (§3.8.2, §3.8.5)", () => {
       lastPromptTokens: null,
       hooks: new HookManager(),
       depth: 0,
+      profile: "",
     });
 
     // CAP: two non-finish tool calls exhaust the cap -> kind "cap".
@@ -265,12 +224,12 @@ describe("subagent runner (§3.8.2, §3.8.5)", () => {
   test("emits render events in order (spec §3.8.6)", async () => {
     const events: string[] = [];
     const render = (_depth: number, e: { kind: string }) => events.push(e.kind);
-    const runner = makeSubagentRunner(
-      makeConfig(),
-      stubClient([finish("x")]),
+    const runner = makeSubagentRunner({
+      graph: modelGraph(),
+      client: stubClient([finish("x")]),
       render,
-    );
-    await runner({ task: "t", maxIterations: 5, depth: 1 });
+    });
+    await runner(runOpts(5));
     expect(events).toContain("end");
     expect(events[events.length - 1]).toBe("end");
   });
@@ -287,7 +246,7 @@ describe("concurrency: multiple spawn_subagent calls run in parallel (§3.8.3)",
       running--;
       return "ok";
     };
-    const { registry } = createSession(makeConfig());
+    const { registry } = createSession({ graph: modelGraph() });
     const calls: ToolCall[] = [
       {
         id: "a",
@@ -301,7 +260,7 @@ describe("concurrency: multiple spawn_subagent calls run in parallel (§3.8.3)",
       },
     ];
     // Re-register a spawn tool backed by the concurrency-tracking runner.
-    registry.register(makeSpawnSubagentTool(runner, 0, 3, 50));
+    registry.register(spawnTool(runner));
     const results = await executeToolCalls(registry, calls, 20000);
     expect(results).toHaveLength(2);
     expect(maxRunning).toBe(2);
@@ -335,7 +294,7 @@ describe("integration: nested agent loop through createSession (§3.8)", () => {
         ],
       },
     ]);
-    const { session, registry } = createSession(makeConfig({ baseUrl }));
+    const { session, registry } = createSession({ graph: modelGraph(baseUrl) });
     const result = await runTurn(session, "delegate it", registry);
     expect(result.finished).toBe(true);
     expect(result.answer).toBe("parent done");

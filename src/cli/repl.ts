@@ -1,34 +1,36 @@
 import { createInterface, type Interface } from "node:readline";
-import type { Config } from "../types.js";
+import type { Session } from "../types.js";
 import { runTurn, type AgentCallbacks } from "../agent/loop.js";
-import { createSession } from "../agent/session.js";
+import { createSession, type SessionHandle } from "../agent/session.js";
 import type { SubagentRender } from "../agent/subagent.js";
 import { LLMError } from "../llm/errors.js";
-import { BackgroundCommandManager } from "../tools/index.js";
 import { HookManager } from "../hooks/index.js";
+import {
+  IMPLICIT_PROFILE_NAME,
+  ProfileHasNoModelError,
+  UnknownProfileError,
+  type ResourceGraph,
+} from "../profiles/index.js";
 
 /**
  * Run the interactive REPL (spec §3.6).
  *
- * - Multi-turn: history is retained across prompts.
+ * - Multi-turn: history is retained across prompts, including across a
+ *   `/profile` switch (profiles spec §3.6).
  * - Live output: streamed tokens, one line per tool call + condensed result,
  *   delimited finish answer.
  * - Ctrl-C (E15): aborts the current turn, kills the foreground command, and
  *   returns to the prompt.
  * - `exit` / `quit` end the session.
  *
- * `hooks` holds the session's already-loaded lifecycle hooks (hooks spec
- * §3.9); omitted → an empty, inert manager.
+ * `graph` is the resource graph built from `.vise/index.ts`; omitted → the
+ * built-in defaults (profiles spec §3.8).
  */
 export async function startRepl(
-  config: Config,
+  graph: ResourceGraph,
   initialTask?: string | null,
-  hooks: HookManager = new HookManager(),
 ): Promise<void> {
-  const { session, registry, manager } = createSession(config, {
-    render: makeSubagentRender(),
-    hooks,
-  });
+  const handle = createSession({ graph, render: makeSubagentRender() });
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   let closed = false;
   rl.on("close", () => {
@@ -48,59 +50,62 @@ export async function startRepl(
 
   // Run an initial task if one was passed on the command line.
   if (initialTask) {
-    await executeTurn(session, registry, manager, callbacks, initialTask);
+    await executeTurn(handle, callbacks, initialTask);
   }
 
-  const ctx: ReplContext = { session };
+  const ctx: ReplContext = { handle };
   for (;;) {
     if (closed) break;
-    const line = await prompt(rl, "harness> ");
+    const line = await prompt(rl, `${promptLabel(handle)}> `);
     if (closed) break;
     const input = line.trim();
     if (input === "") continue;
     const cmd = findCommand(input);
     if (cmd) {
+      // Commands only run between turns, so a `/profile` switch can never take
+      // effect mid-turn (profiles spec §4).
       const out = cmd.run(ctx, commandArgs(input));
       if (out !== undefined) process.stdout.write(out + "\n");
       if (cmd.exits) break;
       continue;
     }
-    await executeTurn(session, registry, manager, callbacks, input);
+    await executeTurn(handle, callbacks, input);
   }
 
   // session:end (hooks §3.1): a block is ignored, but the message is shown —
   // the session is ending, so there is no conversation left to inject it into.
-  const ended = session.hooks.dispatch("session:end", { depth: 0 });
+  const ended = handle.session.hooks.dispatch("session:end", { depth: 0 });
   if (ended.advisory) process.stdout.write(`${ended.advisory}\n`);
 
-  manager.killAll();
+  handle.manager.killAll();
   rl.close();
 }
 
 /**
  * Run a single turn with Ctrl-C handling (E15): aborts the turn and kills the
  * foreground command, then returns to the prompt.
+ *
+ * The registry and command manager are read off the handle here rather than
+ * captured, because a `/profile` switch replaces both.
  */
 async function executeTurn(
-  session: ReturnType<typeof createSession>["session"],
-  registry: ReturnType<typeof createSession>["registry"],
-  manager: BackgroundCommandManager,
+  handle: SessionHandle,
   callbacks: AgentCallbacks,
   input: string,
 ): Promise<void> {
   const ac = new AbortController();
   const onSigint = () => {
     ac.abort();
-    manager.killAll();
+    handle.manager.killAll();
     process.stdout.write("\n[interrupted]\n");
   };
   process.on("SIGINT", onSigint);
 
   try {
     const result = await runTurn(
-      session,
+      handle.session,
       input,
-      registry,
+      handle.registry,
       callbacks,
       ac.signal,
     );
@@ -134,11 +139,16 @@ function prompt(rl: Interface, label: string): Promise<string> {
   });
 }
 
-/**
- * The context a REPL command receives when it runs.
- */
+/** `vise>`, or `vise:refactor>` when a named profile is active. */
+export function promptLabel(handle: SessionHandle): string {
+  return handle.profile === IMPLICIT_PROFILE_NAME
+    ? "vise"
+    : `vise:${handle.profile}`;
+}
+
+/** The context a REPL command receives when it runs. */
 export interface ReplContext {
-  session: ReturnType<typeof createSession>["session"];
+  handle: SessionHandle;
 }
 
 /** Split the whitespace-separated arguments off a command line. */
@@ -181,12 +191,18 @@ export const REPL_COMMANDS: ReplCommand[] = [
   {
     name: "/context",
     summary: "Show context tokens used vs. the total window.",
-    run: (ctx) => contextUsageLine(ctx.session),
+    run: (ctx) => contextUsageLine(ctx.handle.session),
+  },
+  {
+    name: "/profile",
+    summary: "List profiles; `/profile <name>` switches to one.",
+    run: (ctx, args) => profileCommand(ctx.handle, args),
+    takesArgs: true,
   },
   {
     name: "/hooks",
-    summary: "List registered hooks; `/hooks off|on` disables/re-enables them.",
-    run: (ctx, args) => hooksCommand(ctx.session.hooks, args),
+    summary: "List active hooks; `/hooks off|on` disables/re-enables them.",
+    run: (ctx, args) => hooksCommand(ctx.handle, args),
     takesArgs: true,
   },
   {
@@ -229,9 +245,7 @@ export function helpText(): string {
  * Format the context-usage line for the `/context` command: prompt tokens used
  * on the most recent LLM call vs. the configured context window.
  */
-export function contextUsageLine(
-  session: ReturnType<typeof createSession>["session"],
-): string {
+export function contextUsageLine(session: Session): string {
   const used = session.lastPromptTokens;
   const total = session.config.maxContext;
   if (used === null) {
@@ -242,34 +256,83 @@ export function contextUsageLine(
 }
 
 /**
- * The `/hooks` command (hooks spec §3.8): list the registered hooks, or
- * toggle the whole system off/on for the rest of the session.
+ * The `/profile` command (profiles spec §3.9).
+ *
+ * With no argument it lists every profile, marking the active one with `*`.
+ * With a name it switches, re-resolving the system prompt, tool set, hooks,
+ * and model. An unknown name — or one whose profile has no usable model — is
+ * reported and nothing changes (spec §4).
  */
-export function hooksCommand(hooks: HookManager, args: string[] = []): string {
+export function profileCommand(
+  handle: SessionHandle,
+  args: string[] = [],
+): string {
+  const [name, ...rest] = args;
+  if (name === undefined) return profileListing(handle);
+  if (rest.length > 0) {
+    return `Usage: /profile [<name>] (profile names cannot contain spaces).`;
+  }
+  try {
+    handle.switchProfile(name);
+  } catch (err) {
+    if (
+      err instanceof UnknownProfileError ||
+      err instanceof ProfileHasNoModelError
+    ) {
+      return err.message;
+    }
+    throw err;
+  }
+  return `profile: switched to "${name}".`;
+}
+
+/** The `/profile` listing: one line per profile, active one marked `*`. */
+export function profileListing(handle: SessionHandle): string {
+  const names = handle.profiles();
+  if (names.length === 0) {
+    return "profiles: none defined (running the built-in default profile).";
+  }
+  const lines = [`profiles: ${names.length} defined`];
+  for (const name of names) {
+    lines.push(`  ${name === handle.profile ? "*" : " "} ${name}`);
+  }
+  return lines.join("\n");
+}
+
+/**
+ * The `/hooks` command (hooks spec §3.8): list the active profile's hooks, or
+ * toggle the whole system off/on for the rest of the session. The toggle is
+ * held on the session, so it survives a profile switch.
+ */
+export function hooksCommand(
+  handle: SessionHandle,
+  args: string[] = [],
+): string {
   const [arg] = args;
   if (arg === "off") {
-    hooks.setEnabled(false);
+    handle.setHooksEnabled(false);
     return "hooks: disabled for this session.";
   }
   if (arg === "on") {
-    hooks.setEnabled(true);
+    handle.setHooksEnabled(true);
     return "hooks: enabled.";
   }
   if (arg !== undefined) {
     return `Unknown argument "${arg}". Usage: /hooks [on|off]`;
   }
-  return hooksListing(hooks);
+  return hooksListing(handle.session.hooks);
 }
 
-/** The `/hooks` listing: one line per hook with its events, flag, and file. */
+/** The `/hooks` listing: one line per hook with its events, filters, and source. */
 export function hooksListing(hooks: HookManager): string {
   const registered = hooks.list();
-  if (registered.length === 0) return "hooks: none registered.";
+  if (registered.length === 0) return "hooks: none active for this profile.";
   const state = hooks.isEnabled() ? "enabled" : "disabled";
-  const lines = [`hooks: ${registered.length} registered (${state})`];
-  for (const { hook, source } of registered) {
+  const lines = [`hooks: ${registered.length} active (${state})`];
+  for (const { hook, source, tools } of registered) {
     const flag = hook.includeSubagents ? " [subagents]" : "";
-    lines.push(`  ${hook.events.join(", ")}${flag} — ${source}`);
+    const filter = tools && tools.length > 0 ? ` [tools: ${tools.join(", ")}]` : "";
+    lines.push(`  ${hook.events.join(", ")}${flag}${filter} — ${source}`);
   }
   return lines.join("\n");
 }

@@ -1,10 +1,20 @@
 import { canBlock, type Hook, type HookContext, type HookEvent } from "./types.js";
 
-/** A loaded hook plus the file it came from (shown by `/hooks`). */
+/** A loaded hook plus where it came from (shown by `/hooks`). */
 export interface RegisteredHook {
   hook: Hook;
-  /** The hook file this hook was loaded from, as written in the config. */
+  /**
+   * Where this hook came from: a hook file path, or the resource id of the
+   * hook node in the `.vise` graph.
+   */
   source: string;
+  /**
+   * Tool names this hook is restricted to, from its Hook→Tool edges
+   * (profiles spec §3.7). Omitted or empty means the hook fires for every
+   * tool. Only `tool:before` / `tool:after` are affected; the hook still
+   * fires normally for session- and turn-level events.
+   */
+  tools?: string[];
 }
 
 /**
@@ -64,7 +74,7 @@ export class HookManager {
 
   /**
    * True when a dispatch could actually reach a handler. Call sites on the hot
-   * path (per tool call) check this first so an unconfigured harness pays
+   * path (per tool call) check this first so an unconfigured session pays
    * nothing at all (hooks spec §5).
    */
   get active(): boolean {
@@ -103,9 +113,10 @@ export class HookManager {
 
     const depth = options.depth ?? 0;
     const matching = this.registered.filter(
-      ({ hook }) =>
-        hook.events.includes(event) &&
-        (depth === 0 || hook.includeSubagents === true),
+      (entry) =>
+        entry.hook.events.includes(event) &&
+        (depth === 0 || entry.hook.includeSubagents === true) &&
+        matchesToolFilter(entry, options.tool?.name),
     );
     if (matching.length === 0) return NO_OUTCOME;
 
@@ -181,6 +192,23 @@ export class HookManager {
         `value (${typeof result}); treating it as no result.`,
     );
   }
+}
+
+/**
+ * Whether a hook's Hook→Tool edges let it fire for this dispatch
+ * (profiles spec §3.7).
+ *
+ * A hook with no edges always fires. One with edges fires only for the tools
+ * it is connected to — and, for events that carry no tool at all (`turn:end`,
+ * `session:start`, …), the filter is irrelevant, so the hook fires normally.
+ */
+function matchesToolFilter(
+  entry: RegisteredHook,
+  toolName: string | undefined,
+): boolean {
+  if (entry.tools === undefined || entry.tools.length === 0) return true;
+  if (toolName === undefined) return true;
+  return entry.tools.includes(toolName);
 }
 
 /** The message of a thrown value, whatever was thrown. */

@@ -1,6 +1,6 @@
 # System Specification: Profiles & Resource Graph
 
-**Version:** 0.3.0
+**Version:** 0.1.0
 **Date:** 2026-09-04
 **Builds on:** 0.1.0
 

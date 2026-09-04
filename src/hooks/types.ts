@@ -1,9 +1,9 @@
 /**
  * User-facing hook types (hooks spec §3.2).
  *
- * A hook file is an ES module whose default export is a `Hook[]`. These types
- * are re-exported from the package root so a hook file can write
- * `import type { Hook } from "harness"`.
+ * A hook is created with `reg.createHook()` in `.vise/index.ts` and connected
+ * to the profiles it applies to. These types are re-exported from the package
+ * root so a config module can write `import type { Hook } from "vise"`.
  */
 
 /** The lifecycle points at which hooks fire (hooks spec §3.1). */

@@ -1,0 +1,312 @@
+import { BUILTIN_TOOL_NAMES, FINISH_TOOL_NAME } from "../tools/names.js";
+import { HOOK_EVENTS, isHookEvent } from "../hooks/types.js";
+import { RUNTIME_KEYS } from "../config/defaults.js";
+import type { ResourceGraph } from "./registry.js";
+import { idString, type Resource, type ResourceKind } from "./types.js";
+
+/**
+ * A `.vise/index.ts` that cannot be used. Always fatal: Vise exits rather than
+ * running under half a configuration (profiles spec §3.10, §4).
+ */
+export class ViseConfigError extends Error {}
+
+/**
+ * The connection types the graph allows (profiles spec §3.4). Anything else —
+ * Tool→Profile, Model→Hook, Profile→Profile — is a fatal config error.
+ */
+const VALID_EDGES: ReadonlySet<string> = new Set([
+  "profile->hook",
+  "profile->tool",
+  "profile->model",
+  "hook->tool",
+]);
+
+/**
+ * Validate a finished graph (profiles spec §3.11).
+ *
+ * Every problem found is reported at once, so a user fixing their config sees
+ * the whole list rather than one error per run.
+ *
+ * @throws ViseConfigError listing every problem.
+ */
+export function validateGraph(graph: ResourceGraph): ResourceGraph {
+  const problems: string[] = [];
+
+  validateResources(graph, problems);
+  validateConnections(graph, problems);
+  validateProfileToolSets(graph, problems);
+  validateSubagentPolicies(graph, problems);
+  validateRuntime(graph, problems);
+
+  if (problems.length > 0) {
+    throw new ViseConfigError(
+      `Invalid .vise configuration:\n  - ${problems.join("\n  - ")}`,
+    );
+  }
+  return graph;
+}
+
+/** Profile names and tool names must each be unique and well-formed. */
+function validateResources(graph: ResourceGraph, problems: string[]): void {
+  const profileNames = new Set<string>();
+  const toolNames = new Set<string>(BUILTIN_TOOL_NAMES);
+
+  for (const resource of graph.resources.values()) {
+    switch (resource.kind) {
+      case "profile": {
+        if (resource.implicit) break;
+        const { name } = resource.def;
+        if (typeof name !== "string" || name.trim() === "") {
+          problems.push(
+            `Profile ${idString(resource.id)} must have a non-empty name.`,
+          );
+          break;
+        }
+        if (profileNames.has(name)) {
+          problems.push(`Duplicate profile name "${name}".`);
+        }
+        profileNames.add(name);
+        if (typeof resource.def.systemPrompt !== "string") {
+          problems.push(
+            `Profile "${name}" must have a string systemPrompt ` +
+              `(use "" for the built-in default).`,
+          );
+        }
+        break;
+      }
+      case "tool": {
+        if (resource.def === null) break; // built-in placeholder
+        const { name } = resource;
+        if (typeof name !== "string" || name === "") {
+          problems.push(
+            `Tool ${idString(resource.id)} must have a non-empty name.`,
+          );
+          break;
+        }
+        if (toolNames.has(name)) {
+          problems.push(
+            `Duplicate tool name "${name}" (a built-in or another custom ` +
+              `tool already uses it).`,
+          );
+        }
+        toolNames.add(name);
+        if (typeof resource.def.handler !== "function") {
+          problems.push(`Tool "${name}" must have a handler function.`);
+        }
+        break;
+      }
+      case "hook": {
+        const { events, handler } = resource.def;
+        if (!Array.isArray(events) || events.length === 0) {
+          problems.push(
+            `Hook ${idString(resource.id)} must have a non-empty "events" ` +
+              `array. Valid events: ${HOOK_EVENTS.join(", ")}.`,
+          );
+        } else {
+          for (const event of events) {
+            if (!isHookEvent(event)) {
+              problems.push(
+                `Hook ${idString(resource.id)} has an invalid event ` +
+                  `${JSON.stringify(event)}. Valid events: ` +
+                  `${HOOK_EVENTS.join(", ")}.`,
+              );
+            }
+          }
+        }
+        if (typeof handler !== "function") {
+          problems.push(
+            `Hook ${idString(resource.id)} must have a handler function.`,
+          );
+        }
+        break;
+      }
+      case "model": {
+        if (resource.builtin) break;
+        const { name, baseUrl } = resource.def;
+        // An empty name is legal and means "whatever this server has loaded":
+        // startup fills it in from /v1/models (spec §3.10).
+        if (typeof name !== "string") {
+          problems.push(
+            `Model ${idString(resource.id)} must have a string name (use "" ` +
+              `to auto-discover it from the server).`,
+          );
+        }
+        if (typeof baseUrl !== "string" || baseUrl === "") {
+          problems.push(
+            `Model ${idString(resource.id)} must have a non-empty baseUrl.`,
+          );
+        }
+        break;
+      }
+    }
+  }
+}
+
+/** Both endpoints must exist, and the kind pair must be one of the four. */
+function validateConnections(graph: ResourceGraph, problems: string[]): void {
+  for (const edge of graph.connections) {
+    const from = graph.resources.get(edge.from);
+    const to = graph.resources.get(edge.to);
+    if (from === undefined || to === undefined) {
+      problems.push(
+        `Connection ${idString(edge.from)} → ${idString(edge.to)} references ` +
+          `a resource that does not exist.`,
+      );
+      continue;
+    }
+    if (!VALID_EDGES.has(`${from.kind}->${to.kind}`)) {
+      problems.push(
+        `Invalid connection ${describe(from)} → ${describe(to)}. Valid ` +
+          `connections are Profile→Hook, Profile→Tool, Profile→Model, and ` +
+          `Hook→Tool.`,
+      );
+    }
+  }
+}
+
+/**
+ * A profile that enumerates its tools must include `finish`.
+ *
+ * The agent loop ends a turn when the model calls `finish`; a profile that
+ * advertises a tool set without it could only ever end a turn by running out
+ * of iterations, so the config is rejected rather than left to deadlock at
+ * runtime.
+ */
+function validateProfileToolSets(
+  graph: ResourceGraph,
+  problems: string[],
+): void {
+  for (const resource of graph.resources.values()) {
+    if (resource.kind !== "profile") continue;
+    const tools: string[] = [];
+    for (const edge of graph.edgesFrom.get(resource.id) ?? []) {
+      const target = graph.resources.get(edge.to);
+      if (target?.kind === "tool") tools.push(target.name);
+    }
+    if (tools.length > 0 && !tools.includes(FINISH_TOOL_NAME)) {
+      problems.push(
+        `Profile "${resource.def.name}" enumerates its tools but omits ` +
+          `"${FINISH_TOOL_NAME}", which the agent needs to end a turn. Add ` +
+          `reg.createConnection(profile, reg.builtins.tools.finish).`,
+      );
+    }
+  }
+}
+
+/** `subagent.profiles` must name profiles that exist; `maxDepth` must be sane. */
+function validateSubagentPolicies(
+  graph: ResourceGraph,
+  problems: string[],
+): void {
+  for (const resource of graph.resources.values()) {
+    if (resource.kind !== "profile") continue;
+    const policy = resource.def.subagent;
+    if (policy === undefined) continue;
+    const where = resource.implicit
+      ? "the default profile"
+      : `profile "${resource.def.name}"`;
+
+    if (policy.profiles !== undefined) {
+      if (!Array.isArray(policy.profiles)) {
+        problems.push(`subagent.profiles on ${where} must be an array.`);
+      } else {
+        for (const name of policy.profiles) {
+          if (!graph.profiles.has(name)) {
+            problems.push(
+              `subagent.profiles on ${where} names an unknown profile ` +
+                `"${name}".`,
+            );
+          }
+        }
+      }
+    }
+
+    if (
+      policy.maxDepth !== undefined &&
+      (typeof policy.maxDepth !== "number" ||
+        !Number.isInteger(policy.maxDepth) ||
+        policy.maxDepth < 0)
+    ) {
+      problems.push(
+        `subagent.maxDepth on ${where} must be a non-negative integer.`,
+      );
+    }
+  }
+}
+
+/** Range-check the values a config passed to `reg.setRuntime()`. */
+function validateRuntime(graph: ResourceGraph, problems: string[]): void {
+  const r = graph.runtime;
+  const positive = [
+    "commandTimeoutMs",
+    "maxToolOutputChars",
+    "subagentMaxIterations",
+  ] as const;
+  for (const key of positive) {
+    const value = r[key];
+    if (typeof value !== "number" || Number.isNaN(value) || value <= 0) {
+      problems.push(`setRuntime: ${key} must be a positive number.`);
+    }
+  }
+  if (
+    typeof r.compactThreshold !== "number" ||
+    r.compactThreshold <= 0 ||
+    r.compactThreshold > 1
+  ) {
+    problems.push("setRuntime: compactThreshold must be in (0, 1].");
+  }
+  if (typeof r.compactKeepMessages !== "number" || r.compactKeepMessages < 0) {
+    problems.push("setRuntime: compactKeepMessages must be >= 0.");
+  }
+  if (typeof r.maxSubagentDepth !== "number" || r.maxSubagentDepth < 0) {
+    problems.push("setRuntime: maxSubagentDepth must be >= 0.");
+  }
+  if (
+    r.maxIterations !== null &&
+    (typeof r.maxIterations !== "number" || r.maxIterations < 1)
+  ) {
+    problems.push(
+      "setRuntime: maxIterations must be a positive integer or null.",
+    );
+  }
+  if (typeof r.parallelToolCalls !== "boolean") {
+    problems.push("setRuntime: parallelToolCalls must be a boolean.");
+  }
+  if (typeof r.dynamicTools !== "boolean") {
+    problems.push("setRuntime: dynamicTools must be a boolean.");
+  }
+  if (typeof r.shell !== "string") {
+    problems.push("setRuntime: shell must be a string.");
+  }
+  for (const key of Object.keys(r)) {
+    if (!RUNTIME_KEYS.includes(key as never)) {
+      problems.push(
+        `setRuntime: unknown setting "${key}". Valid settings: ` +
+          `${RUNTIME_KEYS.join(", ")}.`,
+      );
+    }
+  }
+  if (graph.switchMode !== "replace" && graph.switchMode !== "append") {
+    problems.push(
+      `setProfileSwitchMode: must be "replace" or "append" (got ` +
+        `${JSON.stringify(graph.switchMode)}).`,
+    );
+  }
+}
+
+/** A short label for a resource, used in connection error messages. */
+function describe(resource: Resource): string {
+  const label: Record<ResourceKind, string> = {
+    profile: "Profile",
+    hook: "Hook",
+    tool: "Tool",
+    model: "Model",
+  };
+  const name =
+    resource.kind === "tool"
+      ? resource.name
+      : resource.kind === "profile" || resource.kind === "model"
+        ? resource.def.name
+        : "";
+  return `${label[resource.kind]} "${name || idString(resource.id)}"`;
+}

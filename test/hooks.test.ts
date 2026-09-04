@@ -1,12 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
-  createHookManager,
-  HookLoadError,
   HookManager,
-  loadHookFile,
   type Hook,
   type HookContext,
 } from "../src/hooks/index.js";
@@ -18,17 +15,16 @@ import {
   findCommand,
   helpText,
   hooksCommand,
+  hooksListing,
   REPL_COMMANDS,
 } from "../src/cli/repl.js";
-import { DEFAULT_CONFIG } from "../src/config/defaults.js";
 import {
-  resolveConfig,
-  validateConfig,
-  ConfigError,
-  parseCliArgs,
-} from "../src/config/index.js";
-import type { Config, LLMResponse } from "../src/types.js";
+  ViseConfigError,
+  type RuntimeSettings,
+} from "../src/profiles/index.js";
+import type { LLMResponse } from "../src/types.js";
 import type { LLMClient } from "../src/llm/client.js";
+import { graphFrom, modelGraph, profileGraph } from "./helpers.js";
 
 /** Register hooks inline (no file), all attributed to `source`. */
 function manager(
@@ -39,31 +35,6 @@ function manager(
     hooks.map((hook) => ({ hook, source: "inline.ts" })),
     { log: options.log ?? (() => {}), cwd: options.cwd },
   );
-}
-
-/** A temp directory holding hook files, cleaned up by the caller. */
-function makeHookDir(files: Record<string, string>): {
-  dir: string;
-  cleanup: () => void;
-} {
-  const dir = mkdtempSync(path.join(tmpdir(), "harness-hooks-"));
-  for (const [name, contents] of Object.entries(files)) {
-    writeFileSync(path.join(dir, name), contents, "utf8");
-  }
-  return { dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
-}
-
-/**
- * Await a promise that must reject and return the error, so a test can assert
- * on both its type and its message.
- */
-async function rejection(promise: Promise<unknown>): Promise<Error> {
-  try {
-    await promise;
-  } catch (err) {
-    return err as Error;
-  }
-  throw new Error("expected the promise to reject, but it resolved");
 }
 
 /** A scripted LLM client: returns responses in order, repeating the last. */
@@ -94,135 +65,80 @@ const call = (
   usage: null,
 });
 
-function makeConfig(overrides: Partial<Config> = {}): Config {
-  return { ...DEFAULT_CONFIG, model: "test-model", ...overrides };
+/**
+ * A session whose default profile carries `hooks`, exactly as a `.vise` config
+ * connecting Profile→Hook edges would produce.
+ */
+function hookSession(hooks: Hook[], runtime: Partial<RuntimeSettings> = {}) {
+  return createSession({
+    graph: modelGraph("http://localhost:8080", runtime, (reg) => {
+      for (const hook of hooks) {
+        reg.createConnection(reg.builtins.defaultProfile, reg.createHook(hook));
+      }
+    }),
+  });
 }
 
-describe("hook loading (hooks §3.3, AC 8)", () => {
-  test("loads a file's default export in array order", async () => {
-    const { dir, cleanup } = makeHookDir({
-      "hooks.ts": `export default [
-        { events: ["turn:end"], handler: () => undefined },
-        { events: ["tool:after", "tool:before"], handler: () => undefined, includeSubagents: true },
-      ];`,
-    });
-    const loaded = await loadHookFile("hooks.ts", dir);
-    expect(loaded).toHaveLength(2);
-    expect(loaded[0].hook.events).toEqual(["turn:end"]);
-    expect(loaded[0].source).toBe("hooks.ts");
-    expect(loaded[1].hook.includeSubagents).toBe(true);
-    cleanup();
+describe("hook resources in the graph (profiles §3.3, §3.11)", () => {
+  test("hooks reach a session through Profile→Hook edges, in creation order", () => {
+    const { session } = hookSession([
+      { events: ["turn:end"], handler: () => "a" },
+      { events: ["turn:end"], handler: () => "b" },
+    ]);
+    expect(session.hooks.size).toBe(2);
+    expect(session.hooks.dispatch("turn:end").block).toBe("a; b");
   });
 
-  test("an absolute path is loaded as given", async () => {
-    const { dir, cleanup } = makeHookDir({
-      "abs.ts": `export default [{ events: ["turn:start"], handler: () => undefined }];`,
-    });
-    const abs = path.join(dir, "abs.ts");
-    const loaded = await loadHookFile(abs, "/definitely/not/here");
-    expect(loaded).toHaveLength(1);
-    cleanup();
+  test("a profile with no hook edges has no hooks (§3.5 rule 3, AC 7)", () => {
+    const { session } = createSession({ graph: modelGraph() });
+    expect(session.hooks.size).toBe(0);
+    expect(session.hooks.active).toBe(false);
   });
 
-  test("a missing file is fatal and names the file", async () => {
-    const err = await rejection(loadHookFile("nope.ts", tmpdir()));
-    expect(err).toBeInstanceOf(HookLoadError);
-    expect(err.message).toMatch(/Hook file not found: nope\.ts/);
+  test("the same handler registered twice registers twice (no dedup)", () => {
+    const h = () => "boom";
+    const { session } = hookSession([
+      { events: ["turn:end"], handler: h },
+      { events: ["turn:end"], handler: h },
+    ]);
+    expect(session.hooks.size).toBe(2);
+    expect(session.hooks.dispatch("turn:end").block).toBe("boom; boom");
   });
 
-  test("a syntax error is fatal and names the file", async () => {
-    const { dir, cleanup } = makeHookDir({ "bad.ts": `export default [ {{{` });
-    const err = await rejection(loadHookFile("bad.ts", dir));
-    expect(err).toBeInstanceOf(HookLoadError);
-    expect(err.message).toMatch(/Failed to load hook file bad\.ts/);
-    cleanup();
+  test("an invalid event is a fatal config error naming the valid ones", () => {
+    let err: unknown;
+    try {
+      graphFrom((reg) => {
+        reg.createHook({
+          events: ["nope" as unknown as Hook["events"][number]],
+          handler: () => undefined,
+        });
+      });
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(ViseConfigError);
+    expect((err as Error).message).toContain("invalid event");
+    expect((err as Error).message).toContain("turn:end");
   });
 
-  test("a missing default export is fatal", async () => {
-    const { dir, cleanup } = makeHookDir({ "none.ts": `export const x = 1;` });
-    const err = await rejection(loadHookFile("none.ts", dir));
-    expect(err.message).toMatch(/Hook file none\.ts has no default export/);
-    cleanup();
+  test("a hook without a handler is a fatal config error", () => {
+    expect(() =>
+      graphFrom((reg) => {
+        reg.createHook({
+          events: ["turn:end"],
+          handler: undefined as unknown as Hook["handler"],
+        });
+      }),
+    ).toThrow(ViseConfigError);
   });
 
-  test("a non-array default export is fatal", async () => {
-    const { dir, cleanup } = makeHookDir({
-      "obj.ts": `export default { events: ["turn:end"], handler: () => undefined };`,
-    });
-    const err = await rejection(loadHookFile("obj.ts", dir));
-    expect(err.message).toMatch(
-      /must default-export an array of hooks \(got an object\)/,
-    );
-    cleanup();
-  });
-
-  test("a hook without events is fatal and identifies the entry", async () => {
-    const { dir, cleanup } = makeHookDir({
-      "noev.ts": `export default [{ handler: () => undefined }];`,
-    });
-    const err = await rejection(loadHookFile("noev.ts", dir));
-    expect(err.message).toMatch(
-      /Hook #0 in noev\.ts must have a non-empty "events" array/,
-    );
-    cleanup();
-  });
-
-  test("a hook without a handler is fatal", async () => {
-    const { dir, cleanup } = makeHookDir({
-      "nohandler.ts": `export default [{ events: ["turn:end"] }];`,
-    });
-    const err = await rejection(loadHookFile("nohandler.ts", dir));
-    expect(err.message).toMatch(
-      /Hook #0 in nohandler\.ts must have a "handler" function/,
-    );
-    cleanup();
-  });
-
-  test("an invalid event literal is fatal and lists the bad value", async () => {
-    const { dir, cleanup } = makeHookDir({
-      "badev.ts": `export default [{ events: ["turn:middle"], handler: () => undefined }];`,
-    });
-    const err = await rejection(loadHookFile("badev.ts", dir));
-    expect(err.message).toMatch(/invalid event "turn:middle"/);
-    cleanup();
-  });
-
-  test("a non-boolean includeSubagents is fatal", async () => {
-    const { dir, cleanup } = makeHookDir({
-      "flag.ts": `export default [{ events: ["turn:end"], handler: () => undefined, includeSubagents: "yes" }];`,
-    });
-    const err = await rejection(loadHookFile("flag.ts", dir));
-    expect(err.message).toMatch(/non-boolean "includeSubagents"/);
-    cleanup();
-  });
-
-  test("files load in config order, hooks in array order", async () => {
-    const { dir, cleanup } = makeHookDir({
-      "a.ts": `export default [{ events: ["turn:end"], handler: () => "a" }];`,
-      "b.ts": `export default [{ events: ["turn:end"], handler: () => "b" }];`,
-    });
-    const m = await createHookManager(["b.ts", "a.ts"], { cwd: dir });
-    expect(m.list().map((r) => r.source)).toEqual(["b.ts", "a.ts"]);
-    expect(m.dispatch("turn:end").block).toBe("b; a");
-    cleanup();
-  });
-
-  test("no hooks configured -> an inert manager, no file loading (AC 7)", async () => {
-    const empty = await createHookManager(undefined);
-    expect(empty.size).toBe(0);
-    expect(empty.active).toBe(false);
-    // A path that does not exist is never touched when the list is empty.
-    expect((await createHookManager([])).active).toBe(false);
-  });
-
-  test("the same handler in two files registers twice (no dedup)", async () => {
-    const { dir, cleanup } = makeHookDir({
-      "shared.ts": `const h = () => "boom"; export default [{ events: ["turn:end"], handler: h }, { events: ["turn:end"], handler: h }];`,
-    });
-    const m = await createHookManager(["shared.ts"], { cwd: dir });
-    expect(m.size).toBe(2);
-    expect(m.dispatch("turn:end").block).toBe("boom; boom");
-    cleanup();
+  test("a hook with no events is a fatal config error", () => {
+    expect(() =>
+      graphFrom((reg) => {
+        reg.createHook({ events: [], handler: () => undefined });
+      }),
+    ).toThrow(ViseConfigError);
   });
 });
 
@@ -393,7 +309,7 @@ describe("hook dispatch and result application (hooks §3.4, §3.5)", () => {
 describe("hooks in the agent loop (hooks §3.5, AC 1, 2, 3)", () => {
   test("a blocking turn:end rejects finish and the agent retries (AC 1)", async () => {
     let attempts = 0;
-    const hooks = manager([
+    const { session, registry } = hookSession([
       {
         events: ["turn:end"],
         handler: () => {
@@ -402,7 +318,6 @@ describe("hooks in the agent loop (hooks §3.5, AC 1, 2, 3)", () => {
         },
       },
     ]);
-    const { session, registry } = createSession(makeConfig(), { hooks });
     const result = await runTurn(
       session,
       "do it",
@@ -423,10 +338,10 @@ describe("hooks in the agent loop (hooks §3.5, AC 1, 2, 3)", () => {
   });
 
   test("a repeatedly blocking turn:end still honours maxIterations (§4)", async () => {
-    const hooks = manager([{ events: ["turn:end"], handler: () => "never" }]);
-    const { session, registry } = createSession(makeConfig({ maxIterations: 3 }), {
-      hooks,
-    });
+    const { session, registry } = hookSession(
+      [{ events: ["turn:end"], handler: () => "never" }],
+      { maxIterations: 3 },
+    );
     const result = await runTurn(
       session,
       "do it",
@@ -440,9 +355,9 @@ describe("hooks in the agent loop (hooks §3.5, AC 1, 2, 3)", () => {
   });
 
   test("a blocking tool:before prevents execution (AC 2)", async () => {
-    const dir = mkdtempSync(path.join(tmpdir(), "harness-hookblock-"));
+    const dir = mkdtempSync(path.join(tmpdir(), "vise-hookblock-"));
     const target = path.join(dir, "bundle.min.js");
-    const hooks = manager([
+    const { session, registry } = hookSession([
       {
         events: ["tool:before"],
         handler: (ctx) =>
@@ -452,7 +367,6 @@ describe("hooks in the agent loop (hooks §3.5, AC 1, 2, 3)", () => {
             : undefined,
       },
     ]);
-    const { session, registry } = createSession(makeConfig(), { hooks });
     await runTurn(
       session,
       "write it",
@@ -474,7 +388,7 @@ describe("hooks in the agent loop (hooks §3.5, AC 1, 2, 3)", () => {
   });
 
   test("tool:after advisory follows the tool result message (AC 3)", async () => {
-    const hooks = manager([
+    const { session, registry } = hookSession([
       {
         events: ["tool:after"],
         handler: (ctx) => ({
@@ -483,7 +397,6 @@ describe("hooks in the agent loop (hooks §3.5, AC 1, 2, 3)", () => {
         }),
       },
     ]);
-    const { session, registry } = createSession(makeConfig(), { hooks });
     await runTurn(
       session,
       "look",
@@ -504,10 +417,9 @@ describe("hooks in the agent loop (hooks §3.5, AC 1, 2, 3)", () => {
 
   test("tool:after sees the tool's result string", async () => {
     const results: (string | undefined)[] = [];
-    const hooks = manager([
+    const { session, registry } = hookSession([
       { events: ["tool:after"], handler: (ctx) => { results.push(ctx.tool?.result); } },
     ]);
-    const { session, registry } = createSession(makeConfig(), { hooks });
     await runTurn(
       session,
       "look",
@@ -521,10 +433,9 @@ describe("hooks in the agent loop (hooks §3.5, AC 1, 2, 3)", () => {
   });
 
   test("turn:start advisory is appended before the first LLM call", async () => {
-    const hooks = manager([
+    const { session, registry } = hookSession([
       { events: ["turn:start"], handler: () => ({ message: "branch: main" }) },
     ]);
-    const { session, registry } = createSession(makeConfig(), { hooks });
     let firstCallMessages: string[] = [];
     const client: LLMClient = {
       async chat(opts) {
@@ -539,21 +450,39 @@ describe("hooks in the agent loop (hooks §3.5, AC 1, 2, 3)", () => {
   });
 
   test("session:start advisory joins the initial messages", () => {
-    const hooks = manager([
+    const { session } = hookSession([
       { events: ["session:start"], handler: () => ({ message: "hooks armed" }) },
     ]);
-    const { session } = createSession(makeConfig(), { hooks });
     expect(session.messages.map((m) => m.content)).toContain("hooks armed");
   });
 
   test("on:compaction fires before the recap call", async () => {
     const fired: string[] = [];
-    const hooks = manager([
-      { events: ["on:compaction"], handler: (c) => { fired.push(c.event); } },
-    ]);
-    // A tiny window makes the very first prompt-token count exceed the threshold.
-    const cfg = makeConfig({ maxContext: 10, compactThreshold: 0.5 });
-    const { session, registry } = createSession(cfg, { hooks });
+    // A tiny window makes the very first prompt-token count exceed the
+    // threshold. maxContext comes from the model, not setRuntime.
+    const { session, registry } = createSession({
+      graph: graphFrom((reg) => {
+        reg.setRuntime({ compactThreshold: 0.5 });
+        reg.createConnection(
+          reg.builtins.defaultProfile,
+          reg.createModel({
+            name: "test-model",
+            baseUrl: "http://localhost:8080",
+            apiKey: "",
+            maxContext: 10,
+          }),
+        );
+        reg.createConnection(
+          reg.builtins.defaultProfile,
+          reg.createHook({
+            events: ["on:compaction"],
+            handler: (c) => {
+              fired.push(c.event);
+            },
+          }),
+        );
+      }),
+    });
     const client = stubClient([
       {
         content: "",
@@ -568,17 +497,37 @@ describe("hooks in the agent loop (hooks §3.5, AC 1, 2, 3)", () => {
 
   test("hooks with includeSubagents fire inside a subagent (AC 6)", async () => {
     const depths: number[] = [];
-    const hooks = manager([
-      { events: ["turn:start"], handler: (c) => { depths.push(c.depth); } },
-      { events: ["turn:start"], handler: (c) => { depths.push(100 + c.depth); }, includeSubagents: true },
-    ]);
-    const runner = makeSubagentRunner(
-      makeConfig(),
-      stubClient([finish("sub done")]),
-      undefined,
-      hooks,
-    );
-    const out = await runner({ task: "t", maxIterations: 5, depth: 1 });
+    const graph = modelGraph("http://localhost:8080", {}, (reg) => {
+      reg.createConnection(
+        reg.builtins.defaultProfile,
+        reg.createHook({
+          events: ["turn:start"],
+          handler: (c) => {
+            depths.push(c.depth);
+          },
+        }),
+      );
+      reg.createConnection(
+        reg.builtins.defaultProfile,
+        reg.createHook({
+          events: ["turn:start"],
+          handler: (c) => {
+            depths.push(100 + c.depth);
+          },
+          includeSubagents: true,
+        }),
+      );
+    });
+    const runner = makeSubagentRunner({
+      graph,
+      client: stubClient([finish("sub done")]),
+    });
+    const out = await runner({
+      task: "t",
+      maxIterations: 5,
+      depth: 1,
+      profile: "",
+    });
     expect(out).toBe("sub done");
     // Only the includeSubagents hook fired, and it saw depth 1.
     expect(depths).toEqual([101]);
@@ -586,26 +535,28 @@ describe("hooks in the agent loop (hooks §3.5, AC 1, 2, 3)", () => {
 
   test("a subagent's blocked finish does not affect the parent (§3.7)", async () => {
     let blocks = 0;
-    const hooks = manager([
-      {
-        events: ["turn:end"],
-        handler: (c) => (c.depth > 0 && blocks++ === 0 ? "not yet" : undefined),
-        includeSubagents: true,
-      },
-    ]);
-    const runner = makeSubagentRunner(
-      makeConfig(),
-      stubClient([finish("try one", "s1"), finish("try two", "s2")]),
-      undefined,
-      hooks,
-    );
-    expect(await runner({ task: "t", maxIterations: 5, depth: 1 })).toBe(
-      "try two",
-    );
+    const graph = modelGraph("http://localhost:8080", {}, (reg) => {
+      reg.createConnection(
+        reg.builtins.defaultProfile,
+        reg.createHook({
+          events: ["turn:end"],
+          handler: (c) =>
+            c.depth > 0 && blocks++ === 0 ? "not yet" : undefined,
+          includeSubagents: true,
+        }),
+      );
+    });
+    const runner = makeSubagentRunner({
+      graph,
+      client: stubClient([finish("try one", "s1"), finish("try two", "s2")]),
+    });
+    expect(
+      await runner({ task: "t", maxIterations: 5, depth: 1, profile: "" }),
+    ).toBe("try two");
   });
 
   test("with no hooks the loop behaves exactly as before (AC 7)", async () => {
-    const { session, registry } = createSession(makeConfig());
+    const { session, registry } = createSession({ graph: modelGraph() });
     expect(session.hooks.active).toBe(false);
     const result = await runTurn(
       session,
@@ -635,101 +586,66 @@ describe("/hooks REPL command (hooks §3.8, AC 5)", () => {
     expect(findCommand("/context now")).toBeUndefined();
   });
 
-  test("/hooks lists events, subagent flag, and source file", () => {
+  test("/hooks lists events, subagent flag, tool filter, and source", () => {
     const m = new HookManager(
       [
         { hook: { events: ["turn:end"], handler: () => undefined }, source: "gate.ts" },
         {
           hook: { events: ["tool:after", "tool:before"], handler: () => undefined, includeSubagents: true },
           source: "lint.ts",
+          tools: ["write_file"],
         },
       ],
       { log: () => {} },
     );
-    const out = hooksCommand(m);
-    expect(out).toContain("2 registered (enabled)");
+    const out = hooksListing(m);
+    expect(out).toContain("2 active (enabled)");
     expect(out).toContain("turn:end");
     expect(out).toContain("gate.ts");
-    expect(out).toContain("tool:after, tool:before [subagents] — lint.ts");
+    expect(out).toContain(
+      "tool:after, tool:before [subagents] [tools: write_file] — lint.ts",
+    );
   });
 
-  test("/hooks reports an empty registry", () => {
-    expect(hooksCommand(new HookManager())).toBe("hooks: none registered.");
+  test("/hooks reports a profile with no hooks", () => {
+    const handle = createSession({ graph: modelGraph() });
+    expect(hooksCommand(handle)).toBe("hooks: none active for this profile.");
   });
 
   test("/hooks off then /hooks on toggles dispatch", () => {
-    const m = manager([{ events: ["turn:end"], handler: () => "blocked" }]);
-    expect(hooksCommand(m, ["off"])).toContain("disabled");
-    expect(m.dispatch("turn:end").block).toBeNull();
-    expect(hooksCommand(m, ["on"])).toContain("enabled");
-    expect(m.dispatch("turn:end").block).toBe("blocked");
+    const handle = hookSession([
+      { events: ["turn:end"], handler: () => "blocked" },
+    ]);
+    expect(hooksCommand(handle, ["off"])).toContain("disabled");
+    expect(handle.session.hooks.dispatch("turn:end").block).toBeNull();
+    expect(hooksCommand(handle, ["on"])).toContain("enabled");
+    expect(handle.session.hooks.dispatch("turn:end").block).toBe("blocked");
     // The listing reflects the disabled state.
-    m.setEnabled(false);
-    expect(hooksCommand(m)).toContain("(disabled)");
+    hooksCommand(handle, ["off"]);
+    expect(hooksCommand(handle)).toContain("(disabled)");
+  });
+
+  test("/hooks off survives a profile switch (§3.6)", () => {
+    const graph = profileGraph((reg, profile) => {
+      const hook = reg.createHook({
+        events: ["turn:end"],
+        handler: () => "blocked",
+      });
+      for (const name of ["default", "other"]) {
+        reg.createConnection(profile(name), hook);
+      }
+    });
+    const handle = createSession({ graph });
+    hooksCommand(handle, ["off"]);
+    handle.switchProfile("other");
+    expect(handle.session.hooks.isEnabled()).toBe(false);
+    expect(handle.session.hooks.dispatch("turn:end").block).toBeNull();
   });
 
   test("/hooks rejects an unknown argument with usage", () => {
-    expect(hooksCommand(new HookManager(), ["maybe"])).toContain(
+    const handle = createSession({ graph: modelGraph() });
+    expect(hooksCommand(handle, ["maybe"])).toContain(
       "Usage: /hooks [on|off]",
     );
-  });
-});
-
-describe("hooks configuration (hooks §3.9, AC 12)", () => {
-  test("defaults to an empty list", () => {
-    const cfg = resolveConfig({}, "./does-not-exist.json", {
-      HARNESS_MODEL: "m",
-    });
-    expect(cfg.hooks).toEqual([]);
-  });
-
-  test("the env var is split on commas and trimmed", () => {
-    const cfg = resolveConfig({}, "./does-not-exist.json", {
-      HARNESS_MODEL: "m",
-      HARNESS_HOOKS: "a.ts, b.ts ,",
-    });
-    expect(cfg.hooks).toEqual(["a.ts", "b.ts"]);
-  });
-
-  test("--hooks is repeatable and overrides the env var", () => {
-    const { flags } = parseCliArgs(["--hooks", "x.ts", "--hooks", "y.ts"]);
-    expect(flags.hooks).toEqual(["x.ts", "y.ts"]);
-    const cfg = resolveConfig(flags, "./does-not-exist.json", {
-      HARNESS_MODEL: "m",
-      HARNESS_HOOKS: "env.ts",
-    });
-    expect(cfg.hooks).toEqual(["x.ts", "y.ts"]);
-  });
-
-  test("a non-array or empty-string entry is rejected", () => {
-    expect(() =>
-      validateConfig({ ...DEFAULT_CONFIG, model: "m", hooks: "a.ts" as unknown as string[] }),
-    ).toThrow(ConfigError);
-    expect(() =>
-      validateConfig({ ...DEFAULT_CONFIG, model: "m", hooks: [""] }),
-    ).toThrow(ConfigError);
-  });
-
-  test("a malformed hook file is a fatal startup error (AC 8)", async () => {
-    const { dir, cleanup } = makeHookDir({
-      "broken.ts": `export default [{ events: ["nope"], handler: () => undefined }];`,
-    });
-    const env = { ...process.env };
-    env.HARNESS_MODEL = "test-model";
-    env.HARNESS_BASE_URL = "http://127.0.0.1:1";
-    env.HARNESS_HOOKS = path.join(dir, "broken.ts");
-    const proc = Bun.spawn(["bun", "run", "src/index.ts"], {
-      cwd: process.cwd(),
-      env,
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    const exitCode = await proc.exited;
-    const stderr = await new Response(proc.stderr).text();
-    expect(exitCode).toBe(1);
-    expect(stderr).toContain("Hook error:");
-    expect(stderr).toContain("invalid event");
-    expect(stderr).toContain("broken.ts");
-    cleanup();
   });
 });

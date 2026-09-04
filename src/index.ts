@@ -1,102 +1,117 @@
 #!/usr/bin/env node
-import { parseCliArgs, resolveConfig, ConfigError } from "./config/index.js";
-import { discoverModel } from "./llm/client.js";
+import { CliError, helpText, parseCliArgs } from "./cli/args.js";
 import { startRepl } from "./cli/repl.js";
-import { createHookManager, HookLoadError } from "./hooks/index.js";
+import { discoverModel } from "./llm/client.js";
+import {
+  defaultProfileName,
+  loadViseConfig,
+  resolveProfile,
+  ViseConfigError,
+  withDiscoveredModel,
+  type ResourceGraph,
+} from "./profiles/index.js";
 
 /**
- * Harness entry point (spec §3.6).
+ * Vise entry point (profiles spec §3.10).
  *
- * Parses CLI args, resolves + validates config, auto-discovers the model if
- * none was configured, loads the configured hook files, then starts the REPL.
- * Config errors and hook-loading errors produce clear, actionable messages and
- * a non-zero exit code (hooks spec §3.3).
+ * Parses the command line, loads `./.vise/index.ts` into a resource graph,
+ * auto-discovers a model when the default model has none, then starts the
+ * REPL under the graph's default profile. A bad config is fatal, with a
+ * message naming the problem and a non-zero exit code (§4).
  */
 async function main(): Promise<void> {
-  const { flags, positionals } = parseCliArgs(process.argv.slice(2));
-
-  if (flags.help) {
-    printHelp();
-    return;
-  }
-
-  // A single task may be passed positionally; it is run as the first turn.
-  const initialTask = positionals.join(" ").trim() || null;
-
-  let config;
+  let args;
   try {
-    config = resolveConfig(flags, flags.config);
+    args = parseCliArgs(process.argv.slice(2));
   } catch (err) {
-    if (err instanceof ConfigError) {
-      console.error(`Configuration error: ${err.message}`);
-      process.exitCode = 1;
-      return;
-    }
+    if (err instanceof CliError) return fail(err.message);
     throw err;
   }
 
-  // Auto-discover the model from the running server when none was configured
-  // (spec §6.1: model is optional when a server is already running).
-  if (config.model === null) {
-    config.model = await discoverModel(config.baseUrl, config.apiKey);
+  if (args.help) {
+    console.log(helpText());
+    return;
   }
-  if (config.model === null) {
-    console.error(
+
+  let graph: ResourceGraph;
+  try {
+    graph = await loadViseConfig();
+  } catch (err) {
+    if (err instanceof ViseConfigError) return fail(err.message);
+    throw err;
+  }
+
+  graph = await resolveDefaultModel(graph);
+
+  // A profile with no usable model cannot run (§3.11). The check is here, not
+  // in validation, because it depends on what the running server reports.
+  const startingProfile = defaultProfileName(graph);
+  if (resolveProfile(graph, startingProfile).config.model === null) {
+    return fail(
       "No model could be resolved.\n" +
-        "The harness looks for a model in this order:\n" +
-        "  1. the --model flag\n" +
-        "  2. the HARNESS_MODEL environment variable\n" +
-        "  3. a harness.config.json file (see README)\n" +
-        "  4. auto-discovery from the running server's /v1/models\n" +
-        "None of these yielded a model. Start a llama.cpp server with a model\n" +
-        "loaded, or set one explicitly.\n",
+        "Vise takes the model from the Model resource connected to the active\n" +
+        "profile, and otherwise auto-discovers one from the running server's\n" +
+        "/v1/models. Neither yielded a model. Start a llama.cpp server with a\n" +
+        "model loaded, or declare one in ./.vise/index.ts:\n" +
+        "\n" +
+        "  const model = reg.createModel({\n" +
+        '    name: "my-model",\n' +
+        '    baseUrl: "http://localhost:8080",\n' +
+        '    apiKey: "",\n' +
+        "  });\n" +
+        "  reg.createConnection(profile, model);\n",
     );
-    process.exitCode = 1;
-    return;
   }
 
-  // Hooks are loaded before the session exists, so `session:start` can fire
-  // against the full set. A bad hook file is fatal (hooks spec §3.3).
-  let hooks;
-  try {
-    hooks = await createHookManager(config.hooks);
-  } catch (err) {
-    if (err instanceof HookLoadError) {
-      console.error(`Hook error: ${err.message}`);
-      process.exitCode = 1;
-      return;
-    }
-    throw err;
-  }
-
-  await startRepl(config, initialTask, hooks);
-}
-
-function printHelp(): void {
-  console.log(
-    [
-      "harness — a local LLM coding agent",
-      "",
-      "Usage: harness [task] [options]",
-      "",
-      "Options:",
-      "  --config <path>        Path to a config file (default ./harness.config.json)",
-      "  --model <name>         Model name (default: auto-discovered from the running server)",
-      "  --base-url <url>       LLM server base URL (default http://localhost:8080)",
-      "  --temperature <n>      Sampling temperature (default 0.2)",
-      "  --max-context <n>      Context window size in tokens (default 8192)",
-      "  --max-iterations <n>   Cap on tool-call iterations per turn",
-      "  --hooks <path>         Hook file to load (repeatable)",
-      "  -h, --help             Show this help",
-      "",
-      "Type 'exit' or 'quit' at the prompt to leave the REPL.",
-    ].join("\n"),
-  );
+  await startRepl(graph, args.task);
 }
 
 /**
- * The hooks API, re-exported so a hook file can write
- * `import type { Hook } from "harness"` (hooks spec §3.2).
+ * Fill in the starting profile's model name from the running server when the
+ * config left it blank (spec §3.10). A Model resource that names its model
+ * explicitly is left alone, and so is discovery for other profiles: they are
+ * resolved on demand by `/profile`.
+ */
+async function resolveDefaultModel(
+  graph: ResourceGraph,
+): Promise<ResourceGraph> {
+  const resolved = resolveProfile(graph, defaultProfileName(graph));
+  if (resolved.config.model !== null) return graph;
+  const discovered = await discoverModel(
+    resolved.config.baseUrl,
+    resolved.config.apiKey,
+  );
+  return discovered === null
+    ? graph
+    : withDiscoveredModel(graph, resolved.modelId, discovered);
+}
+
+/** Report a fatal startup problem and set a non-zero exit code. */
+function fail(message: string): void {
+  console.error(message);
+  process.exitCode = 1;
+}
+
+/**
+ * The public configuration API, re-exported so `.vise/index.ts` can write
+ * `import type { Registry } from "vise"` (profiles spec §3.1).
+ */
+export type {
+  HookDef,
+  ModelDef,
+  ProfileDef,
+  ProfileSwitchMode,
+  Registry,
+  ResourceId,
+  RuntimeSettings,
+  SubagentPolicy,
+  ToolDef,
+  ViseConfig,
+} from "./profiles/index.js";
+
+/**
+ * The hooks API, re-exported so a hook can be written against
+ * `import type { Hook } from "vise"` (hooks spec §3.2).
  */
 export type {
   Hook,
@@ -105,6 +120,9 @@ export type {
   HookHandler,
   HookResult,
 } from "./hooks/index.js";
+
+/** The tool API, for custom tools created with `reg.createTool()`. */
+export type { JsonSchema, JsonSchemaProperty, Tool } from "./types.js";
 
 main().catch((err) => {
   console.error(`Fatal: ${(err as Error).message}`);

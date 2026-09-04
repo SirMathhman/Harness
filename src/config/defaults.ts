@@ -1,8 +1,9 @@
 import type { Config } from "../types.js";
+import type { RuntimeSettings } from "../profiles/types.js";
 
 /**
- * Built-in default system prompt (spec §6.1).
- * A concise coding-agent persona.
+ * Built-in default system prompt (profiles spec §3.5).
+ * Used by any profile whose `systemPrompt` is the empty string.
  */
 export const DEFAULT_SYSTEM_PROMPT = `You are a capable, pragmatic coding agent running locally.
 You accomplish software-engineering tasks by using the provided tools.
@@ -17,9 +18,8 @@ Guidelines:
 Use the tools to do the work; do not just describe it.`;
 
 /**
- * Default system prompt for a subagent (spec §3.8.2). A concise worker persona:
- * complete the given task with the provided tools; read before editing; verify
- * with tests/builds when relevant; always call `finish` with a concise result.
+ * Default system prompt for a subagent (spec §3.8.2). Used when the subagent's
+ * profile supplies no prompt of its own and the caller passed none.
  */
 export const DEFAULT_SUBAGENT_PROMPT = `You are a focused subagent working on a single, well-scoped task.
 You were spawned by a parent agent to complete the task below.
@@ -35,49 +35,38 @@ Guidelines:
 Your final \`finish\` answer is the only thing returned to the parent agent, so make it a clear, self-contained summary of what you did and found.`;
 
 /**
- * Built-in defaults (spec §6.1). `model` is intentionally null: when unset, the
- * harness auto-discovers the first model from the running server's /v1/models.
+ * The non-graph runtime settings a config module may override through
+ * `reg.setRuntime()` (profiles spec §3.2).
  */
-export const DEFAULT_CONFIG: Config = {
-  baseUrl: "http://localhost:8080",
-  model: null,
-  apiKey: "",
-  temperature: 0.2,
-  maxContext: 8192,
+export const DEFAULT_RUNTIME: RuntimeSettings = {
   compactThreshold: 0.8,
   compactKeepMessages: 6,
   commandTimeoutMs: 60000,
   maxToolOutputChars: 20000,
-  systemPrompt: null,
   parallelToolCalls: true,
   shell: "auto",
   maxIterations: null,
   dynamicTools: false,
   subagentMaxIterations: 50,
   maxSubagentDepth: 3,
-  hooks: [],
 };
 
-/** Map of config key -> environment variable name (spec §6.1). */
-export const ENV_KEYS: Record<keyof Config, string> = {
-  baseUrl: "HARNESS_BASE_URL",
-  model: "HARNESS_MODEL",
-  apiKey: "HARNESS_API_KEY",
-  temperature: "HARNESS_TEMPERATURE",
-  maxContext: "HARNESS_MAX_CONTEXT",
-  compactThreshold: "HARNESS_COMPACT_THRESHOLD",
-  compactKeepMessages: "HARNESS_COMPACT_KEEP",
-  commandTimeoutMs: "HARNESS_COMMAND_TIMEOUT_MS",
-  maxToolOutputChars: "HARNESS_MAX_TOOL_OUTPUT",
-  systemPrompt: "HARNESS_SYSTEM_PROMPT",
-  parallelToolCalls: "HARNESS_PARALLEL_TOOLS",
-  shell: "HARNESS_SHELL",
-  maxIterations: "HARNESS_MAX_ITERATIONS",
-  dynamicTools: "HARNESS_DYNAMIC_TOOLS",
-  subagentMaxIterations: "HARNESS_SUBAGENT_MAX_ITER",
-  maxSubagentDepth: "HARNESS_MAX_SUBAGENT_DEPTH",
-  hooks: "HARNESS_HOOKS",
+/**
+ * A fully defaulted `Config`: the runtime settings plus the default model's
+ * parameters. `model` is intentionally null — when unset, Vise auto-discovers
+ * the first model from the running server's `/v1/models` (spec §3.10).
+ */
+export const DEFAULT_CONFIG: Config = {
+  ...DEFAULT_RUNTIME,
+  baseUrl: "http://localhost:8080",
+  model: null,
+  apiKey: "",
+  temperature: 0.2,
+  maxContext: 8192,
+  systemPrompt: null,
 };
 
-/** The set of valid config keys, used for unknown-key detection. */
-export const CONFIG_KEYS = Object.keys(DEFAULT_CONFIG) as (keyof Config)[];
+/** The keys of `RuntimeSettings`, used to validate `setRuntime` input. */
+export const RUNTIME_KEYS = Object.keys(
+  DEFAULT_RUNTIME,
+) as (keyof RuntimeSettings)[];

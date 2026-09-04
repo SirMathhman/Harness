@@ -2,8 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { runTurn } from "../src/agent/loop.js";
 import { createSession } from "../src/agent/session.js";
 import { ServerUnreachableError } from "../src/llm/errors.js";
-import { DEFAULT_CONFIG } from "../src/config/defaults.js";
-import type { Config, Usage } from "../src/types.js";
+import { modelGraph } from "./helpers.js";
+import type { Usage } from "../src/types.js";
 
 /** A scripted LLM response. */
 type ScriptedResponse =
@@ -93,8 +93,9 @@ function createMockServer(script: ScriptedResponse[]) {
   };
 }
 
-function makeConfig(baseUrl: string): Config {
-  return { ...DEFAULT_CONFIG, model: "test-model", baseUrl };
+/** A session whose default profile points at the mock server. */
+function sessionFor(baseUrl: string, maxIterations: number | null = null) {
+  return createSession({ graph: modelGraph(baseUrl, { maxIterations }) });
 }
 
 describe("integration: full agent loop (AC 2, 3, 5, 6, 7, 11)", () => {
@@ -107,7 +108,7 @@ describe("integration: full agent loop (AC 2, 3, 5, 6, 7, 11)", () => {
         ],
       },
     ]);
-    const { session, registry } = createSession(makeConfig(baseUrl));
+    const { session, registry } = sessionFor(baseUrl);
     const result = await runTurn(session, "do the thing", registry);
     expect(result.finished).toBe(true);
     expect(result.answer).toBe("All done.");
@@ -127,7 +128,7 @@ describe("integration: full agent loop (AC 2, 3, 5, 6, 7, 11)", () => {
         ],
       },
     ]);
-    const { session, registry } = createSession(makeConfig(baseUrl));
+    const { session, registry } = sessionFor(baseUrl);
     const result = await runTurn(session, "list files", registry);
     expect(result.finished).toBe(true);
     // The second request must include the tool result from the first.
@@ -147,7 +148,7 @@ describe("integration: full agent loop (AC 2, 3, 5, 6, 7, 11)", () => {
         toolCalls: [{ id: "2", name: "finish", arguments: { answer: "two" } }],
       },
     ]);
-    const { session, registry } = createSession(makeConfig(baseUrl));
+    const { session, registry } = sessionFor(baseUrl);
     await runTurn(session, "first task", registry);
     await runTurn(session, "second task", registry);
     const firstLen = (requests[0].messages as unknown[]).length;
@@ -171,7 +172,7 @@ describe("integration: full agent loop (AC 2, 3, 5, 6, 7, 11)", () => {
         ],
       },
     ]);
-    const { session, registry } = createSession(makeConfig(baseUrl));
+    const { session, registry } = sessionFor(baseUrl);
     const result = await runTurn(session, "read a file", registry);
     expect(result.finished).toBe(true);
     // The tool result fed back must be the validation error (no abort).
@@ -204,7 +205,7 @@ describe("integration: full agent loop (AC 2, 3, 5, 6, 7, 11)", () => {
         ],
       },
     ]);
-    const { session, registry } = createSession(makeConfig(baseUrl));
+    const { session, registry } = sessionFor(baseUrl);
     const result = await runTurn(session, "read missing", registry);
     expect(result.finished).toBe(true);
     expect(result.answer).toBe("handled");
@@ -216,7 +217,7 @@ describe("integration: full agent loop (AC 2, 3, 5, 6, 7, 11)", () => {
     const probe = Bun.serve({ port: 0, fetch: () => new Response("ok") });
     const deadUrl = `http://localhost:${probe.port}`;
     probe.stop();
-    const { session, registry } = createSession(makeConfig(deadUrl));
+    const { session, registry } = sessionFor(deadUrl);
     await expect(runTurn(session, "hi", registry)).rejects.toThrow(
       ServerUnreachableError,
     );
@@ -230,9 +231,7 @@ describe("integration: full agent loop (AC 2, 3, 5, 6, 7, 11)", () => {
         toolCalls: [{ id: "1", name: "list_dir", arguments: { path: "." } }],
       },
     ]);
-    const cfg = makeConfig(baseUrl);
-    cfg.maxIterations = 2;
-    const { session, registry } = createSession(cfg);
+    const { session, registry } = sessionFor(baseUrl, 2);
     const result = await runTurn(session, "loop forever", registry);
     expect(result.finished).toBe(false);
     expect(result.answer).toContain("maxIterations");

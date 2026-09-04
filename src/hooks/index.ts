@@ -16,9 +16,3 @@ export {
   type HookOutcome,
   type RegisteredHook,
 } from "./manager.js";
-export {
-  createHookManager,
-  HookLoadError,
-  loadHookFile,
-  loadHooks,
-} from "./load.js";

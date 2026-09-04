@@ -1,10 +1,10 @@
 {
-  "name": "harness",
-  "version": "0.1.0",
-  "description": "A local, self-contained LLM coding-agent harness backed by llama.cpp.",
+  "name": "vise",
+  "version": "0.3.0",
+  "description": "A local, self-contained LLM coding-agent harness backed by llama.cpp, configured by a TypeScript resource graph.",
   "type": "module",
   "bin": {
-    "harness": "dist/index.js"
+    "vise": "dist/index.js"
   },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -12,7 +12,7 @@
     "dist"
   ],
   "engines": {
-    "node": ">=18"
+    "node": ">=22.18"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",

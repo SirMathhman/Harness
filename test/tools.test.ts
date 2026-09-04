@@ -16,7 +16,7 @@ import type { Tool, ToolCall } from "../src/types.js";
 
 let dir: string;
 beforeAll(() => {
-  dir = mkdtempSync(path.join(tmpdir(), "harness-test-"));
+  dir = mkdtempSync(path.join(tmpdir(), "vise-test-"));
 });
 afterAll(() => {
   rmSync(dir, { recursive: true, force: true });

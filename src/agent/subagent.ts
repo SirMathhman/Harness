@@ -1,6 +1,10 @@
 import type { Config, Message, Session } from "../types.js";
 import { DEFAULT_SUBAGENT_PROMPT } from "../config/defaults.js";
-import { buildToolRegistry } from "../tools/index.js";
+import {
+  buildToolRegistry,
+  ToolRegistry,
+  type BackgroundCommandManager,
+} from "../tools/index.js";
 import {
   makeSpawnSubagentTool,
   type SubagentRunOptions,
@@ -10,6 +14,14 @@ import { runTurn, type AgentCallbacks } from "./loop.js";
 import { LLMError } from "../llm/errors.js";
 import { defaultLLMClient, type LLMClient } from "../llm/client.js";
 import { HookManager } from "../hooks/index.js";
+import {
+  profileNames,
+  resolveProfile,
+  systemPromptOf,
+  UnknownProfileError,
+  type ResolvedProfile,
+  type ResourceGraph,
+} from "../profiles/index.js";
 
 /**
  * A live-output event from a running subagent (spec §3.8.6). The CLI renders
@@ -32,62 +44,163 @@ export type SubagentRender = (
 ) => void;
 
 /**
- * Build a `SubagentRunner` for a given config and LLM client (spec §3.8).
+ * The session-wide context every agent in the tree shares: the resource graph
+ * it resolves profiles from, the LLM client, and how output and hook problems
+ * are surfaced.
+ */
+export interface AgentContext {
+  /** The resource graph built from `.vise/index.ts` (profiles spec §3.10). */
+  graph: ResourceGraph;
+  /** The LLM client used by every agent in the tree. */
+  client?: LLMClient;
+  /** Renders subagent live output (spec §3.8.6); omitted → silent. */
+  render?: SubagentRender;
+  /**
+   * Whether hooks are enabled session-wide. `/hooks off` flips one flag that
+   * every agent in the tree — including subagents built later — reads.
+   */
+  hooksEnabled?: () => boolean;
+  /** The `cwd` handed to every `HookContext`. Defaults to `process.cwd()`. */
+  cwd?: string;
+  /** Where hook errors and warnings go. Defaults to stderr. */
+  log?: (message: string) => void;
+}
+
+/** One profile turned into the concrete pieces an agent loop needs. */
+export interface MaterializedProfile {
+  /** The resolved runtime + model settings. */
+  config: Config;
+  /** The tools this profile exposes, including `spawn_subagent` when allowed. */
+  registry: ToolRegistry;
+  /** The background-command manager backing `run_command`. */
+  manager: BackgroundCommandManager;
+  /** A hook manager holding only this profile's hooks. */
+  hooks: HookManager;
+  /** The system prompt the agent runs under. */
+  systemPrompt: string;
+}
+
+/**
+ * Turn a resolved profile into a runnable agent configuration
+ * (profiles spec §3.5).
  *
- * The runner is recursive: each subagent it creates gets its own isolated
- * session (own `messages`, own background-command manager, own registry) whose
- * registry includes a `spawn_subagent` tool at the subagent's depth, so a
- * subagent may in turn spawn its own subagents — bounded by
- * `config.maxSubagentDepth` (enforced by the tool, E20).
+ * This is the single place where a profile becomes a tool registry, a hook
+ * manager, and a `Config` — used both for the main session and for every
+ * subagent, so a subagent under profile "worker" gets exactly the same
+ * treatment the main agent would.
+ *
+ * `depth` is the nesting depth of the agent being built; it fixes the depth
+ * bound of the `spawn_subagent` tool this profile hands out.
+ */
+export function materializeProfile(
+  resolved: ResolvedProfile,
+  ctx: AgentContext,
+  depth: number,
+  overrides: { maxIterations?: number | null; systemPrompt?: string } = {},
+): MaterializedProfile {
+  const config: Config = {
+    ...resolved.config,
+    ...(overrides.maxIterations !== undefined
+      ? { maxIterations: overrides.maxIterations }
+      : {}),
+  };
+
+  const { registry, manager } = buildToolRegistry(config, {
+    builtins: resolved.builtinTools,
+    custom: resolved.customTools,
+  });
+
+  // spawn_subagent is built here rather than in the tool layer: it needs a
+  // runner, the active profile's policy, and this agent's depth.
+  if (
+    resolved.builtinTools === null ||
+    resolved.builtinTools.includes("spawn_subagent")
+  ) {
+    registry.register(
+      makeSpawnSubagentTool({
+        runner: makeSubagentRunner(ctx),
+        depth,
+        parentProfile: resolved.name,
+        policy: resolved.subagent,
+        fallbackMaxDepth: config.maxSubagentDepth,
+        subagentMaxIterations: config.subagentMaxIterations,
+        knownProfiles: profileNames(ctx.graph),
+      }),
+    );
+  }
+
+  const hooks = new HookManager(resolved.hooks, {
+    ...(ctx.cwd !== undefined ? { cwd: ctx.cwd } : {}),
+    ...(ctx.log !== undefined ? { log: ctx.log } : {}),
+  });
+  hooks.setEnabled(ctx.hooksEnabled?.() ?? true);
+
+  return {
+    config,
+    registry,
+    manager,
+    hooks,
+    systemPrompt: overrides.systemPrompt ?? systemPromptOf(resolved),
+  };
+}
+
+/**
+ * Build a `SubagentRunner` over an agent context (spec §3.8, profiles §3.12).
+ *
+ * The runner is recursive: each subagent gets its own isolated session (own
+ * `messages`, own background-command manager, own registry, own hooks) built
+ * from *its* profile, so a subagent spawned under "researcher" runs with the
+ * researcher prompt, tools, hooks, and model — not the parent's. Its registry
+ * includes a `spawn_subagent` tool bound to its own depth and its own
+ * profile's policy, so nesting is bounded by whichever profile is doing the
+ * spawning.
  *
  * The runner never throws: every outcome (DONE, CAP_REACHED, FAILED) is
  * returned as a result string so a subagent failure is *data*, not *control*
  * (E18–E20, the error-split invariant).
- *
- * `render` (optional) receives the subagent's live-output events so the CLI
- * can display them indented (spec §3.8.6). When omitted, the subagent runs
- * silently (useful for tests and non-interactive callers).
- *
- * `hooks` is the session's `HookManager`, shared with every subagent it
- * spawns. Only hooks marked `includeSubagents` actually fire there; the
- * manager filters on the subagent's depth (hooks spec §3.7).
  */
-export function makeSubagentRunner(
-  config: Config,
-  client: LLMClient = defaultLLMClient,
-  render?: SubagentRender,
-  hooks: HookManager = new HookManager(),
-): SubagentRunner {
+export function makeSubagentRunner(ctx: AgentContext): SubagentRunner {
+  const client = ctx.client ?? defaultLLMClient;
+
   return async (opts: SubagentRunOptions): Promise<string> => {
-    // Build the subagent's isolated session: fresh messages, fresh manager,
-    // and a registry that includes a spawn tool at this subagent's depth.
-    const { registry, manager } = buildToolRegistry(config);
-    registry.register(
-      makeSpawnSubagentTool(
-        makeSubagentRunner(config, client, render, hooks),
-        opts.depth,
-        config.maxSubagentDepth,
-        config.subagentMaxIterations,
-      ),
+    const emit = (event: SubagentRenderEvent) => ctx.render?.(opts.depth, event);
+
+    let resolved: ResolvedProfile;
+    try {
+      resolved = resolveProfile(ctx.graph, opts.profile);
+    } catch (err) {
+      // The tool validates the name first, so this is only reachable if the
+      // graph changed underneath us. Still data, never control.
+      if (err instanceof UnknownProfileError) {
+        emit({ kind: "end", ok: false, label: "failed" });
+        return `subagent failed: ${err.message}`;
+      }
+      throw err;
+    }
+
+    // A subagent's prompt: the explicit one from the call, else its profile's
+    // own, else the generic worker prompt (spec §3.8.2).
+    const systemPrompt =
+      opts.systemPrompt ??
+      resolved.config.systemPrompt ??
+      DEFAULT_SUBAGENT_PROMPT;
+
+    const { config, registry, manager, hooks } = materializeProfile(
+      resolved,
+      ctx,
+      opts.depth,
+      { maxIterations: opts.maxIterations, systemPrompt },
     );
 
-    // The subagent's effective iteration cap is `opts.maxIterations` (already
-    // capped by the tool to min(requested, subagentMaxIterations)).
-    const subagentConfig: Config = {
-      ...config,
-      maxIterations: opts.maxIterations,
-    };
-    const systemPrompt = opts.systemPrompt ?? DEFAULT_SUBAGENT_PROMPT;
     const session: Session = {
       messages: [{ role: "system", content: systemPrompt }],
-      config: subagentConfig,
+      config,
       lastPromptTokens: null,
       hooks,
       depth: opts.depth,
+      profile: resolved.name,
     };
 
-    // Adapt the render callback into the agent loop's AgentCallbacks.
-    const emit = (event: SubagentRenderEvent) => render?.(opts.depth, event);
     const callbacks: AgentCallbacks = {
       onToken: (t) => emit({ kind: "token", text: t }),
       onToolCall: (name, args) => emit({ kind: "toolCall", name, args }),
