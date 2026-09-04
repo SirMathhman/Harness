@@ -91,6 +91,16 @@ export interface Config {
    * (spec §3.3.1).
    */
   dynamicTools: boolean;
+  /**
+   * Hard ceiling on a subagent's iteration budget; the effective cap is
+   * `min(requested, this)` (spec §3.8.4).
+   */
+  subagentMaxIterations: number;
+  /**
+   * Maximum subagent nesting depth; a subagent at depth `N` may spawn only if
+   * `N < this` (spec §3.8.4).
+   */
+  maxSubagentDepth: number;
 }
 
 /** One REPL invocation. Holds the running conversation. */

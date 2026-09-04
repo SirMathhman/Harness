@@ -2,6 +2,7 @@ import { createInterface, type Interface } from "node:readline";
 import type { Config } from "../types.js";
 import { runTurn, type AgentCallbacks } from "../agent/loop.js";
 import { createSession } from "../agent/session.js";
+import type { SubagentRender } from "../agent/subagent.js";
 import { LLMError } from "../llm/errors.js";
 import { BackgroundCommandManager } from "../tools/index.js";
 
@@ -19,7 +20,9 @@ export async function startRepl(
   config: Config,
   initialTask?: string | null,
 ): Promise<void> {
-  const { session, registry, manager } = createSession(config);
+  const { session, registry, manager } = createSession(config, {
+    render: makeSubagentRender(),
+  });
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   let closed = false;
   rl.on("close", () => {
@@ -217,4 +220,38 @@ function summarizeArgs(args: Record<string, unknown>): string {
     parts.push(`${k}=${s.length > 60 ? s.slice(0, 57) + "…" : s}`);
   }
   return parts.join(", ");
+}
+
+/**
+ * Build a `SubagentRender` that writes a subagent's live output to stdout,
+ * indented under the parent's `→ spawn_subagent(<task>)` line (spec §3.8.6).
+ * The indent scales with the subagent's nesting depth.
+ */
+function makeSubagentRender(): SubagentRender {
+  return (depth, event) => {
+    const indent = "  ".repeat(depth);
+    switch (event.kind) {
+      case "token":
+        process.stdout.write(event.text);
+        break;
+      case "toolCall":
+        process.stdout.write(
+          `\n${indent}  → ${event.name}(${summarizeArgs(event.args)})\n`,
+        );
+        break;
+      case "toolResult":
+        process.stdout.write(
+          `${indent}  ${event.ok ? "✓" : "✗"} ${event.name}: ${event.summary}\n`,
+        );
+        break;
+      case "compacting":
+        process.stdout.write(`${indent}  [compacting context…]\n`);
+        break;
+      case "end":
+        process.stdout.write(
+          `${indent}  ${event.ok ? "✓" : "✗"} ${event.label}\n`,
+        );
+        break;
+    }
+  };
 }

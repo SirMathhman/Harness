@@ -113,6 +113,8 @@ function envValue(key: keyof Config, env: NodeJS.ProcessEnv): unknown {
     case "compactKeepMessages":
     case "commandTimeoutMs":
     case "maxToolOutputChars":
+    case "subagentMaxIterations":
+    case "maxSubagentDepth":
       return Number(raw);
     case "parallelToolCalls":
     case "dynamicTools":
@@ -235,6 +237,15 @@ export function validateConfig(cfg: Config): Config {
     (typeof cfg.maxIterations !== "number" || cfg.maxIterations < 1)
   ) {
     errors.push("maxIterations must be a positive integer or null.");
+  }
+  if (
+    typeof cfg.subagentMaxIterations !== "number" ||
+    cfg.subagentMaxIterations < 1
+  ) {
+    errors.push("subagentMaxIterations must be a positive integer.");
+  }
+  if (typeof cfg.maxSubagentDepth !== "number" || cfg.maxSubagentDepth < 0) {
+    errors.push("maxSubagentDepth must be a non-negative integer.");
   }
 
   if (errors.length > 0) {

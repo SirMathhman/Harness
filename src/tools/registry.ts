@@ -78,7 +78,7 @@ export function validateArgs(
           ? "integer"
           : "number"
         : typeof value;
-    if (prop.type === "integer" && actual !== "number") {
+    if (prop.type === "integer" && actual !== "integer") {
       problems.push(`parameter "${key}" must be an integer`);
     } else if (prop.type === "number" && actual !== "number") {
       problems.push(`parameter "${key}" must be a number`);
