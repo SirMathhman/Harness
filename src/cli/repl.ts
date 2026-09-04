@@ -49,6 +49,10 @@ export async function startRepl(
     const input = line.trim();
     if (input === "") continue;
     if (input === "exit" || input === "quit") break;
+    if (input === "/context") {
+      process.stdout.write(contextUsageLine(session) + "\n");
+      continue;
+    }
     await executeTurn(session, registry, manager, callbacks, input);
   }
 
@@ -111,6 +115,22 @@ function prompt(rl: Interface, label: string): Promise<string> {
       resolve(answer);
     });
   });
+}
+
+/**
+ * Format the context-usage line for the `/context` command: prompt tokens used
+ * on the most recent LLM call vs. the configured context window.
+ */
+export function contextUsageLine(
+  session: ReturnType<typeof createSession>["session"],
+): string {
+  const used = session.lastPromptTokens;
+  const total = session.config.maxContext;
+  if (used === null) {
+    return `context: no LLM call yet (window ${total} tokens)`;
+  }
+  const pct = ((used / total) * 100).toFixed(1);
+  return `context: ${used} / ${total} tokens (${pct}%)`;
 }
 
 /**

@@ -106,6 +106,7 @@ running → exited
 | Start REPL                 | `harness`                       | Launch interactive multi-turn REPL.                            |
 | Start REPL with first task | `harness "<task>"`              | Launch REPL and immediately run `<task>` as the first turn.    |
 | Submit a task              | type text + Enter at the prompt | Begin an agent turn for that task.                             |
+| Show context usage         | `/context`                      | Print prompt tokens used on the last LLM call vs. the context window. |
 | Quit                       | `exit` / `quit` / Ctrl-C        | End the session.                                               |
 | Use a config file          | `harness --config <path>`       | Load settings from `<path>` (default `./harness.config.json`). |
 

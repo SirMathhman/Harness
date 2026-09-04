@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createSession } from "../src/agent/session.js";
+import { contextUsageLine } from "../src/cli/repl.js";
 import { DEFAULT_CONFIG } from "../src/config/defaults.js";
 
 describe("CLI startup (AC 1)", () => {
@@ -23,6 +24,23 @@ describe("CLI startup (AC 1)", () => {
     const stderr = await new Response(proc.stderr).text();
     expect(exitCode).toBe(1);
     expect(stderr).toContain("No model could be resolved");
+  });
+});
+
+describe("/context command", () => {
+  test("reports no LLM call yet when lastPromptTokens is null", () => {
+    const { session } = createSession({ ...DEFAULT_CONFIG, model: "m" });
+    expect(contextUsageLine(session)).toBe(
+      `context: no LLM call yet (window ${DEFAULT_CONFIG.maxContext} tokens)`,
+    );
+  });
+
+  test("reports used vs total with a percentage", () => {
+    const { session } = createSession({ ...DEFAULT_CONFIG, model: "m" });
+    session.lastPromptTokens = 4096;
+    expect(contextUsageLine(session)).toBe(
+      `context: 4096 / ${DEFAULT_CONFIG.maxContext} tokens (50.0%)`,
+    );
   });
 });
 
