@@ -1,0 +1,435 @@
+# System Specification: Harness — Local Coding Agent
+
+A TypeScript/Node command-line harness that runs a **single LLM coding agent** in a
+tool-calling loop, backed by a local **llama.cpp** server. The agent reads, writes,
+edits, and searches files and runs shell commands to complete software-engineering
+tasks the user types into an interactive REPL.
+
+---
+
+## 1. Purpose and Scope
+
+### 1.1 Purpose
+
+Provide a minimal, self-contained agent runtime that:
+
+- Talks to a local llama.cpp `llama-server` over its OpenAI-compatible
+  `POST /v1/chat/completions` endpoint.
+- Runs an agent loop: send messages → model returns text and/or tool calls →
+  execute tools → append results → repeat.
+- Terminates a turn only when the model calls the `finish` tool.
+- Presents the work live in a terminal (streamed tokens + per-tool-call lines).
+
+### 1.2 Stakeholders
+
+- **Primary user:** a developer running the CLI on their own machine to get coding
+  tasks done (refactors, bug fixes, scaffolding, running tests, etc.).
+- **The LLM:** a local model served by llama.cpp that is capable of OpenAI-style
+  tool calling (requires the server to be started with `--jinja`).
+
+### 1.3 Success Criteria
+
+- A user can start the REPL, type a coding task, and watch the agent use tools to
+  accomplish it, ending with a clear final answer.
+- The agent recovers from its own mistakes (bad tool args, failed commands) by
+  reading the error back and retrying, without crashing the harness.
+- Long conversations are compacted so they fit the model's context window.
+- The harness has no hard dependency on any cloud provider; it works fully offline
+  against a local llama.cpp server.
+
+### 1.4 Out of Scope
+
+- Multi-agent orchestration / delegation.
+- A public HTTP API for the agent (CLI only).
+- Sandboxing / permission system (trusted local use — see §8).
+- Vision / multimodal inputs.
+- Model management (downloading, quantizing, or launching the llama.cpp server is
+  the user's responsibility; the harness only talks to an already-running server).
+
+---
+
+## 2. Domain Model
+
+### 2.1 Entities
+
+| Entity                | Description                                                    | Key Attributes                                                                                                                   |
+| --------------------- | -------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| **Session**           | One REPL invocation. Holds the running conversation.           | `messages` (ordered list), `config`, `backgroundCommands` (map id → handle)                                                      |
+| **Message**           | One entry in the conversation, in OpenAI chat format.          | `role` (`system` \| `user` \| `assistant` \| `tool`), `content`, optional `tool_calls`, optional `tool_call_id`, optional `name` |
+| **ToolCall**          | A request from the model to run a tool.                        | `id`, `name`, `arguments` (JSON object)                                                                                          |
+| **ToolResult**        | The outcome of executing a tool, fed back as a `tool` message. | `tool_call_id`, `content` (string; success output or error text)                                                                 |
+| **Tool**              | A callable capability exposed to the model.                    | `name`, JSON-schema `parameters`, handler                                                                                        |
+| **BackgroundCommand** | A shell command running asynchronously.                        | `id`, `status` (`running` \| `exited`), `exitCode?`, `stdout`, `stderr`                                                          |
+| **Config**            | Resolved runtime settings.                                     | see §6.1                                                                                                                         |
+
+### 2.2 Relationships
+
+- A **Session** has many **Messages** (ordered).
+- An **assistant Message** may contain one or more **ToolCalls** (parallel tool calls
+  are enabled).
+- Each **ToolCall** produces exactly one **ToolResult**, appended as a `tool` Message
+  with the matching `tool_call_id`.
+- A **Session** owns a set of **BackgroundCommand** handles, keyed by id.
+- A **Session** is configured by one resolved **Config**.
+
+### 2.3 State Transitions
+
+**Agent turn (one user task):**
+
+```
+IDLE → THINKING (LLM call in flight)
+THINKING → ACTING (model returned ≥1 tool call; executing tools)
+ACTING → THINKING (tool results appended; next LLM call)
+THINKING → DONE (model called finish; answer emitted)
+THINKING → ABORTED (LLM/server error; see §4)
+```
+
+- `ACTING → THINKING` and `THINKING → ACTING` may repeat any number of times.
+- There is **no iteration cap** (see §8, Assumptions — risk noted).
+- After `DONE`, the REPL returns to `IDLE` for the next user task; the conversation
+  history is retained.
+
+**BackgroundCommand:**
+
+```
+running → exited
+```
+
+---
+
+## 3. Functional Requirements
+
+### 3.1 User Actions (CLI)
+
+| Action                     | Invocation                      | Effect                                                         |
+| -------------------------- | ------------------------------- | -------------------------------------------------------------- |
+| Start REPL                 | `harness`                       | Launch interactive multi-turn REPL.                            |
+| Start REPL with first task | `harness "<task>"`              | Launch REPL and immediately run `<task>` as the first turn.    |
+| Submit a task              | type text + Enter at the prompt | Begin an agent turn for that task.                             |
+| Quit                       | `exit` / `quit` / Ctrl-C        | End the session.                                               |
+| Use a config file          | `harness --config <path>`       | Load settings from `<path>` (default `./harness.config.json`). |
+
+The REPL is **multi-turn**: conversation history (messages) persists across turns so
+the agent retains context from prior tasks.
+
+### 3.2 The Agent Loop (core behavior)
+
+For each user task, the harness MUST:
+
+1. Append the user's task as a `user` Message.
+2. Call the LLM (`POST /v1/chat/completions`) with:
+   - the full `messages` array,
+   - the `tools` array (the 8 tool definitions, §3.3),
+   - `tool_choice: "auto"`,
+   - `parallel_tool_calls: true`,
+   - `stream: true`,
+   - sampling params from Config (`temperature`, etc.).
+3. **Stream** the response:
+   - Emit assistant text tokens to the terminal as they arrive.
+   - Accumulate any `tool_calls` from the streamed deltas.
+4. On completion, inspect the final assistant message:
+   - **If it contains tool call(s):** execute them (§3.4), append each result as a
+     `tool` Message, and return to step 2.
+   - **If it called `finish`:** emit the `answer` as the turn's final output, append
+     the assistant message to history, and return to `IDLE`.
+   - **If it has neither tool calls nor `finish`:** treat the text as the final
+     answer (defensive fallback), emit it, and return to `IDLE`.
+5. Before each LLM call, apply **context compaction** if needed (§3.5).
+
+### 3.3 Tools
+
+The harness exposes exactly these tools. All paths are resolved relative to the
+process working directory unless absolute. All tool results are returned to the model
+as **strings** (success output or a descriptive error).
+
+| #   | Tool            | Parameters                                                                                                                                                                 | Returns                                                                                                                                                                                     |
+| --- | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | `read_file`     | `path` (str, req); `startLine` (int, opt); `endLine` (int, opt)                                                                                                            | File content (or the requested line range). For binary files, a notice that the file is binary. If missing, an error string.                                                                |
+| 2   | `write_file`    | `path` (str, req); `content` (str, req)                                                                                                                                    | Confirmation: path + bytes written. Creates parent directories as needed. Overwrites existing files.                                                                                        |
+| 3   | `edit_file`     | `path` (str, req); `oldString` (str, req); `newString` (str, req); `replaceAll` (bool, opt, default `false`)                                                               | On success: confirmation of the edit. On failure: an error string stating the problem (e.g. `oldString not found`, or `oldString matched N times; pass replaceAll=true`).                   |
+| 4   | `list_dir`      | `path` (str, req); `recursive` (bool, opt, default `false`)                                                                                                                | List of entries, each marked as file or directory.                                                                                                                                          |
+| 5   | `search`        | `pattern` (str, req); `mode` (`"text"` \| `"glob"`, req); `path` (str, opt, default cwd); `includePattern` (str, opt); `isRegexp` (bool, opt, default `true` in text mode) | Text mode: matching `file:line:content` lines. Glob mode: matching file paths. Results truncated to `maxToolOutputChars` with a truncation notice.                                          |
+| 6   | `run_command`   | `command` (str, req); `timeoutMs` (int, opt, default from Config); `background` (bool, opt, default `false`); `cwd` (str, opt)                                             | Foreground: `{ exitCode, stdout, stderr }` (each truncated to `maxToolOutputChars`). If the timeout elapses, the process is killed and the result is a timeout error. Background: `{ id }`. |
+| 7   | `check_command` | `id` (str, req)                                                                                                                                                            | `{ status: "running" \| "exited", exitCode?, stdout, stderr }` — output captured so far (truncated).                                                                                        |
+| 8   | `finish`        | `answer` (str, req)                                                                                                                                                        | Terminal. Ends the current turn; `answer` is the final response to the user.                                                                                                                |
+
+**Notes:**
+
+- `run_command` uses the platform default shell (PowerShell on Windows, `sh`/`bash`
+  on Unix) unless `Config.shell` overrides it.
+- Tool execution order within a single turn: **mutating tools** (`write_file`,
+  `edit_file`, `run_command`) are executed **sequentially** in the order the model
+  gave them, to avoid file/command races. **Read-only tools** (`read_file`,
+  `list_dir`, `search`, `check_command`) may run concurrently. Results are returned
+  to the model in the same order as the original tool calls.
+
+### 3.4 Tool Execution & Error Semantics
+
+- Every tool call yields exactly one `tool` Message, even on failure.
+- **Tool errors are returned to the model as the result string** (e.g. "file not
+  found", "command exited with code 1: <stderr>"). The harness does **not** abort on
+  tool errors; the model is expected to react and retry.
+- **Malformed tool calls** (unknown tool name, invalid JSON arguments, or arguments
+  that fail schema validation) produce a `tool` Message containing a descriptive
+  error (e.g. `Unknown tool "foo"`, or `Invalid arguments for read_file: <path> is
+required`). The model is expected to self-correct. The harness does not abort.
+- Tool results and command outputs are truncated to `Config.maxToolOutputChars`
+  (default 20,000 chars) with a notice, to protect the context window.
+
+### 3.5 Context Compaction
+
+- After each LLM call, the harness reads `usage.prompt_tokens` from the response.
+- If `usage.prompt_tokens > Config.compactThreshold * Config.maxContext`
+  (default `0.8 * maxContext`), the harness compacts **before the next LLM call**:
+  1. Keep the `system` Message(s) and the most recent `Config.compactKeepMessages`
+     Messages (default 6), trimmed to a boundary that keeps every assistant
+     `tool_calls` Message paired with its `tool` result Message(s).
+  2. Summarize all older Messages into a single recap by calling the LLM with a
+     summarization prompt (e.g. "Summarize the work done so far, including files
+     changed, commands run, and open issues, in a few bullet points.").
+  3. Replace the message array with: `[system…, recap-as-user-message, …recent
+Messages]`.
+- Compaction is transparent to the user (a short "compacting context…" line may be
+  printed).
+- If the summarization LLM call fails, fall back to **truncation**: drop the oldest
+  non-system, non-recent Messages (keeping tool-call/result pairs intact) rather than
+  aborting.
+
+### 3.6 CLI Output (live display)
+
+While a turn runs, the terminal MUST show:
+
+- **Streamed assistant text** tokens as they arrive.
+- **One line per tool call**, e.g. `→ read_file(src/index.ts)`, followed by a
+  condensed result line (e.g. `✓ 142 lines` or `✗ file not found`).
+- The **final `finish` answer** clearly delimited at the end of the turn.
+
+### 3.7 Workflows
+
+**Happy path (single task):**
+
+```
+user: "Add input validation to the signup form"
+  → LLM: read_file(src/signup.ts)
+  → LLM: edit_file(src/signup.ts, …)
+  → LLM: run_command("npm test")
+  → LLM: finish("Added validation for email + password; all tests pass.")
+REPL prompt returns.
+```
+
+**Follow-up turn (history retained):**
+
+```
+user: "Now make it reject duplicate emails"
+  → agent already knows the file from the previous turn; edits + tests + finish.
+```
+
+**Recovery from a bad tool call:**
+
+```
+  → LLM: read_file()            [missing required path]
+  → harness: tool result = "Invalid arguments for read_file: path is required"
+  → LLM: read_file(src/signup.ts)   [self-corrected]
+```
+
+---
+
+## 4. Edge Cases and Error Handling
+
+| #   | Scenario                                                               | Required Behavior                                                                                                                    |
+| --- | ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| E1  | Tool fails (file missing, command non-zero exit)                       | Return the error as the tool result; model reacts. No abort.                                                                         |
+| E2  | Malformed tool call (bad JSON / unknown tool / bad params)             | Return a descriptive error as the tool result; model self-corrects. No abort.                                                        |
+| E3  | llama.cpp server unreachable / connection refused                      | **Abort the turn immediately** with a clear message (e.g. "Cannot reach llama.cpp server at <baseUrl>. Is it running?"). No retries. |
+| E4  | LLM request times out                                                  | **Abort the turn immediately** with a clear timeout message. No retries.                                                             |
+| E5  | LLM returns an HTTP error (4xx/5xx) mid-loop                           | **Abort the turn immediately**, surfacing the status + body. No retries.                                                             |
+| E6  | Conversation exceeds context window                                    | Compact per §3.5 before the next call.                                                                                               |
+| E7  | Compaction summarization call fails                                    | Fall back to truncation (§3.5); do not abort.                                                                                        |
+| E8  | Foreground command exceeds its timeout                                 | Kill the process; return a timeout error as the tool result.                                                                         |
+| E9  | `check_command` with an unknown id                                     | Return an error result ("unknown command id").                                                                                       |
+| E10 | Model never calls `finish` (loops on tools)                            | No cap by design (§8). The user can interrupt with Ctrl-C. Risk documented.                                                          |
+| E11 | Model returns text with no tool calls and no `finish`                  | Treat the text as the final answer; end the turn.                                                                                    |
+| E12 | `edit_file` `oldString` matches 0 or >1 times (and `replaceAll` false) | Return an error result describing the match count; model adjusts.                                                                    |
+| E13 | `read_file` on a binary file                                           | Return a notice that the file is binary (do not dump bytes).                                                                         |
+| E14 | Tool/command output exceeds `maxToolOutputChars`                       | Truncate and append a truncation notice.                                                                                             |
+| E15 | User presses Ctrl-C during a turn                                      | Interrupt the current turn (kill any running foreground command), return to the REPL prompt.                                         |
+| E16 | Config file missing                                                    | Use built-in defaults; if `baseUrl`/`model` are then unset, print a clear setup hint and exit.                                       |
+| E17 | Config file present but invalid (bad JSON / unknown keys)              | Print a clear error naming the problem and exit (do not start the REPL).                                                             |
+
+---
+
+## 5. Non-Functional Requirements
+
+- **Performance:**
+  - First streamed token should appear promptly after the LLM begins generating
+    (no artificial buffering of the stream).
+  - Tool execution should not block the event loop (I/O and child processes are
+    async).
+- **Scalability:** Single-user, single-session, local. No concurrency requirements
+  beyond async I/O within one process.
+- **Security:**
+  - Trusted local use. The harness runs real file operations and real shell commands
+    with the user's privileges and performs **no sandboxing** (see §8).
+  - If the llama.cpp server was started with `--api-key`, the harness sends it as a
+    `Bearer` token from `Config.apiKey`.
+  - Secrets (API key) are read from config/env, never logged.
+- **Availability:** Local tool; no uptime SLA. Fails fast with clear messages when
+  the server is down (§4, E3–E5).
+- **Compatibility:**
+  - Node.js **18+** (relies on global `fetch` and `node:child_process`).
+  - Windows (PowerShell) and Unix (sh/bash).
+- **Accessibility:** N/A (terminal application).
+- **Reliability:** The harness must not crash on tool errors or malformed model
+  output; only LLM/server connectivity errors abort a turn.
+
+---
+
+## 6. Data Requirements
+
+### 6.1 Configuration
+
+Resolved from, in priority order: \*\*CLI flags > environment variables > config file
+
+> built-in defaults.\*\*
+
+**Config file** (default `./harness.config.json`, override with `--config <path>`):
+JSON is the primary format (no extra dependency). YAML is an optional extension if a
+parser is available; JSON MUST always work.
+
+| Key                   | Type           | Default                 | Env override                 | Description                                                                              |
+| --------------------- | -------------- | ----------------------- | ---------------------------- | ---------------------------------------------------------------------------------------- |
+| `baseUrl`             | string         | `http://localhost:8080` | `HARNESS_BASE_URL`           | llama.cpp server base URL.                                                               |
+| `model`               | string         | _(none — required)_     | `HARNESS_MODEL`              | Model name/id to request.                                                                |
+| `apiKey`              | string         | `""`                    | `HARNESS_API_KEY`            | Bearer token if the server uses `--api-key`.                                             |
+| `temperature`         | number         | `0.2`                   | `HARNESS_TEMPERATURE`        | Sampling temperature.                                                                    |
+| `maxContext`          | number         | `8192`                  | `HARNESS_MAX_CONTEXT`        | Model context window in tokens (must match the served model).                            |
+| `compactThreshold`    | number         | `0.8`                   | `HARNESS_COMPACT_THRESHOLD`  | Fraction of `maxContext` at which compaction triggers.                                   |
+| `compactKeepMessages` | number         | `6`                     | `HARNESS_COMPACT_KEEP`       | Recent messages kept verbatim during compaction.                                         |
+| `commandTimeoutMs`    | number         | `60000`                 | `HARNESS_COMMAND_TIMEOUT_MS` | Default foreground command timeout.                                                      |
+| `maxToolOutputChars`  | number         | `20000`                 | `HARNESS_MAX_TOOL_OUTPUT`    | Truncation limit for tool/command output.                                                |
+| `systemPrompt`        | string \| null | built-in default        | `HARNESS_SYSTEM_PROMPT`      | Replaces the built-in system prompt if set.                                              |
+| `parallelToolCalls`   | boolean        | `true`                  | `HARNESS_PARALLEL_TOOLS`     | Enable parallel tool calls.                                                              |
+| `shell`               | string         | `"auto"`                | `HARNESS_SHELL`              | Shell for `run_command` (`auto`, `powershell`, `bash`, `sh`, or a path).                 |
+| `maxIterations`       | number \| null | `null` (no cap)         | `HARNESS_MAX_ITERATIONS`     | Optional safety cap on tool-loop iterations per turn. `null` = no cap (default, per §8). |
+
+**Built-in system prompt (default):** a concise coding-agent persona instructing the
+model to: use the provided tools to accomplish the task; read before editing; run
+tests/builds to verify; and **always call `finish` with a clear summary when the task
+is complete**. `Config.systemPrompt`, when set, replaces this default.
+
+### 6.2 Input Formats
+
+- **User input:** free-form text typed at the REPL prompt (or the initial task arg).
+- **LLM request:** OpenAI chat-completions JSON (`messages`, `tools`, `tool_choice`,
+  `parallel_tool_calls`, `stream`, sampling params).
+- **Tool arguments:** JSON objects validated against each tool's JSON schema.
+
+### 6.3 Output Formats
+
+- **Terminal:** streamed text + per-tool-call lines + final answer (§3.6).
+- **LLM response:** OpenAI chat-completions (streamed SSE when `stream: true`),
+  including `usage` token counts.
+- **Tool results:** plain strings fed back as `tool` Messages.
+
+### 6.4 Storage & Retention
+
+- **No persistent storage.** The conversation and background-command handles live in
+  memory for the duration of the session only. No transcript/log files are written
+  (per requirement). On exit, all state is discarded.
+- The only files the harness creates/edits are those the agent explicitly writes via
+  `write_file`/`edit_file` as part of a task.
+
+---
+
+## 7. External Dependencies
+
+| Dependency                   | Role                     | Notes                                                                                                                                                                            |
+| ---------------------------- | ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **llama.cpp `llama-server`** | The LLM backend.         | Must be running and started with `--jinja` for tool calling. Exposes OpenAI-compatible `POST /v1/chat/completions` (streaming via SSE). The harness does not start or manage it. |
+| **Node.js runtime (18+)**    | Host runtime.            | Provides global `fetch`, `node:child_process`, `node:fs`, `node:path`.                                                                                                           |
+| **Local filesystem**         | Target of file tools.    | Unrestricted access (trusted local use).                                                                                                                                         |
+| **Local shell**              | Target of `run_command`. | PowerShell (Windows) / sh-bash (Unix), or `Config.shell`.                                                                                                                        |
+
+**Runtime library guidance (keep minimal):**
+
+- HTTP + SSE: use global `fetch` with a manual SSE line parser (no heavy SDK).
+- Config: native `JSON.parse`; optional `js-yaml` only if YAML support is added.
+- CLI args: `node:util` `parseArgs` (no dependency).
+- No framework required.
+
+---
+
+## 8. Constraints and Assumptions
+
+**Constraints**
+
+- C1. The harness is a **CLI only**; it is not a library-first or HTTP service.
+- C2. The LLM backend is **llama.cpp only** (OpenAI-compatible endpoint). No other
+  providers are supported.
+- C3. Tool calling requires the llama.cpp server to be started with `--jinja`; the
+  served model must be capable of OpenAI-style tool calls.
+- C4. **No sandboxing.** File and shell tools operate with the user's full local
+  privileges. This is a deliberate choice for trusted local use.
+- C5. **No iteration cap by default** (`maxIterations: null`). The loop is bounded
+  only by the model calling `finish` or the user interrupting.
+- C6. **No persistent state** across sessions.
+
+**Assumptions**
+
+- A1. The user runs the harness on their own machine and trusts the agent with local
+  file and shell access.
+- A2. The user is responsible for starting a compatible llama.cpp server and choosing
+  a model with a context window matching `maxContext`.
+- A3. The working directory at launch is the project the agent should operate on.
+
+**Risk (documented, accepted):**
+
+- R1. With no iteration cap (C5), a weak or looping model could run tools
+  indefinitely. Mitigations available: the user can Ctrl-C at any time, and the
+  optional `maxIterations` config flag can impose a cap if desired. This is accepted
+  per the explicit requirement to trust the `finish` tool.
+
+---
+
+## 9. Acceptance Criteria
+
+The implementation is correct when all of the following hold:
+
+1. **Startup:** `harness` with a reachable server and valid config starts the REPL
+   and shows a prompt. With no `model` configured, it prints a setup hint and exits.
+2. **Happy path:** Given a task, the agent calls tools, streams text, prints a line
+   per tool call, and ends by printing the `finish` answer; the REPL returns to the
+   prompt.
+3. **Multi-turn:** A second task in the same session has access to the first turn's
+   file/context (history retained).
+4. **Tool correctness:**
+   - `read_file` returns content; `write_file` creates/overwrites; `edit_file` edits
+     exactly the matched text and errors on 0 or >1 matches (without `replaceAll`);
+     `list_dir` lists entries; `search` returns text and glob matches; `run_command`
+     returns exit code + stdout/stderr.
+5. **Self-correction:** A malformed tool call (e.g. missing required arg) does not
+   crash the harness; the error is returned and the model can retry.
+6. **Tool failure:** A failing command (non-zero exit) returns the error to the model
+   without aborting the turn.
+7. **Server down:** If the server is unreachable, the turn aborts immediately with a
+   clear message (no retries, no crash).
+8. **Compaction:** When `usage.prompt_tokens` exceeds `compactThreshold * maxContext`,
+   older messages are summarized and the turn continues successfully within the
+   context window.
+9. **Timeout:** A foreground command exceeding its timeout is killed and a timeout
+   error is returned as the tool result.
+10. **Background commands:** `run_command(background: true)` returns an id;
+    `check_command(id)` reports running/exited status and output.
+11. **Parallel tool calls:** When the model returns multiple tool calls in one turn,
+    all are executed (mutating ones serialized) and all results are returned in order.
+12. **Config precedence:** A value set via env var overrides the config file; a CLI
+    flag overrides both.
+13. **No persistence:** After exit, no transcript/log files are created by the
+    harness.
+
+---
+
+## 10. Open Questions
+
+_(None — all requirements resolved. Defaults chosen for unspecified details are
+documented inline in §3.5, §6.1, and §8.)_
