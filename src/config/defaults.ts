@@ -55,6 +55,7 @@ export const DEFAULT_CONFIG: Config = {
   dynamicTools: false,
   subagentMaxIterations: 50,
   maxSubagentDepth: 3,
+  hooks: [],
 };
 
 /** Map of config key -> environment variable name (spec §6.1). */
@@ -75,6 +76,7 @@ export const ENV_KEYS: Record<keyof Config, string> = {
   dynamicTools: "HARNESS_DYNAMIC_TOOLS",
   subagentMaxIterations: "HARNESS_SUBAGENT_MAX_ITER",
   maxSubagentDepth: "HARNESS_MAX_SUBAGENT_DEPTH",
+  hooks: "HARNESS_HOOKS",
 };
 
 /** The set of valid config keys, used for unknown-key detection. */

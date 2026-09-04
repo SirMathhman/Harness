@@ -54,7 +54,7 @@ command is killed).
 
 Type `/help` to list the available commands. Type `/context` to see how much of the
 context window is in use (prompt tokens from the last LLM call vs. the configured
-window).
+window). Type `/hooks` to see the registered lifecycle hooks (see [Hooks](#hooks)).
 
 ## Scripts
 
@@ -106,6 +106,7 @@ Only set it explicitly when you need to pick among several loaded models.
 | `dynamicTools`        | boolean        | `false`                  | `HARNESS_DYNAMIC_TOOLS`      | Advertise a constant tool surface + `search_tools`/`call_tool` instead of the full catalog (spec §3.3.1). |
 | `shell`               | string         | `"auto"`                 | `HARNESS_SHELL`              | `auto`, `powershell`, `bash`, or `sh`.                                                                    |
 | `maxIterations`       | number \| null | `null`                   | `HARNESS_MAX_ITERATIONS`     | Cap on tool-call iterations per turn.                                                                     |
+| `hooks`               | string[]       | `[]`                     | `HARNESS_HOOKS`              | Hook files to load (see [Hooks](#hooks)). The env var is a comma-separated list.                          |
 
 ### CLI flags
 
@@ -116,6 +117,7 @@ Only set it explicitly when you need to pick among several loaded models.
 --temperature <n>      Sampling temperature
 --max-context <n>      Context window size in tokens
 --max-iterations <n>   Cap on tool-call iterations per turn
+--hooks <path>         Hook file to load (repeatable)
 -h, --help             Show help
 ```
 
@@ -141,6 +143,98 @@ to the model in the original tool-call order.
 **Error semantics:** tool errors and malformed calls are returned to the model as result
 strings (the agent can self-correct); only LLM/server connectivity errors abort the turn.
 
+## Hooks
+
+Hooks let you run your own code at the agent's lifecycle points — to **gate**
+completion behind quality checks, or just to **observe** what the agent is doing.
+
+A hook file is an ES module whose default export is an array of hooks:
+
+```ts
+// hooks.ts
+import { execSync } from "node:child_process";
+import type { Hook } from "harness";
+
+const hooks: Hook[] = [
+  {
+    // The agent cannot finish the turn until type-checking passes.
+    events: ["turn:end"],
+    handler: (ctx) => {
+      try {
+        execSync("npx tsc --noEmit", { cwd: ctx.cwd, stdio: "pipe" });
+      } catch (err) {
+        return String((err as { stdout?: Buffer }).stdout ?? err); // string -> block
+      }
+      // returning nothing -> allow
+    },
+  },
+  {
+    // Advisory only: the write still happens, the agent just sees the warnings.
+    events: ["tool:after"],
+    handler: (ctx) => {
+      if (ctx.tool?.name !== "write_file") return;
+      const warnings = lint(String(ctx.tool.args.path));
+      if (warnings.length > 0) return { message: warnings.join("\n"), block: false };
+    },
+    includeSubagents: true, // also fires inside subagents
+  },
+];
+
+export default hooks;
+```
+
+Point the harness at it with `--hooks ./hooks.ts`, `HARNESS_HOOKS=./hooks.ts`, or
+`"hooks": ["./hooks.ts"]` in `harness.config.json`. Relative paths resolve from the
+project root; files load in the order given.
+
+### Events
+
+| Event           | Fires when                                   | Can block? | Block effect                                |
+| --------------- | -------------------------------------------- | ---------- | ------------------------------------------- |
+| `tool:before`   | Just before a tool executes                  | **yes**    | Tool is not executed; message → tool result |
+| `tool:after`    | Just after a tool completes (success or not) | no         | —                                           |
+| `turn:start`    | A new user task begins                       | no         | —                                           |
+| `turn:end`      | The model calls `finish`                     | **yes**    | `finish` is rejected; message → tool result |
+| `session:start` | The REPL session is created                  | no         | —                                           |
+| `session:end`   | The REPL session is torn down                | no         | —                                           |
+| `on:compaction` | Just before context compaction runs          | no         | —                                           |
+
+A block returned on a non-blocking event is downgraded to an advisory message.
+
+### Return values
+
+| Return                      | Meaning                                                              |
+| --------------------------- | -------------------------------------------------------------------- |
+| nothing (`void`)            | Allow. No message.                                                   |
+| `"reason"`                  | Block, with the string as the reason.                                |
+| `{ message, block: true }`  | Block, with `message` as the reason.                                 |
+| `{ message }`               | Advisory: `message` is injected as a system message; nothing blocks. |
+
+When several hooks block the same event, the reasons are joined with `"; "`;
+advisory messages are joined with newlines into one system message.
+
+### Semantics
+
+- **Synchronous only.** Handlers must not return a Promise — use `execSync` and
+  friends for shell work.
+- **Observe, don't modify.** A hook can block an event or add a message; it cannot
+  rewrite tool arguments, messages, or abort the turn.
+- **Errors are contained.** A handler that throws blocks the event (or, on a
+  non-blocking event, produces an advisory), is logged to stderr with its source
+  file, and does not stop the remaining hooks from running.
+- **Subagents opt in.** Hooks only fire inside a subagent when they set
+  `includeSubagents: true`; `ctx.depth` is then greater than 0.
+- **Fatal loading.** A hook file that is missing, fails to import, or contains a
+  malformed entry aborts startup with an error naming the file and the problem.
+- **Runtime toggle.** `/hooks` lists what is registered, `/hooks off` disables the
+  system for the rest of the session, and `/hooks on` re-enables it.
+- **Trust.** Hook files run in-process with the harness's privileges. There is no
+  sandbox.
+- **ESM only.** Hook files are loaded with dynamic `import()`. A `.ts` hook file
+  needs a runtime that can import TypeScript directly (`bun run dev` does; so does
+  Node with type stripping) — otherwise compile it, or write the hook as `.js`/
+  `.mjs`.
+
 ## Testing
 
 `bun test` runs the full suite (unit + integration). Integration tests drive the real
@@ -164,6 +258,19 @@ required.
 | 11. Parallel tool calls    | `sse.test.ts` (multi tool-call accumulation), `tools.test.ts` (ordering)              |
 | 12. Config precedence      | `config.test.ts` (defaults/env/flags, coercion)                                       |
 | 13. No persistence         | `cli.test.ts` (in-memory session, no config file created)                             |
+
+### Hooks acceptance criteria (hooks spec §9)
+
+| AC                         | Covered by test                                                          |
+| -------------------------- | ------------------------------------------------------------------------ |
+| 1. Blocking `turn:end`     | `hooks.test.ts` (finish rejected, agent retries; `maxIterations` honored) |
+| 2. Blocking `tool:before`  | `hooks.test.ts` (a `*.min.js` write is never executed)                    |
+| 3. Advisory `tool:after`   | `hooks.test.ts` (warning follows the tool result; the write stands)       |
+| 4. Handler throws          | `hooks.test.ts` (blocks, is logged, other hooks still run)                |
+| 5. `/hooks` on/off         | `hooks.test.ts` (listing, toggle, dispatch suppressed while off)          |
+| 6. `includeSubagents`      | `hooks.test.ts` (depth filtering; subagent finish blocked then allowed)   |
+| 7. Zero overhead unhooked  | `hooks.test.ts` (inert manager, no file loading, loop unchanged)          |
+| 8. Malformed hook file     | `hooks.test.ts` (fatal startup exit + every loader validation error)      |
 
 ## Troubleshooting
 

@@ -14,6 +14,7 @@ import { runTurn } from "../src/agent/loop.js";
 import { buildToolRegistry, executeToolCalls } from "../src/tools/index.js";
 import { ServerUnreachableError } from "../src/llm/errors.js";
 import type { LLMClient } from "../src/llm/client.js";
+import { HookManager } from "../src/hooks/index.js";
 
 const emptyFlags: CliFlags = {};
 
@@ -228,6 +229,8 @@ describe("subagent runner (§3.8.2, §3.8.5)", () => {
       messages: [{ role: "system", content: "sys" }],
       config: cfg,
       lastPromptTokens: null,
+      hooks: new HookManager(),
+      depth: 0,
     });
 
     // CAP: two non-finish tool calls exhaust the cap -> kind "cap".

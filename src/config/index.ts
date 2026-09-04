@@ -14,6 +14,7 @@ export interface CliFlags {
   temperature?: number;
   maxContext?: number;
   maxIterations?: number;
+  hooks?: string[];
   help?: boolean;
 }
 
@@ -35,6 +36,7 @@ export function parseCliArgs(argv: string[]): {
       temperature: { type: "string" },
       "max-context": { type: "string" },
       "max-iterations": { type: "string" },
+      hooks: { type: "string", multiple: true },
       help: { type: "boolean", short: "h" },
     },
   });
@@ -50,6 +52,7 @@ export function parseCliArgs(argv: string[]): {
     maxIterations: values["max-iterations"]
       ? Number(values["max-iterations"])
       : undefined,
+    hooks: values.hooks,
     help: values.help,
   };
   return { flags, positionals };
@@ -121,6 +124,12 @@ function envValue(key: keyof Config, env: NodeJS.ProcessEnv): unknown {
       return raw === "true" || raw === "1";
     case "maxIterations":
       return raw === "" || raw === "null" ? null : Number(raw);
+    case "hooks":
+      // Comma-separated list of hook file paths.
+      return raw
+        .split(",")
+        .map((p) => p.trim())
+        .filter((p) => p.length > 0);
     default:
       return raw;
   }
@@ -161,6 +170,7 @@ export function resolveConfig(
   if (flags.maxContext !== undefined) merged.maxContext = flags.maxContext;
   if (flags.maxIterations !== undefined)
     merged.maxIterations = flags.maxIterations;
+  if (flags.hooks !== undefined) merged.hooks = flags.hooks;
 
   return validateConfig(merged as unknown as Config);
 }
@@ -246,6 +256,13 @@ export function validateConfig(cfg: Config): Config {
   }
   if (typeof cfg.maxSubagentDepth !== "number" || cfg.maxSubagentDepth < 0) {
     errors.push("maxSubagentDepth must be a non-negative integer.");
+  }
+  if (
+    cfg.hooks !== undefined &&
+    (!Array.isArray(cfg.hooks) ||
+      cfg.hooks.some((p) => typeof p !== "string" || p.length === 0))
+  ) {
+    errors.push("hooks must be an array of non-empty file paths.");
   }
 
   if (errors.length > 0) {

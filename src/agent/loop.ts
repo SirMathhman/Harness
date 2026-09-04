@@ -1,4 +1,5 @@
 import type { Message, Session } from "../types.js";
+import type { HookOutcome } from "../hooks/index.js";
 import {
   defaultLLMClient,
   type LLMClient,
@@ -12,7 +13,11 @@ import {
   shouldCompact,
   truncateCompaction,
 } from "../context/compaction.js";
-import { executeToolCalls, ToolRegistry } from "../tools/index.js";
+import {
+  executeToolCalls,
+  ToolRegistry,
+  type ToolLifecycle,
+} from "../tools/index.js";
 
 /** Callbacks the CLI uses to render live output (spec §3.6). */
 export interface AgentCallbacks {
@@ -61,6 +66,9 @@ export async function runTurn(
   const { config } = session;
   session.messages.push({ role: "user", content: task });
 
+  // turn:start (hooks §3.1): advisory output lands before the first LLM call.
+  appendAdvisory(session, session.hooks.dispatch("turn:start", ctxOf(session)));
+
   let iterations = 0;
   for (;;) {
     if (signal?.aborted) throw new Error("Turn aborted.");
@@ -94,36 +102,55 @@ export async function runTurn(
       return { answer: response.content ?? "", kind: "text", finished: false };
     }
 
-    // Check for a `finish` call (terminal).
+    // Check for a `finish` call (terminal unless a `turn:end` hook rejects it).
     const finishCall = response.toolCalls.find((tc) => tc.name === "finish");
     if (finishCall) {
-      const answer = String(finishCall.arguments.answer ?? "");
-      // Append a tool result for the finish call to keep history consistent.
+      const outcome = session.hooks.dispatch("turn:end", ctxOf(session));
+      if (outcome.block === null) {
+        const answer = String(finishCall.arguments.answer ?? "");
+        // Append a tool result for the finish call to keep history consistent.
+        session.messages.push({
+          role: "tool",
+          tool_call_id: finishCall.id,
+          name: "finish",
+          content: answer,
+        });
+        appendAdvisory(session, outcome);
+        return { answer, kind: "finished", finished: true };
+      }
+      // hooks §3.5: `finish` is rejected. The reason becomes its tool result
+      // and the loop continues, so the model can fix the problem and retry.
       session.messages.push({
         role: "tool",
         tool_call_id: finishCall.id,
         name: "finish",
-        content: answer,
+        content: outcome.block,
       });
-      return { answer, kind: "finished", finished: true };
+      appendAdvisory(session, outcome);
+      callbacks.onToolResult?.("finish", false, firstLine(outcome.block));
     }
 
+    // The calls left to execute: everything but a `finish` handled above.
+    const pending = response.toolCalls.filter((tc) => tc !== finishCall);
+
     // Fire onToolCall for each call, then execute.
-    for (const tc of response.toolCalls) {
+    for (const tc of pending) {
       callbacks.onToolCall?.(tc.name, tc.arguments);
     }
 
-    // Execute the (non-finish) tool calls.
+    // Execute the (non-finish) tool calls, with tool:before / tool:after
+    // dispatched around each of them (hooks §3.1).
+    const hooked = makeToolLifecycle(session);
     const results = await executeToolCalls(
       registry,
-      response.toolCalls,
+      pending,
       config.maxToolOutputChars,
+      hooked?.lifecycle,
     );
     for (const result of results) {
-      const call = response.toolCalls.find(
-        (tc) => tc.id === result.tool_call_id,
-      );
-      const ok = !result.content.startsWith("Error:");
+      const call = pending.find((tc) => tc.id === result.tool_call_id);
+      const blocked = hooked?.wasBlocked(result.tool_call_id) ?? false;
+      const ok = !blocked && !result.content.startsWith("Error:");
       const summary = firstLine(result.content);
       callbacks.onToolResult?.(call?.name ?? "tool", ok, summary);
       session.messages.push({
@@ -132,6 +159,8 @@ export async function runTurn(
         name: call?.name,
         content: result.content,
       });
+      // hooks §3.5: a tool's advisory message follows its result message.
+      appendAdvisory(session, hooked?.advisoryFor(result.tool_call_id));
     }
 
     // Optional iteration cap (E10 / R1).
@@ -163,6 +192,9 @@ async function maybeCompact(
   if (!shouldCompact(session.lastPromptTokens, session.config)) return;
 
   callbacks.onCompacting?.();
+  // on:compaction (hooks §3.1): advisory output lands before the recap call.
+  appendAdvisory(session, session.hooks.dispatch("on:compaction", ctxOf(session)));
+
   const { system, older, recent } = partitionForCompaction(
     session.messages,
     session.config,
@@ -182,6 +214,75 @@ async function maybeCompact(
     // E7: recap failed for another reason -> fall back to truncation.
     session.messages = truncateCompaction(session.messages, session.config);
   }
+}
+
+/** The dispatch options every session-level hook event shares. */
+function ctxOf(session: Session): { depth: number } {
+  return { depth: session.depth };
+}
+
+/**
+ * Append a hook's advisory message to the conversation as a single system
+ * message (hooks spec §3.5). A dispatch with no advisory changes nothing.
+ */
+function appendAdvisory(
+  session: Session,
+  outcome: HookOutcome | string | null | undefined,
+): void {
+  const advisory = typeof outcome === "string" ? outcome : outcome?.advisory;
+  if (!advisory) return;
+  session.messages.push({ role: "system", content: advisory });
+}
+
+/**
+ * Bridge one batch of tool calls to the hooks system, or `undefined` when no
+ * hook could fire — the zero-overhead path (hooks §5), which hands
+ * `executeToolCalls` no lifecycle at all.
+ *
+ * Advisory messages are kept per tool call so each one can be appended right
+ * after its own tool result, and blocked calls are remembered so the CLI can
+ * render them as failures rather than successes.
+ */
+function makeToolLifecycle(session: Session):
+  | {
+      lifecycle: ToolLifecycle;
+      advisoryFor(callId: string): string | null;
+      wasBlocked(callId: string): boolean;
+    }
+  | undefined {
+  if (!session.hooks.active) return undefined;
+
+  const advisories = new Map<string, string[]>();
+  const blocked = new Set<string>();
+  const note = (callId: string, advisory: string | null) => {
+    if (!advisory) return;
+    const existing = advisories.get(callId);
+    if (existing) existing.push(advisory);
+    else advisories.set(callId, [advisory]);
+  };
+
+  return {
+    lifecycle: {
+      before(call) {
+        const outcome = session.hooks.dispatch("tool:before", {
+          depth: session.depth,
+          tool: { name: call.name, args: call.arguments },
+        });
+        note(call.id, outcome.advisory);
+        if (outcome.block !== null) blocked.add(call.id);
+        return outcome.block;
+      },
+      after(call, result) {
+        const outcome = session.hooks.dispatch("tool:after", {
+          depth: session.depth,
+          tool: { name: call.name, args: call.arguments, result },
+        });
+        note(call.id, outcome.advisory);
+      },
+    },
+    advisoryFor: (callId) => advisories.get(callId)?.join("\n") ?? null,
+    wasBlocked: (callId) => blocked.has(callId),
+  };
 }
 
 /** First line of a string, trimmed to a short summary. */

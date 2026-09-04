@@ -2,6 +2,7 @@
  * Core domain types for the Harness agent runtime.
  * Mirrors §2 of SPECIFICATION.md.
  */
+import type { HookManager } from "./hooks/manager.js";
 
 /** Roles allowed on a chat message (OpenAI chat format). */
 export type Role = "system" | "user" | "assistant" | "tool";
@@ -101,6 +102,11 @@ export interface Config {
    * `N < this` (spec §3.8.4).
    */
   maxSubagentDepth: number;
+  /**
+   * Paths to hook files (hooks spec §3.9). Relative paths are resolved from
+   * the project root. Omitted or empty means no hooks are loaded at all.
+   */
+  hooks?: string[];
 }
 
 /** One REPL invocation. Holds the running conversation. */
@@ -109,6 +115,10 @@ export interface Session {
   config: Config;
   /** prompt_tokens from the most recent LLM call (for compaction). */
   lastPromptTokens: number | null;
+  /** The lifecycle hooks this session dispatches to (hooks spec §2.2). */
+  hooks: HookManager;
+  /** Subagent nesting depth; 0 for the main session (hooks spec §3.7). */
+  depth: number;
 }
 
 /** Token usage reported by the LLM on the final stream chunk. */

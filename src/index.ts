@@ -2,13 +2,15 @@
 import { parseCliArgs, resolveConfig, ConfigError } from "./config/index.js";
 import { discoverModel } from "./llm/client.js";
 import { startRepl } from "./cli/repl.js";
+import { createHookManager, HookLoadError } from "./hooks/index.js";
 
 /**
  * Harness entry point (spec §3.6).
  *
  * Parses CLI args, resolves + validates config, auto-discovers the model if
- * none was configured, then starts the REPL. Config errors produce clear,
- * actionable messages and a non-zero exit code.
+ * none was configured, loads the configured hook files, then starts the REPL.
+ * Config errors and hook-loading errors produce clear, actionable messages and
+ * a non-zero exit code (hooks spec §3.3).
  */
 async function main(): Promise<void> {
   const { flags, positionals } = parseCliArgs(process.argv.slice(2));
@@ -53,7 +55,21 @@ async function main(): Promise<void> {
     return;
   }
 
-  await startRepl(config, initialTask);
+  // Hooks are loaded before the session exists, so `session:start` can fire
+  // against the full set. A bad hook file is fatal (hooks spec §3.3).
+  let hooks;
+  try {
+    hooks = await createHookManager(config.hooks);
+  } catch (err) {
+    if (err instanceof HookLoadError) {
+      console.error(`Hook error: ${err.message}`);
+      process.exitCode = 1;
+      return;
+    }
+    throw err;
+  }
+
+  await startRepl(config, initialTask, hooks);
 }
 
 function printHelp(): void {
@@ -70,12 +86,25 @@ function printHelp(): void {
       "  --temperature <n>      Sampling temperature (default 0.2)",
       "  --max-context <n>      Context window size in tokens (default 8192)",
       "  --max-iterations <n>   Cap on tool-call iterations per turn",
+      "  --hooks <path>         Hook file to load (repeatable)",
       "  -h, --help             Show this help",
       "",
       "Type 'exit' or 'quit' at the prompt to leave the REPL.",
     ].join("\n"),
   );
 }
+
+/**
+ * The hooks API, re-exported so a hook file can write
+ * `import type { Hook } from "harness"` (hooks spec §3.2).
+ */
+export type {
+  Hook,
+  HookContext,
+  HookEvent,
+  HookHandler,
+  HookResult,
+} from "./hooks/index.js";
 
 main().catch((err) => {
   console.error(`Fatal: ${(err as Error).message}`);

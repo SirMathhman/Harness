@@ -58,5 +58,5 @@ export function buildToolRegistry(config: Config): {
 }
 
 export { ToolRegistry, dispatch, validateArgs } from "./registry.js";
-export { executeToolCalls } from "./execute.js";
+export { executeToolCalls, type ToolLifecycle } from "./execute.js";
 export { BackgroundCommandManager } from "./commands.js";

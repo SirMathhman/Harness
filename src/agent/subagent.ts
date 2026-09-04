@@ -9,6 +9,7 @@ import {
 import { runTurn, type AgentCallbacks } from "./loop.js";
 import { LLMError } from "../llm/errors.js";
 import { defaultLLMClient, type LLMClient } from "../llm/client.js";
+import { HookManager } from "../hooks/index.js";
 
 /**
  * A live-output event from a running subagent (spec §3.8.6). The CLI renders
@@ -46,11 +47,16 @@ export type SubagentRender = (
  * `render` (optional) receives the subagent's live-output events so the CLI
  * can display them indented (spec §3.8.6). When omitted, the subagent runs
  * silently (useful for tests and non-interactive callers).
+ *
+ * `hooks` is the session's `HookManager`, shared with every subagent it
+ * spawns. Only hooks marked `includeSubagents` actually fire there; the
+ * manager filters on the subagent's depth (hooks spec §3.7).
  */
 export function makeSubagentRunner(
   config: Config,
   client: LLMClient = defaultLLMClient,
   render?: SubagentRender,
+  hooks: HookManager = new HookManager(),
 ): SubagentRunner {
   return async (opts: SubagentRunOptions): Promise<string> => {
     // Build the subagent's isolated session: fresh messages, fresh manager,
@@ -58,7 +64,7 @@ export function makeSubagentRunner(
     const { registry, manager } = buildToolRegistry(config);
     registry.register(
       makeSpawnSubagentTool(
-        makeSubagentRunner(config, client, render),
+        makeSubagentRunner(config, client, render, hooks),
         opts.depth,
         config.maxSubagentDepth,
         config.subagentMaxIterations,
@@ -76,6 +82,8 @@ export function makeSubagentRunner(
       messages: [{ role: "system", content: systemPrompt }],
       config: subagentConfig,
       lastPromptTokens: null,
+      hooks,
+      depth: opts.depth,
     };
 
     // Adapt the render callback into the agent loop's AgentCallbacks.

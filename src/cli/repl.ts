@@ -5,6 +5,7 @@ import { createSession } from "../agent/session.js";
 import type { SubagentRender } from "../agent/subagent.js";
 import { LLMError } from "../llm/errors.js";
 import { BackgroundCommandManager } from "../tools/index.js";
+import { HookManager } from "../hooks/index.js";
 
 /**
  * Run the interactive REPL (spec §3.6).
@@ -15,13 +16,18 @@ import { BackgroundCommandManager } from "../tools/index.js";
  * - Ctrl-C (E15): aborts the current turn, kills the foreground command, and
  *   returns to the prompt.
  * - `exit` / `quit` end the session.
+ *
+ * `hooks` holds the session's already-loaded lifecycle hooks (hooks spec
+ * §3.9); omitted → an empty, inert manager.
  */
 export async function startRepl(
   config: Config,
   initialTask?: string | null,
+  hooks: HookManager = new HookManager(),
 ): Promise<void> {
   const { session, registry, manager } = createSession(config, {
     render: makeSubagentRender(),
+    hooks,
   });
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   let closed = false;
@@ -54,13 +60,18 @@ export async function startRepl(
     if (input === "") continue;
     const cmd = findCommand(input);
     if (cmd) {
-      const out = cmd.run(ctx);
+      const out = cmd.run(ctx, commandArgs(input));
       if (out !== undefined) process.stdout.write(out + "\n");
       if (cmd.exits) break;
       continue;
     }
     await executeTurn(session, registry, manager, callbacks, input);
   }
+
+  // session:end (hooks §3.1): a block is ignored, but the message is shown —
+  // the session is ending, so there is no conversation left to inject it into.
+  const ended = session.hooks.dispatch("session:end", { depth: 0 });
+  if (ended.advisory) process.stdout.write(`${ended.advisory}\n`);
 
   manager.killAll();
   rl.close();
@@ -130,6 +141,11 @@ export interface ReplContext {
   session: ReturnType<typeof createSession>["session"];
 }
 
+/** Split the whitespace-separated arguments off a command line. */
+export function commandArgs(input: string): string[] {
+  return input.trim().split(/\s+/).slice(1);
+}
+
 /**
  * A REPL slash command. The registry is the single source of truth for both
  * dispatch (in the REPL loop) and the `/help` listing, so the two can never
@@ -141,7 +157,13 @@ export interface ReplCommand {
   /** One-line description shown by `/help`. */
   summary: string;
   /** Run the command; return text to print, or undefined to print nothing. */
-  run: (ctx: ReplContext) => string | undefined;
+  run: (ctx: ReplContext, args: string[]) => string | undefined;
+  /**
+   * If true, the command also matches when arguments follow its name (e.g.
+   * `/hooks off`). Commands without it match their exact name only, so a task
+   * that merely starts with a command word is still run as a task.
+   */
+  takesArgs?: boolean;
   /** If true, the REPL exits after running the command. */
   exits?: boolean;
 }
@@ -162,6 +184,12 @@ export const REPL_COMMANDS: ReplCommand[] = [
     run: (ctx) => contextUsageLine(ctx.session),
   },
   {
+    name: "/hooks",
+    summary: "List registered hooks; `/hooks off|on` disables/re-enables them.",
+    run: (ctx, args) => hooksCommand(ctx.session.hooks, args),
+    takesArgs: true,
+  },
+  {
     name: "/exit",
     summary: "End the session (also: exit, quit, Ctrl-D).",
     run: () => undefined,
@@ -177,7 +205,10 @@ export function findCommand(input: string): ReplCommand | undefined {
   if (input === "exit" || input === "quit") {
     return REPL_COMMANDS.find((c) => c.name === "/exit");
   }
-  return REPL_COMMANDS.find((c) => c.name === input);
+  const head = input.trim().split(/\s+/)[0];
+  return REPL_COMMANDS.find(
+    (c) => c.name === input || (c.takesArgs === true && c.name === head),
+  );
 }
 
 /**
@@ -208,6 +239,39 @@ export function contextUsageLine(
   }
   const pct = ((used / total) * 100).toFixed(1);
   return `context: ${used} / ${total} tokens (${pct}%)`;
+}
+
+/**
+ * The `/hooks` command (hooks spec §3.8): list the registered hooks, or
+ * toggle the whole system off/on for the rest of the session.
+ */
+export function hooksCommand(hooks: HookManager, args: string[] = []): string {
+  const [arg] = args;
+  if (arg === "off") {
+    hooks.setEnabled(false);
+    return "hooks: disabled for this session.";
+  }
+  if (arg === "on") {
+    hooks.setEnabled(true);
+    return "hooks: enabled.";
+  }
+  if (arg !== undefined) {
+    return `Unknown argument "${arg}". Usage: /hooks [on|off]`;
+  }
+  return hooksListing(hooks);
+}
+
+/** The `/hooks` listing: one line per hook with its events, flag, and file. */
+export function hooksListing(hooks: HookManager): string {
+  const registered = hooks.list();
+  if (registered.length === 0) return "hooks: none registered.";
+  const state = hooks.isEnabled() ? "enabled" : "disabled";
+  const lines = [`hooks: ${registered.length} registered (${state})`];
+  for (const { hook, source } of registered) {
+    const flag = hook.includeSubagents ? " [subagents]" : "";
+    lines.push(`  ${hook.events.join(", ")}${flag} — ${source}`);
+  }
+  return lines.join("\n");
 }
 
 /**

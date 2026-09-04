@@ -1,0 +1,90 @@
+/**
+ * User-facing hook types (hooks spec §3.2).
+ *
+ * A hook file is an ES module whose default export is a `Hook[]`. These types
+ * are re-exported from the package root so a hook file can write
+ * `import type { Hook } from "harness"`.
+ */
+
+/** The lifecycle points at which hooks fire (hooks spec §3.1). */
+export type HookEvent =
+  | "tool:before"
+  | "tool:after"
+  | "turn:start"
+  | "turn:end"
+  | "session:start"
+  | "session:end"
+  | "on:compaction";
+
+/** Every valid `HookEvent`, in spec order. Used for validation and messages. */
+export const HOOK_EVENTS: readonly HookEvent[] = [
+  "tool:before",
+  "tool:after",
+  "turn:start",
+  "turn:end",
+  "session:start",
+  "session:end",
+  "on:compaction",
+];
+
+/**
+ * The events on which a block is *effective*. A block returned on any other
+ * event is downgraded to an advisory message (hooks spec §3.1).
+ */
+export const BLOCKING_HOOK_EVENTS: readonly HookEvent[] = [
+  "tool:before",
+  "turn:end",
+];
+
+/** Type guard for a raw value being a valid `HookEvent` literal. */
+export function isHookEvent(value: unknown): value is HookEvent {
+  return (
+    typeof value === "string" && HOOK_EVENTS.includes(value as HookEvent)
+  );
+}
+
+/** Whether a block returned on `event` actually blocks (hooks spec §3.1). */
+export function canBlock(event: HookEvent): boolean {
+  return BLOCKING_HOOK_EVENTS.includes(event);
+}
+
+/** The data a hook handler receives when its event fires. */
+export interface HookContext {
+  /** The event that fired. */
+  event: HookEvent;
+  /** Present for `tool:before` and `tool:after` only. */
+  tool?: {
+    name: string;
+    args: Record<string, unknown>;
+    /** Present for `tool:after` only. The tool's result string. */
+    result?: string;
+  };
+  /** The working directory (project root) the agent is operating in. */
+  cwd: string;
+  /** Subagent depth. 0 = parent session. */
+  depth: number;
+}
+
+/**
+ * What a handler returns (hooks spec §3.2):
+ * - `void` — allow, no message.
+ * - `string` — block, with the string as the reason.
+ * - `{ message, block? }` — block when `block === true`, else advisory.
+ */
+export type HookResult =
+  | void
+  | string
+  | { message: string; block?: boolean };
+
+/** A hook handler. Must be synchronous (hooks spec §8). */
+export type HookHandler = (ctx: HookContext) => HookResult;
+
+/** A user-defined lifecycle handler. */
+export interface Hook {
+  /** One or more events this hook subscribes to. */
+  events: HookEvent[];
+  /** The handler invoked when any subscribed event fires. */
+  handler: HookHandler;
+  /** If true, the hook also fires in subagent contexts. Default: false. */
+  includeSubagents?: boolean;
+}
