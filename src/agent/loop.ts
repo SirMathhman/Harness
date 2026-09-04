@@ -25,9 +25,18 @@ export interface AgentCallbacks {
   onCompacting?: () => void;
 }
 
+/** The three terminal states of a single agent turn. */
+export type TurnOutcome = "finished" | "cap" | "text";
+
 /** The outcome of a single agent turn. */
 export interface TurnResult {
   answer: string;
+  /**
+   * Which terminal state ended the turn: `finished` (the `finish` tool was
+   * called), `cap` (the iteration cap was hit, E10), or `text` (the model
+   * emitted plain text with no tool calls, E11).
+   */
+  kind: TurnOutcome;
   /** True if the turn ended via the `finish` tool. */
   finished: boolean;
 }
@@ -82,7 +91,7 @@ export async function runTurn(
 
     // No tool calls: treat text as the final answer (E11).
     if (response.toolCalls.length === 0) {
-      return { answer: response.content ?? "", finished: false };
+      return { answer: response.content ?? "", kind: "text", finished: false };
     }
 
     // Check for a `finish` call (terminal).
@@ -96,7 +105,7 @@ export async function runTurn(
         name: "finish",
         content: answer,
       });
-      return { answer, finished: true };
+      return { answer, kind: "finished", finished: true };
     }
 
     // Fire onToolCall for each call, then execute.
@@ -132,6 +141,7 @@ export async function runTurn(
         answer:
           `Stopped: reached maxIterations (${config.maxIterations}) without the model ` +
           `calling finish.`,
+        kind: "cap",
         finished: false,
       };
     }

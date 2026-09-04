@@ -11,14 +11,6 @@ import { LLMError } from "../llm/errors.js";
 import { defaultLLMClient, type LLMClient } from "../llm/client.js";
 
 /**
- * The sentinel prefix runTurn uses when it stops at the iteration cap
- * (spec §3.2 / E10). Matching on it lets the subagent runner distinguish a
- * CAP_REACHED outcome from an E11 plain-text answer (both return
- * `finished: false`).
- */
-const CAP_MESSAGE_PREFIX = "Stopped: reached maxIterations";
-
-/**
  * A live-output event from a running subagent (spec §3.8.6). The CLI renders
  * these indented under the parent's `→ spawn_subagent(<task>)` line.
  */
@@ -107,13 +99,13 @@ export function makeSubagentRunner(
       );
 
       // DONE: the subagent called finish — return its answer verbatim.
-      if (result.finished) {
+      if (result.kind === "finished") {
         emit({ kind: "end", ok: true, label: "done" });
         return result.answer;
       }
 
-      // CAP_REACHED: the loop hit the iteration cap without finish.
-      if (result.answer.startsWith(CAP_MESSAGE_PREFIX)) {
+      // CAP_REACHED: the loop hit the iteration cap without finish (E10).
+      if (result.kind === "cap") {
         const lastText = lastAssistantText(session.messages);
         emit({ kind: "end", ok: true, label: "cap reached" });
         return lastText ?? "iteration cap reached";

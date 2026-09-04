@@ -80,7 +80,11 @@ export function validateArgs(
         : typeof value;
     if (prop.type === "integer" && actual !== "integer") {
       problems.push(`parameter "${key}" must be an integer`);
-    } else if (prop.type === "number" && actual !== "number") {
+    } else if (
+      prop.type === "number" &&
+      actual !== "number" &&
+      actual !== "integer"
+    ) {
       problems.push(`parameter "${key}" must be a number`);
     } else if (
       prop.type !== "integer" &&
