@@ -143,21 +143,21 @@ required.
 
 ### Acceptance-criteria → test mapping (spec §9)
 
-| AC                         | Covered by test                                                          |
-| -------------------------- | ------------------------------------------------------------------------ |
-| 1. Startup / setup hint    | `cli.test.ts` (setup hint + non-zero exit), `config.test.ts` (E16)       |
-| 2. Happy path              | `integration.test.ts` (finish directly; tool round-trip)                 |
-| 3. Multi-turn history      | `integration.test.ts` (history retained)                                 |
-| 4. Tool correctness        | `tools.test.ts` (file/search tools), `commands.test.ts`                  |
-| 5. Self-correction         | `integration.test.ts` (bad args fed back), `tools.test.ts` (dispatch)    |
-| 6. Tool failure (no abort) | `integration.test.ts` (tool failure), `tools.test.ts` (dispatch)         |
-| 7. Server-down abort       | `integration.test.ts` (server-down)                                      |
-| 8. Compaction              | `compaction.test.ts` (trigger, boundary pairing, truncation)             |
-| 9. Command timeout         | `commands.test.ts` (foreground timeout)                                  |
-| 10. Background commands    | `commands.test.ts` (background + check + killAll)                        |
-| 11. Parallel tool calls    | `sse.test.ts` (multi tool-call accumulation), `tools.test.ts` (ordering) |
-| 12. Config precedence      | `config.test.ts` (defaults/env/flags, coercion)                          |
-| 13. No persistence         | `cli.test.ts` (in-memory session, no config file created)                |
+| AC                         | Covered by test                                                                       |
+| -------------------------- | ------------------------------------------------------------------------------------- |
+| 1. Startup / setup hint    | `cli.test.ts` (setup hint + non-zero exit), `discover.test.ts` (model auto-discovery) |
+| 2. Happy path              | `integration.test.ts` (finish directly; tool round-trip)                              |
+| 3. Multi-turn history      | `integration.test.ts` (history retained)                                              |
+| 4. Tool correctness        | `tools.test.ts` (file/search tools), `commands.test.ts`                               |
+| 5. Self-correction         | `integration.test.ts` (bad args fed back), `tools.test.ts` (dispatch)                 |
+| 6. Tool failure (no abort) | `integration.test.ts` (tool failure), `tools.test.ts` (dispatch)                      |
+| 7. Server-down abort       | `integration.test.ts` (server-down)                                                   |
+| 8. Compaction              | `compaction.test.ts` (trigger, boundary pairing, truncation)                          |
+| 9. Command timeout         | `commands.test.ts` (foreground timeout)                                               |
+| 10. Background commands    | `commands.test.ts` (background + check + killAll)                                     |
+| 11. Parallel tool calls    | `sse.test.ts` (multi tool-call accumulation), `tools.test.ts` (ordering)              |
+| 12. Config precedence      | `config.test.ts` (defaults/env/flags, coercion)                                       |
+| 13. No persistence         | `cli.test.ts` (in-memory session, no config file created)                             |
 
 ## Troubleshooting
 

@@ -1,17 +1,14 @@
 #!/usr/bin/env node
-import {
-  parseCliArgs,
-  resolveConfig,
-  ConfigError,
-  ModelNotConfiguredError,
-} from "./config/index.js";
+import { parseCliArgs, resolveConfig, ConfigError } from "./config/index.js";
+import { discoverModel } from "./llm/client.js";
 import { startRepl } from "./cli/repl.js";
 
 /**
  * Harness entry point (spec §3.6).
  *
- * Parses CLI args, resolves + validates config, then starts the REPL.
- * Config errors produce clear, actionable messages and a non-zero exit code.
+ * Parses CLI args, resolves + validates config, auto-discovers the model if
+ * none was configured, then starts the REPL. Config errors produce clear,
+ * actionable messages and a non-zero exit code.
  */
 async function main(): Promise<void> {
   const { flags, positionals } = parseCliArgs(process.argv.slice(2));
@@ -26,28 +23,34 @@ async function main(): Promise<void> {
 
   let config;
   try {
-    config = await resolveConfig(flags, flags.config);
+    config = resolveConfig(flags, flags.config);
   } catch (err) {
-    if (err instanceof ModelNotConfiguredError) {
-      console.error(
-        "No model could be resolved.\n" +
-          "The harness looks for a model in this order:\n" +
-          "  1. the --model flag\n" +
-          "  2. the HARNESS_MODEL environment variable\n" +
-          "  3. a harness.config.json file (see README)\n" +
-          "  4. auto-discovery from the running server's /v1/models\n" +
-          "None of these yielded a model. Start a llama.cpp server with a model\n" +
-          "loaded, or set one explicitly.\n",
-      );
-      process.exitCode = 1;
-      return;
-    }
     if (err instanceof ConfigError) {
       console.error(`Configuration error: ${err.message}`);
       process.exitCode = 1;
       return;
     }
     throw err;
+  }
+
+  // Auto-discover the model from the running server when none was configured
+  // (spec §6.1: model is optional when a server is already running).
+  if (config.model === null) {
+    config.model = await discoverModel(config.baseUrl, config.apiKey);
+  }
+  if (config.model === null) {
+    console.error(
+      "No model could be resolved.\n" +
+        "The harness looks for a model in this order:\n" +
+        "  1. the --model flag\n" +
+        "  2. the HARNESS_MODEL environment variable\n" +
+        "  3. a harness.config.json file (see README)\n" +
+        "  4. auto-discovery from the running server's /v1/models\n" +
+        "None of these yielded a model. Start a llama.cpp server with a model\n" +
+        "loaded, or set one explicitly.\n",
+    );
+    process.exitCode = 1;
+    return;
   }
 
   await startRepl(config, initialTask);

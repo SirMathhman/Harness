@@ -1,14 +1,10 @@
 import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import type { Config } from "../types.js";
-import { discoverModel } from "../llm/client.js";
 import { CONFIG_KEYS, DEFAULT_CONFIG, ENV_KEYS } from "./defaults.js";
 
-/** Errors thrown for invalid configuration (E16/E17). */
+/** Errors thrown for invalid configuration (E17). */
 export class ConfigError extends Error {}
-
-/** Thrown when no model is configured (E16) — a setup hint, not a crash. */
-export class ModelNotConfiguredError extends ConfigError {}
 
 /** CLI flags accepted by the harness. */
 export interface CliFlags {
@@ -131,19 +127,20 @@ function envValue(key: keyof Config, env: NodeJS.ProcessEnv): unknown {
  * Resolve the final Config from defaults, config file, env vars, and CLI flags.
  * Precedence: flags > env > file > defaults (spec §6.1).
  *
- * If no model is configured by any of those sources, the running llama.cpp
- * server is queried (`GET /v1/models`) and the first loaded model is used.
- * This makes `--model` optional when a server is already running.
+ * This is a pure, synchronous resolution: it does not touch the network. The
+ * returned Config may have `model === null`; the composition root (index.ts)
+ * is responsible for auto-discovering a model from the running server when
+ * that is the case (spec §6.1: model is optional when a server is running).
  *
  * @param flags parsed CLI flags
  * @param configPath path to the config file (default ./harness.config.json)
  * @param env environment to read from (defaults to process.env)
  */
-export async function resolveConfig(
+export function resolveConfig(
   flags: CliFlags,
   configPath = "./harness.config.json",
   env: NodeJS.ProcessEnv = process.env,
-): Promise<Config> {
+): Config {
   const file = loadConfigFile(configPath) ?? {};
 
   // Start from defaults, layer file, then env, then flags.
@@ -162,29 +159,7 @@ export async function resolveConfig(
   if (flags.maxIterations !== undefined)
     merged.maxIterations = flags.maxIterations;
 
-  const cfg = validateConfig(merged as unknown as Config);
-
-  // Auto-discover the model from the running server when none is configured.
-  if (cfg.model === null) {
-    const discovered = await discoverModel(cfg.baseUrl, cfg.apiKey);
-    if (discovered !== null) cfg.model = discovered;
-  }
-
-  // E16: still no model after discovery -> setup hint (handled by caller).
-  if (cfg.model === null) {
-    throw new ModelNotConfiguredError(
-      "No model configured and none could be discovered from the running " +
-        "llama.cpp server.\n" +
-        "Set one via:\n" +
-        "  - the --model flag, or\n" +
-        "  - the HARNESS_MODEL environment variable, or\n" +
-        "  - a harness.config.json file (see README).\n" +
-        "Or start a llama.cpp server with a model loaded so it can be " +
-        "discovered automatically.",
-    );
-  }
-
-  return cfg;
+  return validateConfig(merged as unknown as Config);
 }
 
 /**
@@ -264,8 +239,8 @@ export function validateConfig(cfg: Config): Config {
     );
   }
 
-  // Note: a null model is allowed here — `resolveConfig` auto-discovers one
-  // from the running server and throws ModelNotConfiguredError (E16) only if
-  // discovery also fails.
+  // Note: a null model is allowed here. The composition root (index.ts)
+  // auto-discovers one from the running server and prints a setup hint (E16)
+  // only if discovery also fails.
   return cfg;
 }
