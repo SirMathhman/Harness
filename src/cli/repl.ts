@@ -49,6 +49,10 @@ export async function startRepl(
     const input = line.trim();
     if (input === "") continue;
     if (input === "exit" || input === "quit") break;
+    if (input === "/help") {
+      process.stdout.write(helpText() + "\n");
+      continue;
+    }
     if (input === "/context") {
       process.stdout.write(contextUsageLine(session) + "\n");
       continue;
@@ -115,6 +119,20 @@ function prompt(rl: Interface, label: string): Promise<string> {
       resolve(answer);
     });
   });
+}
+
+/**
+ * The text shown by the `/help` command: the REPL commands and how to use them.
+ */
+export function helpText(): string {
+  return [
+    "Commands:",
+    "  <task>     Run a coding task (any text that isn't a command).",
+    "  /help      Show this help.",
+    "  /context   Show context tokens used vs. the total window.",
+    "  exit       End the session (also: quit, Ctrl-D).",
+    "  Ctrl-C     Abort the current turn.",
+  ].join("\n");
 }
 
 /**

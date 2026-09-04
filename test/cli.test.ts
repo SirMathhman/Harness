@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createSession } from "../src/agent/session.js";
-import { contextUsageLine } from "../src/cli/repl.js";
+import { contextUsageLine, helpText } from "../src/cli/repl.js";
 import { DEFAULT_CONFIG } from "../src/config/defaults.js";
 
 describe("CLI startup (AC 1)", () => {
@@ -24,6 +24,15 @@ describe("CLI startup (AC 1)", () => {
     const stderr = await new Response(proc.stderr).text();
     expect(exitCode).toBe(1);
     expect(stderr).toContain("No model could be resolved");
+  });
+});
+
+describe("/help command", () => {
+  test("lists the available commands", () => {
+    const text = helpText();
+    expect(text).toContain("/help");
+    expect(text).toContain("/context");
+    expect(text).toContain("exit");
   });
 });
 
