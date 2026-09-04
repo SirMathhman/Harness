@@ -39,7 +39,9 @@ Provide a minimal, self-contained agent runtime that:
 
 ### 1.4 Out of Scope
 
-- Multi-agent orchestration / delegation.
+- Full multi-agent orchestration: peer-to-peer agent networks, shared blackboards,
+  or agents that communicate with each other directly. (A single parent agent
+  delegating to short-lived, isolated **subagents** IS in scope — see §3.8.)
 - A public HTTP API for the agent (CLI only).
 - Sandboxing / permission system (trusted local use — see §8).
 - Vision / multimodal inputs.
@@ -52,15 +54,16 @@ Provide a minimal, self-contained agent runtime that:
 
 ### 2.1 Entities
 
-| Entity                | Description                                                    | Key Attributes                                                                                                                   |
-| --------------------- | -------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| **Session**           | One REPL invocation. Holds the running conversation.           | `messages` (ordered list), `config`, `backgroundCommands` (map id → handle)                                                      |
-| **Message**           | One entry in the conversation, in OpenAI chat format.          | `role` (`system` \| `user` \| `assistant` \| `tool`), `content`, optional `tool_calls`, optional `tool_call_id`, optional `name` |
-| **ToolCall**          | A request from the model to run a tool.                        | `id`, `name`, `arguments` (JSON object)                                                                                          |
-| **ToolResult**        | The outcome of executing a tool, fed back as a `tool` message. | `tool_call_id`, `content` (string; success output or error text)                                                                 |
-| **Tool**              | A callable capability exposed to the model.                    | `name`, JSON-schema `parameters`, handler                                                                                        |
-| **BackgroundCommand** | A shell command running asynchronously.                        | `id`, `status` (`running` \| `exited`), `exitCode?`, `stdout`, `stderr`                                                          |
-| **Config**            | Resolved runtime settings.                                     | see §6.1                                                                                                                         |
+| Entity                | Description                                                       | Key Attributes                                                                                                                   |
+| --------------------- | ----------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| **Session**           | One REPL invocation. Holds the running conversation.              | `messages` (ordered list), `config`, `backgroundCommands` (map id → handle)                                                      |
+| **Message**           | One entry in the conversation, in OpenAI chat format.             | `role` (`system` \| `user` \| `assistant` \| `tool`), `content`, optional `tool_calls`, optional `tool_call_id`, optional `name` |
+| **ToolCall**          | A request from the model to run a tool.                           | `id`, `name`, `arguments` (JSON object)                                                                                          |
+| **ToolResult**        | The outcome of executing a tool, fed back as a `tool` message.    | `tool_call_id`, `content` (string; success output or error text)                                                                 |
+| **Tool**              | A callable capability exposed to the model.                       | `name`, JSON-schema `parameters`, handler                                                                                        |
+| **BackgroundCommand** | A shell command running asynchronously.                           | `id`, `status` (`running` \| `exited`), `exitCode?`, `stdout`, `stderr`                                                          |
+| **Subagent**          | A short-lived, isolated agent spawned by `spawn_subagent` (§3.8). | `task`, `systemPrompt?`, `maxIterations`, `depth`, its own `messages`, its own background-command handles, `answer`              |
+| **Config**            | Resolved runtime settings.                                        | see §6.1                                                                                                                         |
 
 ### 2.2 Relationships
 
@@ -71,6 +74,12 @@ Provide a minimal, self-contained agent runtime that:
   with the matching `tool_call_id`.
 - A **Session** owns a set of **BackgroundCommand** handles, keyed by id.
 - A **Session** is configured by one resolved **Config**.
+- A **Session** (the parent) may spawn zero or more **Subagent**s via the
+  `spawn_subagent` tool. Each **Subagent** is itself a fresh, isolated conversation
+  (its own `messages` array) and may in turn spawn further **Subagent**s, bounded by
+  `maxSubagentDepth` (§3.8).
+- Each **Subagent** owns its own set of **BackgroundCommand** handles, scoped to its
+  lifetime and invisible to the parent.
 
 ### 2.3 State Transitions
 
@@ -94,6 +103,21 @@ THINKING → ABORTED (LLM/server error; see §4)
 ```
 running → exited
 ```
+
+**Subagent (one `spawn_subagent` call):**
+
+```
+SPAWNED → RUNNING (fresh isolated session created; nested agent loop starts)
+RUNNING → RUNNING (nested LLM call → tool execution → append results; repeats)
+RUNNING → DONE (subagent called finish; answer returned as the spawn result)
+RUNNING → CAP_REACHED (iteration cap hit; last text returned as the spawn result)
+RUNNING → FAILED (subagent LLM/server error; error string returned as the spawn result)
+```
+
+- A **Subagent** runs the same agent loop as the parent (§3.2) on its own isolated
+  session. Its `DONE` / `CAP_REACHED` / `FAILED` outcome is delivered to the parent
+  as the `spawn_subagent` tool's result string; it never aborts the parent turn
+  (§4, E18–E20).
 
 ---
 
@@ -145,16 +169,17 @@ The harness exposes exactly these tools. All paths are resolved relative to the
 process working directory unless absolute. All tool results are returned to the model
 as **strings** (success output or a descriptive error).
 
-| #   | Tool            | Parameters                                                                                                                                                                 | Returns                                                                                                                                                                                     |
-| --- | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1   | `read_file`     | `path` (str, req); `startLine` (int, opt); `endLine` (int, opt)                                                                                                            | File content (or the requested line range). For binary files, a notice that the file is binary. If missing, an error string.                                                                |
-| 2   | `write_file`    | `path` (str, req); `content` (str, req)                                                                                                                                    | Confirmation: path + bytes written. Creates parent directories as needed. Overwrites existing files.                                                                                        |
-| 3   | `edit_file`     | `path` (str, req); `oldString` (str, req); `newString` (str, req); `replaceAll` (bool, opt, default `false`)                                                               | On success: confirmation of the edit. On failure: an error string stating the problem (e.g. `oldString not found`, or `oldString matched N times; pass replaceAll=true`).                   |
-| 4   | `list_dir`      | `path` (str, req); `recursive` (bool, opt, default `false`)                                                                                                                | List of entries, each marked as file or directory.                                                                                                                                          |
-| 5   | `search`        | `pattern` (str, req); `mode` (`"text"` \| `"glob"`, req); `path` (str, opt, default cwd); `includePattern` (str, opt); `isRegexp` (bool, opt, default `true` in text mode) | Text mode: matching `file:line:content` lines. Glob mode: matching file paths. Results truncated to `maxToolOutputChars` with a truncation notice.                                          |
-| 6   | `run_command`   | `command` (str, req); `timeoutMs` (int, opt, default from Config); `background` (bool, opt, default `false`); `cwd` (str, opt)                                             | Foreground: `{ exitCode, stdout, stderr }` (each truncated to `maxToolOutputChars`). If the timeout elapses, the process is killed and the result is a timeout error. Background: `{ id }`. |
-| 7   | `check_command` | `id` (str, req)                                                                                                                                                            | `{ status: "running" \| "exited", exitCode?, stdout, stderr }` — output captured so far (truncated).                                                                                        |
-| 8   | `finish`        | `answer` (str, req)                                                                                                                                                        | Terminal. Ends the current turn; `answer` is the final response to the user.                                                                                                                |
+| #   | Tool             | Parameters                                                                                                                                                                 | Returns                                                                                                                                                                                     |
+| --- | ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | `read_file`      | `path` (str, req); `startLine` (int, opt); `endLine` (int, opt)                                                                                                            | File content (or the requested line range). For binary files, a notice that the file is binary. If missing, an error string.                                                                |
+| 2   | `write_file`     | `path` (str, req); `content` (str, req)                                                                                                                                    | Confirmation: path + bytes written. Creates parent directories as needed. Overwrites existing files.                                                                                        |
+| 3   | `edit_file`      | `path` (str, req); `oldString` (str, req); `newString` (str, req); `replaceAll` (bool, opt, default `false`)                                                               | On success: confirmation of the edit. On failure: an error string stating the problem (e.g. `oldString not found`, or `oldString matched N times; pass replaceAll=true`).                   |
+| 4   | `list_dir`       | `path` (str, req); `recursive` (bool, opt, default `false`)                                                                                                                | List of entries, each marked as file or directory.                                                                                                                                          |
+| 5   | `search`         | `pattern` (str, req); `mode` (`"text"` \| `"glob"`, req); `path` (str, opt, default cwd); `includePattern` (str, opt); `isRegexp` (bool, opt, default `true` in text mode) | Text mode: matching `file:line:content` lines. Glob mode: matching file paths. Results truncated to `maxToolOutputChars` with a truncation notice.                                          |
+| 6   | `run_command`    | `command` (str, req); `timeoutMs` (int, opt, default from Config); `background` (bool, opt, default `false`); `cwd` (str, opt)                                             | Foreground: `{ exitCode, stdout, stderr }` (each truncated to `maxToolOutputChars`). If the timeout elapses, the process is killed and the result is a timeout error. Background: `{ id }`. |
+| 7   | `check_command`  | `id` (str, req)                                                                                                                                                            | `{ status: "running" \| "exited", exitCode?, stdout, stderr }` — output captured so far (truncated).                                                                                        |
+| 8   | `finish`         | `answer` (str, req)                                                                                                                                                        | Terminal. Ends the current turn; `answer` is the final response to the user.                                                                                                                |
+| 9   | `spawn_subagent` | `task` (str, req); `maxIterations` (int, req); `systemPrompt` (str, opt)                                                                                                   | Runs a fresh, isolated subagent (§3.8) on `task` and returns **only its final `finish` answer** as the result string. Multiple calls in one turn run concurrently.                          |
 
 **Notes:**
 
@@ -165,6 +190,11 @@ as **strings** (success output or a descriptive error).
   gave them, to avoid file/command races. **Read-only tools** (`read_file`,
   `list_dir`, `search`, `check_command`) may run concurrently. Results are returned
   to the model in the same order as the original tool calls.
+- **Delegation tools** (`spawn_subagent`) run **concurrently with each other** when
+  the model issues several in one turn (each is an independent nested loop); this is
+  a deliberate exception to the sequential-mutating rule, since subagents are
+  independent and parallelism is the point (§3.8). The parent is responsible for not
+  delegating conflicting file/command mutations to parallel subagents.
 
 #### 3.3.1 Dynamic Tool Loading (optional, `dynamicTools`)
 
@@ -259,6 +289,94 @@ user: "Now make it reject duplicate emails"
   → LLM: read_file(src/signup.ts)   [self-corrected]
 ```
 
+### 3.8 Subagents (delegation)
+
+A **subagent** is a short-lived, isolated agent that the main agent spawns to
+offload a subtask. Subagents exist for **context isolation** (a subtask's many tool
+calls and large outputs stay out of the parent's context window), **parallelism**
+(independent subtasks run at the same time), and **token savings** (the parent's
+prompt stays small and stable). They are _not_ a role-specialization mechanism: a
+subagent is the same agent runtime pointed at a narrower task.
+
+#### 3.8.1 Invocation
+
+The parent spawns a subagent by calling the `spawn_subagent` tool (§3.3, #9):
+
+| Parameter       | Type   | Required | Meaning                                                                                      |
+| --------------- | ------ | -------- | -------------------------------------------------------------------------------------------- |
+| `task`          | string | yes      | The subtask description / instructions for the subagent.                                     |
+| `maxIterations` | int    | yes      | The subagent's iteration budget (see §3.8.4 for the cap rule).                               |
+| `systemPrompt`  | string | no       | A tailored system prompt for this subagent. When omitted, a default subagent prompt is used. |
+
+The tool is **blocking**: the parent's turn does not advance past the call until the
+subagent reaches a terminal outcome. The tool's result string is **only the
+subagent's final `finish` answer** (or an error/cap note — §3.8.5). Nothing else from
+the subagent's conversation is returned to the parent.
+
+#### 3.8.2 The subagent's runtime
+
+Each `spawn_subagent` call creates a **fresh, isolated session** and runs the same
+agent loop as the parent (§3.2) on it:
+
+- **Conversation:** a new `messages` array containing only `[system, user-task]`.
+  It does **not** inherit the parent's history.
+- **System prompt:** the `systemPrompt` parameter if provided, otherwise a default
+  subagent prompt (a concise worker persona: complete the given task with the
+  provided tools; read before editing; verify with tests/builds when relevant;
+  always call `finish` with a concise result).
+- **Tools:** the same catalog as the parent, **including `spawn_subagent`** (so a
+  subagent may spawn its own subagents), bounded by `maxSubagentDepth` (§3.8.4).
+- **Compaction:** the same context-compaction logic as the parent (§3.5), applied to
+  the subagent's own `messages` array using the same config thresholds.
+- **Background commands:** the subagent gets its **own** background-command handles,
+  scoped to its lifetime. The parent's `check_command` cannot see them; they are
+  discarded when the subagent ends.
+- **Termination:** the subagent ends when it calls `finish`, or when it reaches its
+  iteration cap (§3.8.4).
+
+#### 3.8.3 Concurrency
+
+- When the model issues several `spawn_subagent` calls in a single assistant
+  message, they run **concurrently** (each an independent nested loop). There is
+  **no concurrency cap** — the number of parallel subagents is whatever the model
+  requests in one batch.
+- **Risk (accepted):** many concurrent subagents issue many concurrent LLM calls to
+  a single local llama.cpp server, which may be slow or memory-pressured. This is
+  accepted; the user can interrupt with Ctrl-C.
+
+#### 3.8.4 Iteration cap and nesting depth
+
+- **Iteration cap:** the subagent's effective iteration cap is
+  `min(maxIterations, Config.subagentMaxIterations)`, where `maxIterations` is the
+  required tool parameter and `Config.subagentMaxIterations` (default `50`) is a
+  hard ceiling. This is defense in depth: the per-call budget is always bounded by
+  the config ceiling.
+- **Nesting depth:** the main agent is at depth `0`. A subagent at depth `N` may
+  spawn a further subagent only if `N < Config.maxSubagentDepth` (default `3`).
+  With the default, subagents may exist at depths 1, 2, and 3; a subagent at depth
+  3 cannot spawn further. A `spawn_subagent` call that would exceed the depth limit
+  returns an error result ("max subagent depth reached") instead of spawning.
+
+#### 3.8.5 Outcomes returned to the parent
+
+| Outcome       | Trigger                               | `spawn_subagent` result string                                                                 |
+| ------------- | ------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `DONE`        | Subagent called `finish`              | The `finish` answer, verbatim.                                                                 |
+| `CAP_REACHED` | Iteration cap hit with no `finish`    | The subagent's most recent assistant text, or a note ("iteration cap reached") if it has none. |
+| `FAILED`      | Subagent LLM/server error (E3–E5)     | A descriptive error string (e.g. "subagent failed: cannot reach server").                      |
+| `DEPTH`       | Spawn would exceed `maxSubagentDepth` | An error string ("max subagent depth reached").                                                |
+
+In every case the result is a **string** fed back as a normal `tool` Message; the
+parent turn **continues** (a subagent failure is _data_, not _control_ — see §4,
+E18–E20 and the error-split invariant).
+
+#### 3.8.6 CLI output
+
+While a subagent runs, its streamed tokens and per-tool-call lines render **live and
+indented** under the parent's `→ spawn_subagent(<task>)` line, so the user can watch
+the subagent work. When the subagent ends, a single condensed result line is printed
+(e.g. `✓ done (12 iters)` or `✗ failed`).
+
 ---
 
 ## 4. Edge Cases and Error Handling
@@ -282,6 +400,10 @@ user: "Now make it reject duplicate emails"
 | E15 | User presses Ctrl-C during a turn                                      | Interrupt the current turn (kill any running foreground command), return to the REPL prompt.                                                                     |
 | E16 | No model resolvable                                                    | If `model` is unset, query the running server's `GET /v1/models` and use the first loaded model. If that also yields nothing, print a clear setup hint and exit. |
 | E17 | Config file present but invalid (bad JSON / unknown keys)              | Print a clear error naming the problem and exit (do not start the REPL).                                                                                         |
+| E18 | A subagent's LLM/server call fails (server down, timeout, HTTP error)  | Return a descriptive error string as that `spawn_subagent` result; the parent turn **continues**. Other parallel subagents are unaffected.                       |
+| E19 | A subagent hits its iteration cap without calling `finish`             | Return the subagent's most recent assistant text (or a cap note) as the `spawn_subagent` result; the parent turn continues.                                      |
+| E20 | A `spawn_subagent` call would exceed `maxSubagentDepth`                | Return an error string ("max subagent depth reached") as the result; do not spawn. The parent turn continues.                                                    |
+| E21 | A subagent runs a background command, then ends                        | The subagent's background-command handles are discarded with the subagent; the parent's `check_command` cannot reference them.                                   |
 
 ---
 
@@ -323,22 +445,24 @@ Resolved from, in priority order: \*\*CLI flags > environment variables > config
 JSON is the primary format (no extra dependency). YAML is an optional extension if a
 parser is available; JSON MUST always work.
 
-| Key                   | Type           | Default                    | Env override                 | Description                                                                                          |
-| --------------------- | -------------- | -------------------------- | ---------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `baseUrl`             | string         | `http://localhost:8080`    | `HARNESS_BASE_URL`           | llama.cpp server base URL.                                                                           |
-| `model`               | string         | _(none — auto-discovered)_ | `HARNESS_MODEL`              | Model name/id to request. If unset, the first model from the running server's `/v1/models` is used.  |
-| `apiKey`              | string         | `""`                       | `HARNESS_API_KEY`            | Bearer token if the server uses `--api-key`.                                                         |
-| `temperature`         | number         | `0.2`                      | `HARNESS_TEMPERATURE`        | Sampling temperature.                                                                                |
-| `maxContext`          | number         | `8192`                     | `HARNESS_MAX_CONTEXT`        | Model context window in tokens (must match the served model).                                        |
-| `compactThreshold`    | number         | `0.8`                      | `HARNESS_COMPACT_THRESHOLD`  | Fraction of `maxContext` at which compaction triggers.                                               |
-| `compactKeepMessages` | number         | `6`                        | `HARNESS_COMPACT_KEEP`       | Recent messages kept verbatim during compaction.                                                     |
-| `commandTimeoutMs`    | number         | `60000`                    | `HARNESS_COMMAND_TIMEOUT_MS` | Default foreground command timeout.                                                                  |
-| `maxToolOutputChars`  | number         | `20000`                    | `HARNESS_MAX_TOOL_OUTPUT`    | Truncation limit for tool/command output.                                                            |
-| `systemPrompt`        | string \| null | built-in default           | `HARNESS_SYSTEM_PROMPT`      | Replaces the built-in system prompt if set.                                                          |
-| `parallelToolCalls`   | boolean        | `true`                     | `HARNESS_PARALLEL_TOOLS`     | Enable parallel tool calls.                                                                          |
-| `dynamicTools`        | boolean        | `false`                    | `HARNESS_DYNAMIC_TOOLS`      | Advertise a constant tool surface + `search_tools`/`call_tool` instead of the full catalog (§3.3.1). |
-| `shell`               | string         | `"auto"`                   | `HARNESS_SHELL`              | Shell for `run_command` (`auto`, `powershell`, `bash`, `sh`, or a path).                             |
-| `maxIterations`       | number \| null | `null` (no cap)            | `HARNESS_MAX_ITERATIONS`     | Optional safety cap on tool-loop iterations per turn. `null` = no cap (default, per §8).             |
+| Key                     | Type           | Default                    | Env override                 | Description                                                                                          |
+| ----------------------- | -------------- | -------------------------- | ---------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `baseUrl`               | string         | `http://localhost:8080`    | `HARNESS_BASE_URL`           | llama.cpp server base URL.                                                                           |
+| `model`                 | string         | _(none — auto-discovered)_ | `HARNESS_MODEL`              | Model name/id to request. If unset, the first model from the running server's `/v1/models` is used.  |
+| `apiKey`                | string         | `""`                       | `HARNESS_API_KEY`            | Bearer token if the server uses `--api-key`.                                                         |
+| `temperature`           | number         | `0.2`                      | `HARNESS_TEMPERATURE`        | Sampling temperature.                                                                                |
+| `maxContext`            | number         | `8192`                     | `HARNESS_MAX_CONTEXT`        | Model context window in tokens (must match the served model).                                        |
+| `compactThreshold`      | number         | `0.8`                      | `HARNESS_COMPACT_THRESHOLD`  | Fraction of `maxContext` at which compaction triggers.                                               |
+| `compactKeepMessages`   | number         | `6`                        | `HARNESS_COMPACT_KEEP`       | Recent messages kept verbatim during compaction.                                                     |
+| `commandTimeoutMs`      | number         | `60000`                    | `HARNESS_COMMAND_TIMEOUT_MS` | Default foreground command timeout.                                                                  |
+| `maxToolOutputChars`    | number         | `20000`                    | `HARNESS_MAX_TOOL_OUTPUT`    | Truncation limit for tool/command output.                                                            |
+| `systemPrompt`          | string \| null | built-in default           | `HARNESS_SYSTEM_PROMPT`      | Replaces the built-in system prompt if set.                                                          |
+| `parallelToolCalls`     | boolean        | `true`                     | `HARNESS_PARALLEL_TOOLS`     | Enable parallel tool calls.                                                                          |
+| `dynamicTools`          | boolean        | `false`                    | `HARNESS_DYNAMIC_TOOLS`      | Advertise a constant tool surface + `search_tools`/`call_tool` instead of the full catalog (§3.3.1). |
+| `shell`                 | string         | `"auto"`                   | `HARNESS_SHELL`              | Shell for `run_command` (`auto`, `powershell`, `bash`, `sh`, or a path).                             |
+| `maxIterations`         | number \| null | `null` (no cap)            | `HARNESS_MAX_ITERATIONS`     | Optional safety cap on tool-loop iterations per turn. `null` = no cap (default, per §8).             |
+| `subagentMaxIterations` | number         | `50`                       | `HARNESS_SUBAGENT_MAX_ITER`  | Hard ceiling on a subagent's iteration budget; effective cap = `min(requested, this)` (§3.8.4).      |
+| `maxSubagentDepth`      | number         | `3`                        | `HARNESS_MAX_SUBAGENT_DEPTH` | Maximum subagent nesting depth; a subagent at depth `N` may spawn only if `N < this` (§3.8.4).       |
 
 **Built-in system prompt (default):** a concise coding-agent persona instructing the
 model to: use the provided tools to accomplish the task; read before editing; run
@@ -401,6 +525,13 @@ is complete**. `Config.systemPrompt`, when set, replaces this default.
 - C5. **No iteration cap by default** (`maxIterations: null`). The loop is bounded
   only by the model calling `finish` or the user interrupting.
 - C6. **No persistent state** across sessions.
+- C7. **Subagents are isolated and ephemeral.** Each subagent runs in a fresh
+  conversation, returns only its `finish` answer, and is discarded on completion.
+  Subagents do not share state with the parent or with each other except through the
+  parent's delegation of tasks and the returned answers (§3.8).
+- C8. **Subagent failures are data, not control.** A subagent's LLM/server error,
+  iteration-cap exhaustion, or depth-limit breach is returned as a `spawn_subagent`
+  result string and never aborts the parent turn (§4, E18–E20).
 
 **Assumptions**
 
@@ -456,6 +587,18 @@ The implementation is correct when all of the following hold:
     flag overrides both.
 13. **No persistence:** After exit, no transcript/log files are created by the
     harness.
+14. **Subagent delegation:** `spawn_subagent(task, maxIterations)` runs an isolated
+    subagent and returns only its `finish` answer as the result string. Multiple
+    `spawn_subagent` calls in one turn run concurrently.
+15. **Subagent isolation:** A subagent's conversation, background-command handles,
+    and compaction are independent of the parent's; only the final answer crosses the
+    boundary.
+16. **Subagent bounds:** A subagent's effective iteration cap is
+    `min(maxIterations, subagentMaxIterations)`; a `spawn_subagent` call that would
+    exceed `maxSubagentDepth` returns an error result instead of spawning.
+17. **Subagent failure is non-fatal:** A subagent LLM/server error, iteration-cap
+    exhaustion, or depth breach returns an error/result string and the parent turn
+    continues (it does not abort).
 
 ---
 
