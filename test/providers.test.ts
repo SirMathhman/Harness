@@ -62,6 +62,32 @@ describe("LlamaProvider (providers spec §3.2)", () => {
     }
   });
 
+  test("surfaces llama.cpp's meta.n_ctx as maxContext, omitting it when absent", async () => {
+    const server = Bun.serve({
+      port: 0,
+      fetch() {
+        return Response.json({
+          data: [
+            { id: "with-ctx", meta: { n_ctx: 88576 } },
+            { id: "no-ctx" },
+            { id: "bad-ctx", meta: { n_ctx: -1 } },
+          ],
+        });
+      },
+    });
+    try {
+      const url = `http://127.0.0.1:${server.port}`;
+      const provider = new LlamaProvider({ url });
+      expect(await provider.discoverModels()).toEqual([
+        { name: "with-ctx", baseUrl: url, apiKey: "", maxContext: 88576 },
+        { name: "no-ctx", baseUrl: url, apiKey: "" },
+        { name: "bad-ctx", baseUrl: url, apiKey: "" },
+      ]);
+    } finally {
+      server.stop();
+    }
+  });
+
   test("returns [] when the server is unreachable (E-P1)", async () => {
     const provider = new LlamaProvider({ url: "http://127.0.0.1:1" });
     expect(await provider.discoverModels()).toEqual([]);

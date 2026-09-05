@@ -54,9 +54,11 @@ export class LlamaProvider implements Provider {
     }
     if (!response.ok) return [];
 
-    let data: { data?: { id: string }[] };
+    let data: { data?: { id: string; meta?: { n_ctx?: number } }[] };
     try {
-      data = (await response.json()) as { data?: { id: string }[] };
+      data = (await response.json()) as {
+        data?: { id: string; meta?: { n_ctx?: number } }[];
+      };
     } catch {
       return [];
     }
@@ -64,13 +66,23 @@ export class LlamaProvider implements Provider {
 
     return data.data
       .filter(
-        (entry): entry is { id: string } =>
+        (entry): entry is { id: string; meta?: { n_ctx?: number } } =>
           typeof entry?.id === "string" && entry.id.length > 0,
       )
-      .map((entry) => ({
-        name: entry.id,
-        baseUrl: this.baseUrl,
-        apiKey: this.apiKey,
-      }));
+      .map((entry) => {
+        // llama.cpp reports the runtime context window as `meta.n_ctx` on each
+        // /v1/models entry. Surface it as the model's `maxContext` so the
+        // session stops defaulting to 8192; omit it when absent/invalid so a
+        // non-llama backend (or an older server) falls back to the default.
+        const nCtx = entry.meta?.n_ctx;
+        return {
+          name: entry.id,
+          baseUrl: this.baseUrl,
+          apiKey: this.apiKey,
+          ...(typeof nCtx === "number" && Number.isInteger(nCtx) && nCtx > 0
+            ? { maxContext: nCtx }
+            : {}),
+        };
+      });
   }
 }
