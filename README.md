@@ -377,6 +377,47 @@ export default (reg: Registry) => {
   and Vise assigns one (`llama_0`, `llama_1`, …). Two providers with the same name is a
   fatal config error.
 
+### KV cache persistence across subagent calls
+
+A subagent runs against the same llama.cpp slot as the agent that spawned it, evicting
+that agent's KV cache — which it then has to re-prefill on its next turn. Opt in to
+`kvPersistence` and the provider saves the spawning agent's prompt cache to disk before
+every nested run and restores it afterwards, at every nesting depth:
+
+```ts
+reg.addProvider(
+  new LlamaProvider({
+    url: "http://localhost:8080",
+    kvPersistence: true,
+    slotSavePath: "C:/Users/me/AppData/Local/llama-slots",
+  }),
+);
+```
+
+Start the server with the same directory: `llama-server --jinja --slot-save-path
+C:/Users/me/AppData/Local/llama-slots …`.
+
+- **`slotSavePath` is required** when `kvPersistence` is true, and must be the directory
+  the server was started with. Vise deletes the cache files itself (llama.cpp has no
+  delete endpoint), so the server has to run on the same host. Omitting it is a fatal
+  config error.
+- **`slotId`** is the slot to save and restore; it defaults to `0`, the only slot on a
+  single-slot server.
+- **One file per depth.** The agent at depth *N* owns `kv-depth-{N}.bin`: it writes the
+  file on the way into a nested run and restores *and deletes* it on the way out, so the
+  files on disk are exactly the live ancestors of the running agent and nothing is left
+  behind when the turn ends.
+- **Fail-open.** A failed save (for instance HTTP 501, because the server was started
+  without `--slot-save-path`) or a failed restore is a warning on stderr, never an
+  aborted turn — the worst case is the re-prefill you had before. A save that failed is
+  never followed by a restore.
+- **Subagents are serialized** while this is on: with one slot and depth-keyed files,
+  two `spawn_subagent` calls in one message would clobber each other, so they run one at
+  a time instead of concurrently.
+- **Requirements:** a single slot (`-np 1`, the default), a text-only model (slot save
+  does not support multimodal), and `--swa-full` for an SWA model. Cache files are large
+  (roughly 50 MB per 1K tokens), so give the volume headroom.
+
 ### Model selection
 
 A profile's `models` field is a whitelist of the models it may use:
@@ -507,8 +548,14 @@ tool edges fires for every tool.
 | `session:start` | The REPL session is created                  | no         | —                                           |
 | `session:end`   | The REPL session is torn down                | no         | —                                           |
 | `on:compaction` | Just before context compaction runs          | no         | —                                           |
+| `subagent:before` | Just before a spawned subagent starts running | no       | —                                           |
+| `subagent:after`  | Just after it finishes (done, cap, or failure) | no      | —                                           |
 
 A block returned on a non-blocking event is downgraded to an advisory message.
+
+`subagent:before` / `subagent:after` fire on the **spawning** agent's hooks, with
+`ctx.depth` set to *its* depth — the agent whose context is about to be interrupted —
+and `subagent:after` fires from a `finally`, so it runs whatever the subagent did.
 
 ### Return values
 
@@ -524,8 +571,11 @@ advisory messages are joined with newlines into one system message.
 
 ### Semantics
 
-- **Synchronous only.** Handlers must not return a Promise — use `execSync` and
-  friends for shell work.
+- **Synchronous only, with two exceptions.** Handlers must not return a Promise — use
+  `execSync` and friends for shell work. `subagent:before` and `subagent:after` are the
+  exception: their handlers may be async and are awaited, because the work they wrap (a
+  KV save/restore round trip) is I/O. A Promise returned on any of the other seven
+  events is logged as an unsupported result and ignored.
 - **Observe, don't modify.** A hook can block an event or add a message; it cannot
   rewrite tool arguments, messages, or abort the turn.
 - **Errors are contained.** A handler that throws blocks the event (or, on a
@@ -533,8 +583,11 @@ advisory messages are joined with newlines into one system message.
   file, and does not stop the remaining hooks from running.
 - **Subagents opt in.** Hooks only fire inside a subagent when they set
   `includeSubagents: true`; `ctx.depth` is then greater than 0.
-- **Per-profile.** A hook is active only for the profiles it is connected to. A
-  profile with no hook edges runs no hooks at all.
+- **Per-profile, with one exception.** A hook is active only for the profiles it is
+  connected to; a profile with no hook edges runs no hooks at all. The exception is a
+  **provider**: one that implements `hooks()` contributes them to every session running
+  against one of its models, at every depth (this is how `LlamaProvider` implements KV
+  persistence). `/hooks` lists them with a `provider:<name>` source.
 - **Fatal loading.** A malformed hook — no events, an unknown event, a missing handler —
   is a fatal config error at startup, reported alongside every other problem in the
   config.
@@ -617,8 +670,28 @@ required.
 | P9. `reg.createModel()` still works | `profiles.test.ts`, `providers.test.ts` (explicit model via a connection)    |
 | P10. `LLMClient` unchanged          | (structural — the agent loop only ever sees the resolved `Config`)           |
 
+### KV persistence acceptance criteria (KV spec §9)
+
+| AC                            | Covered by test                                                            |
+| ----------------------------- | -------------------------------------------------------------------------- |
+| 1. Opt-in is inert by default | `kvPersistence.test.ts` (no hooks, no `/slots` traffic, session unhooked)  |
+| 2. Save on subagent start     | `kvPersistence.test.ts` (`save` of `kv-depth-0.bin` before the nested run) |
+| 3. Restore on subagent end    | `kvPersistence.test.ts` (`restore` then `unlink` of the same file)         |
+| 4. Restore on failure         | `kvPersistence.test.ts` (LLM error and iteration cap both restore)         |
+| 5. Every level                | `kvPersistence.test.ts` (depth 0 → 1 → 2 saves/restores in stack order)    |
+| 6. Disk clean at turn end     | `kvPersistence.test.ts` (no `kv-depth-*.bin` left in `slotSavePath`)       |
+| 7. Fail-open save             | `kvPersistence.test.ts` (HTTP 501 and an unreachable server: warn, go on)  |
+| 8. Fail-open restore          | `kvPersistence.test.ts` (HTTP 500 on restore: warn, turn unaffected)       |
+| 9. Serialization              | `kvPersistence.test.ts` (`mutating` flip; overlap 1 vs. 2 in one batch)    |
+| 10. Config validation         | `kvPersistence.test.ts` (missing `slotSavePath` throws)                    |
+| 11. Async events only there   | `kvPersistence.test.ts` (awaited on subagent events, warned on the rest)   |
+| 12. Integration               | `kvPersistence.test.ts` (mock SSE + `/slots` server, main → sub → main)    |
+
 ## Troubleshooting
 
+- **KV cache files pile up in `--slot-save-path`** — a `kv-depth-*.bin` left behind means
+  a restore failed (the warning is on stderr); it is overwritten by the next run at that
+  depth and is safe to delete by hand.
 - **"No models available"** — no provider is registered, or every registered provider
   discovered zero models. Register one in `.vise/index.ts` (e.g.
   `reg.addProvider(new LlamaProvider({ url: "http://localhost:8080" }))`) and make sure

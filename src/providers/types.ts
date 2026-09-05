@@ -6,6 +6,7 @@
  * models a backend has available. It cannot be the source or target of a
  * `Connection` and never appears in `ResourceGraph.resources`.
  */
+import type { Hook } from "../hooks/types.js";
 import type { ModelDef } from "../profiles/types.js";
 
 export interface Provider {
@@ -27,4 +28,31 @@ export interface Provider {
    * provider contributed no models" (providers spec §4, E-P1).
    */
   discoverModels(): Promise<ModelDef[]>;
+
+  /**
+   * Hooks this provider contributes to every session that runs against one of
+   * its models, at every subagent depth (KV spec §3.2, §8.2).
+   *
+   * They are merged into the session's `HookManager` in addition to the
+   * profile's own hooks — the one sanctioned exception to "hooks are never
+   * global". Providers still are not graph nodes: the contribution happens at
+   * materialization time, through this method, not through an edge.
+   *
+   * Called once per materialized session, so an implementation that keeps
+   * per-hook state must return the same hook objects every time. Default:
+   * none.
+   */
+  hooks?(): Hook[];
+
+  /**
+   * True when subagent runs must be serialized while this provider is active
+   * (KV spec §3.7, §8.4).
+   *
+   * `spawn_subagent` is normally read-only, so several calls in one assistant
+   * message run concurrently. A provider that keeps per-depth state around a
+   * nested run — the llama.cpp KV cache, saved to one file per depth — cannot
+   * survive two subagents at the same depth, and sets this so the calls run
+   * one at a time instead. Default: `false` (unchanged, concurrent).
+   */
+  readonly serializeSubagents?: boolean;
 }

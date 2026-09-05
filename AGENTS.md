@@ -62,7 +62,7 @@ src/
   providers/        # llamaProvider.ts, types.ts, index.ts
   cli/              # args, repl, commands, render, color
 test/               # *.test.ts (unit + integration), helpers.ts
-specs/              # v0.1.0/, v0.2.0/ — the specification documents
+specs/              # v0.1.0/, v0.2.0/, v0.3.0/ — the specification documents
 .vise/              # project-level config (index.ts) + state.json (gitignored)
 ```
 
@@ -93,12 +93,19 @@ descriptive error.
 - **Tool execution ordering:** mutating tools (`write_file`, `edit_file`, `run_command`)
   run **sequentially** in model order; read-only tools run **concurrently**. Results are
   always returned in the **original tool-call order**. A blocked call still occupies its
-  slot.
+  slot. The one exception: `spawn_subagent` is read-only (concurrent) *unless* the active
+  model's provider sets `serializeSubagents` — KV persistence needs one subagent at a
+  time (KV spec §3.7).
 - **`finish` is terminal** unless a `turn:end` hook rejects it; a rejection becomes the
   finish call's tool result and the loop continues so the model can retry.
-- **Hooks are synchronous only** — handlers must not return a Promise (use `execSync`).
+- **Hooks are synchronous only**, except `subagent:before` / `subagent:after`, whose
+  handlers may be async and are awaited by `HookManager.dispatchAsync` (KV spec §8.1).
+  On the other seven events a returned Promise is an unsupported result (a warning).
   A handler that throws blocks the event (or becomes advisory on a non-blocking event),
   is logged to stderr, and does not stop the remaining hooks.
+- **Hooks are per-profile**, except those a **provider** contributes via `Provider.hooks()`:
+  those are merged into every session at every depth (KV spec §8.2). Providers are still
+  config-time conventions, not graph nodes.
 - **`src/index.ts` must stay side-effect-free.** Importing it from `.vise/index.ts` must
   never launch a session or touch stdin.
 
@@ -133,6 +140,6 @@ descriptive error.
 
 - `README.md` — full user-facing docs: config reference, Registry API, providers, tools,
   hooks, profiles, troubleshooting.
-- `specs/v0.1.0/`, `specs/v0.2.0/` — the specification documents (the source of truth for
-  behavior and acceptance criteria).
+- `specs/v0.1.0/`, `specs/v0.2.0/`, `specs/v0.3.0/` — the specification documents (the
+  source of truth for behavior and acceptance criteria).
 - `WBS.md` — work breakdown structure and acceptance-criteria traceability.

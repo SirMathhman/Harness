@@ -13,7 +13,8 @@ import {
 import { runTurn, type AgentCallbacks } from "./loop.js";
 import { LLMError } from "../llm/errors.js";
 import { defaultLLMClient, type LLMClient } from "../llm/client.js";
-import { HookManager } from "../hooks/index.js";
+import { HookManager, type RegisteredHook } from "../hooks/index.js";
+import type { Provider } from "../providers/index.js";
 import {
   availableModelIds,
   profileNames,
@@ -69,6 +70,20 @@ export interface AgentContext {
   log?: (message: string) => void;
 }
 
+/**
+ * The agent a subagent is being spawned *from* (KV spec §3.6, §8.3).
+ *
+ * The runner fires `subagent:before` / `subagent:after` against this manager,
+ * at this depth — the depth whose KV cache is saved and restored around the
+ * nested run. Omitted (as in a bare unit test) → neither event fires.
+ */
+export interface SpawnerContext {
+  /** The spawning agent's hook manager. */
+  hooks: HookManager;
+  /** The spawning agent's depth: 0 for the main agent. */
+  depth: number;
+}
+
 /** One profile turned into the concrete pieces an agent loop needs. */
 export interface MaterializedProfile {
   /** The resolved runtime + model settings. */
@@ -113,37 +128,47 @@ export function materializeProfile(
     custom: resolved.customTools,
   });
 
+  // The provider behind this agent's active model may contribute hooks of its
+  // own — the KV persistence hook (KV spec §3.2, §8.2). They are merged into
+  // every session at every depth, on top of the profile's own hooks.
+  const provider = activeProvider(ctx.graph, resolved.modelId);
+  const hooks = new HookManager(
+    [...resolved.hooks, ...providerHooks(provider)],
+    {
+      ...(ctx.cwd !== undefined ? { cwd: ctx.cwd } : {}),
+      ...(ctx.log !== undefined ? { log: ctx.log } : {}),
+    },
+  );
+  hooks.setEnabled(ctx.hooksEnabled?.() ?? true);
+
   // spawn_subagent is built here rather than in the tool layer: it needs a
-  // runner, the active profile's policy, and this agent's depth.
+  // runner, the active profile's policy, this agent's depth — and this agent's
+  // hook manager, which the runner fires `subagent:before`/`after` on.
   if (
     resolved.builtinTools === null ||
     resolved.builtinTools.includes("spawn_subagent")
   ) {
     registry.register(
       makeSpawnSubagentTool({
-        runner: makeSubagentRunner(ctx),
+        runner: makeSubagentRunner(ctx, { hooks, depth }),
         depth,
         parentProfile: resolved.name,
         policy: resolved.subagent,
         fallbackMaxDepth: config.maxSubagentDepth,
         subagentMaxIterations: config.subagentMaxIterations,
         knownProfiles: profileNames(ctx.graph),
+        serializeRuns: provider?.serializeSubagents === true,
         parentModel: {
           baseUrl: config.baseUrl,
           model: config.model,
           apiKey: config.apiKey,
           temperature: config.temperature,
           maxContext: config.maxContext,
+          modelId: resolved.modelId,
         },
       }),
     );
   }
-
-  const hooks = new HookManager(resolved.hooks, {
-    ...(ctx.cwd !== undefined ? { cwd: ctx.cwd } : {}),
-    ...(ctx.log !== undefined ? { log: ctx.log } : {}),
-  });
-  hooks.setEnabled(ctx.hooksEnabled?.() ?? true);
 
   return {
     config,
@@ -168,8 +193,16 @@ export function materializeProfile(
  * The runner never throws: every outcome (DONE, CAP_REACHED, FAILED) is
  * returned as a result string so a subagent failure is *data*, not *control*
  * (E18–E20, the error-split invariant).
+ *
+ * `spawner` is the agent doing the spawning: the nested run is wrapped in its
+ * `subagent:before` / `subagent:after` events, at its depth, so a provider can
+ * save and restore whatever the nested run would evict — the llama.cpp KV
+ * cache (KV spec §3.6). Omitted → neither event fires.
  */
-export function makeSubagentRunner(ctx: AgentContext): SubagentRunner {
+export function makeSubagentRunner(
+  ctx: AgentContext,
+  spawner?: SpawnerContext,
+): SubagentRunner {
   const client = ctx.client ?? defaultLLMClient;
 
   return async (opts: SubagentRunOptions): Promise<string> => {
@@ -217,6 +250,10 @@ export function makeSubagentRunner(ctx: AgentContext): SubagentRunner {
     if (inheritParent) {
       resolved = {
         ...resolved,
+        // Inheriting the parent's model means inheriting the provider behind
+        // it, so the subagent contributes the same provider hooks its parent
+        // did and the optimization applies at every depth (KV spec §1.2).
+        modelId: opts.parentModel.modelId ?? null,
         config: {
           ...resolved.config,
           baseUrl: opts.parentModel.baseUrl,
@@ -260,6 +297,14 @@ export function makeSubagentRunner(ctx: AgentContext): SubagentRunner {
     };
 
     try {
+      // KV spec §3.6: the spawning agent's KV cache is saved before the nested
+      // run starts, on its own hook manager at its own depth.
+      if (spawner !== undefined) {
+        await spawner.hooks.dispatchAsync("subagent:before", {
+          depth: spawner.depth,
+        });
+      }
+
       const result = await runTurn(
         session,
         opts.task,
@@ -294,11 +339,43 @@ export function makeSubagentRunner(ctx: AgentContext): SubagentRunner {
       emit({ kind: "end", ok: false, label: "failed" });
       return `subagent failed: ${message}`;
     } finally {
+      // KV spec §3.6: restore in `finally`, so the spawner's cache comes back
+      // on every outcome — DONE, CAP_REACHED, FAILED, or a thrown error.
+      if (spawner !== undefined) {
+        await spawner.hooks.dispatchAsync("subagent:after", {
+          depth: spawner.depth,
+        });
+      }
       // E21: the subagent's background-command handles are discarded with the
       // subagent, whether it ended via finish, cap, or failure.
       manager.killAll();
     }
   };
+}
+
+/**
+ * The provider behind an agent's active model, or `undefined` when the model
+ * was declared directly with `reg.createModel()` (no provider) or the profile
+ * resolved to no model at all.
+ */
+function activeProvider(
+  graph: ResourceGraph,
+  modelId: ResourceId | null,
+): Provider | undefined {
+  if (modelId === null) return undefined;
+  const resource = graph.resources.get(modelId);
+  const providerId =
+    resource?.kind === "model" ? resource.def.provider : undefined;
+  return providerId !== undefined ? graph.providers.get(providerId) : undefined;
+}
+
+/** A provider's contributed hooks, tagged with where they came from (§3.2). */
+function providerHooks(provider: Provider | undefined): RegisteredHook[] {
+  if (provider?.hooks === undefined) return [];
+  return provider.hooks().map((hook) => ({
+    hook,
+    source: `provider:${provider.name}`,
+  }));
 }
 
 /** A profile's `models` whitelist, by name, or `undefined` if it has none. */

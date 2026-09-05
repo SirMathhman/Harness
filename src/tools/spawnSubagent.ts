@@ -1,5 +1,5 @@
 import type { Tool } from "../types.js";
-import type { SubagentPolicy } from "../profiles/types.js";
+import type { ResourceId, SubagentPolicy } from "../profiles/types.js";
 
 /** The parent agent's active model, for subagent inheritance (providers spec §3.7). */
 export interface ParentModel {
@@ -8,6 +8,13 @@ export interface ParentModel {
   apiKey: string;
   temperature: number;
   maxContext: number;
+  /**
+   * The `ResourceId` of the parent's active Model resource, or `null` when it
+   * has none. Carried so a subagent that *inherits* this model also inherits
+   * the provider behind it — which is what contributes the KV persistence hook
+   * at every depth (KV spec §3.2).
+   */
+  modelId?: ResourceId | null;
 }
 
 /**
@@ -59,6 +66,13 @@ export interface SpawnSubagentOptions {
   knownProfiles: readonly string[];
   /** The owning agent's active model, passed through for subagent inheritance. */
   parentModel: ParentModel;
+  /**
+   * Run subagents one at a time rather than concurrently (KV spec §3.7).
+   * Set when the active model's provider needs it — the llama.cpp KV cache is
+   * keyed by depth, so two subagents at the same depth would clobber each
+   * other's cache file. Default: `false` (concurrent, as before).
+   */
+  serializeRuns?: boolean;
 }
 
 /**
@@ -72,7 +86,9 @@ export interface SpawnSubagentOptions {
  *
  * `mutating` is `false` so that several `spawn_subagent` calls in one assistant
  * message run concurrently (spec §3.8.3) — a deliberate exception to the
- * sequential-mutating rule, since subagents are independent.
+ * sequential-mutating rule, since subagents are independent. With
+ * `serializeRuns` it flips to `true`, which puts the calls back on the
+ * sequential path, in model order (KV spec §3.7, §8.4).
  */
 export function makeSpawnSubagentTool(options: SpawnSubagentOptions): Tool {
   const {
@@ -84,6 +100,7 @@ export function makeSpawnSubagentTool(options: SpawnSubagentOptions): Tool {
     subagentMaxIterations,
     knownProfiles,
     parentModel,
+    serializeRuns = false,
   } = options;
 
   // A policy's own maxDepth wins; otherwise the global backstop applies
@@ -93,13 +110,15 @@ export function makeSpawnSubagentTool(options: SpawnSubagentOptions): Tool {
 
   return {
     name: "spawn_subagent",
-    mutating: false,
+    mutating: serializeRuns,
     description:
       "Spawn a short-lived, isolated subagent to complete a subtask. It runs " +
       "in its own context and returns only its final answer. Use it to " +
       "offload a self-contained subtask (e.g. research, a focused edit, " +
       "running tests) so its many tool calls stay out of your context. " +
-      "Several calls in one message run concurrently." +
+      (serializeRuns
+        ? "Several calls in one message run one at a time."
+        : "Several calls in one message run concurrently.") +
       profileHint(allowed, knownProfiles),
     parameters: {
       type: "object",

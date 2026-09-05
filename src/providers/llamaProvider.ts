@@ -1,3 +1,6 @@
+import { unlink } from "node:fs/promises";
+import { join } from "node:path";
+import type { Hook, HookContext } from "../hooks/types.js";
 import type { ModelDef } from "../profiles/types.js";
 import type { Provider } from "./types.js";
 
@@ -17,6 +20,28 @@ export interface LlamaProviderOptions {
    * `""` (no auth). Used for servers started with `--api-key`.
    */
   apiKey?: string;
+  /**
+   * Opt in to KV persistence across subagent calls (KV spec §3.1): the
+   * spawning agent's prompt cache is saved to disk before a subagent runs and
+   * restored afterwards, so it never re-prefills its conversation. Default:
+   * `false` — no save/restore, exactly the behavior of v0.2.0.
+   */
+  kvPersistence?: boolean;
+  /** The llama.cpp slot id to save/restore. Default: `0`. */
+  slotId?: number;
+  /**
+   * The directory the llama.cpp server was started with via `--slot-save-path`.
+   * REQUIRED when `kvPersistence` is true (used to delete cache files via
+   * `node:fs`). The save/restore HTTP calls themselves need only the filename;
+   * this path is needed for deletion because llama.cpp exposes no file-delete
+   * endpoint.
+   */
+  slotSavePath?: string;
+  /**
+   * Where KV save/restore warnings go. Defaults to stderr. Every failure is
+   * fail-open (KV spec §3.8), so this is the only trace one leaves.
+   */
+  log?: (message: string) => void;
 }
 
 /** One entry of llama.cpp's `GET /v1/models` response (wire shape). */
@@ -31,14 +56,24 @@ interface LlamaModelsResponse {
   data?: LlamaModelEntry[];
 }
 
+/** The cache file owned by the agent at `depth` (KV spec §3.8). */
+export function kvCacheFileName(depth: number): string {
+  return `kv-depth-${depth}.bin`;
+}
+
 /**
  * A `Provider` for an OpenAI-compatible llama.cpp server (providers spec
  * §3.2).
  *
- * The server must be running and started with `--jinja` for tool calling.
- * The provider queries `GET {url}/v1/models` to discover loaded models. In
- * router mode (one server, many models), a single `LlamaProvider` yields one
+ * The server must be running and started with `--jinja` for tool calling. The
+ * provider queries `GET {url}/v1/models` to discover loaded models. In router
+ * mode (one server, many models), a single `LlamaProvider` yields one
  * `ModelDef` per discovered model.
+ *
+ * With `kvPersistence: true` it also contributes one hook (KV spec §3.2) that
+ * saves the slot's prompt cache before every nested `runTurn` and restores it
+ * afterwards, so an agent that spawns a subagent does not re-prefill its
+ * conversation when the subagent returns.
  */
 export class LlamaProvider implements Provider {
   /** Set by the registry at `addProvider()` time when left empty here. */
@@ -46,15 +81,57 @@ export class LlamaProvider implements Provider {
   /** The server's base URL, exposed for diagnostics (e.g. the E-P1 warning). */
   readonly baseUrl: string;
   private readonly apiKey: string;
+  /** Whether this provider saves/restores the slot KV around subagent runs. */
+  readonly kvPersistence: boolean;
+  private readonly slotId: number;
+  private readonly slotSavePath: string;
+  private readonly log: (message: string) => void;
+  /**
+   * The depths whose `subagent:before` save actually succeeded. A restore is
+   * only attempted for a depth in this set, so a failed save is never followed
+   * by a restore of a file that was never written (KV spec §3.5.4).
+   */
+  private readonly savedDepths = new Set<number>();
+  /**
+   * The contributed hook, built once. `hooks()` is called for every
+   * materialized session, and every one of them must share `savedDepths`.
+   */
+  private kvHooks: Hook[] | null = null;
 
   constructor(options: LlamaProviderOptions) {
     this.baseUrl = options.url;
     this.name = options.name ?? "";
     this.apiKey = options.apiKey ?? "";
+    this.kvPersistence = options.kvPersistence === true;
+    this.slotId = options.slotId ?? 0;
+    this.slotSavePath = options.slotSavePath ?? "";
+    this.log =
+      options.log ?? ((message) => process.stderr.write(`${message}\n`));
+
+    // KV spec §3.1: without the directory the provider cannot delete its cache
+    // files, which would leave the disk dirty — a fatal config error, not a
+    // warning.
+    if (this.kvPersistence && this.slotSavePath === "") {
+      throw new Error(
+        `LlamaProvider: "slotSavePath" is required when "kvPersistence" is ` +
+          `true. Pass the directory the llama.cpp server was started with ` +
+          `via --slot-save-path, e.g. new LlamaProvider({ url: "${this.baseUrl}", ` +
+          `kvPersistence: true, slotSavePath: "/path/to/llama-slots" }).`,
+      );
+    }
+  }
+
+  /**
+   * KV spec §3.7: with one slot and depth-keyed cache files, two subagents at
+   * the same depth would save and restore the same file, so the concurrent
+   * `spawn_subagent` rule is suspended while KV persistence is on.
+   */
+  get serializeSubagents(): boolean {
+    return this.kvPersistence;
   }
 
   async discoverModels(): Promise<ModelDef[]> {
-    const endpoint = `${this.baseUrl.replace(/\/$/, "")}/v1/models`;
+    const endpoint = `${this.endpointBase()}/v1/models`;
     const headers: Record<string, string> = { Accept: "application/json" };
     if (this.apiKey) headers.Authorization = `Bearer ${this.apiKey}`;
 
@@ -95,4 +172,120 @@ export class LlamaProvider implements Provider {
         };
       });
   }
+
+  /**
+   * The KV persistence hook (KV spec §3.2), or none when the feature is off.
+   *
+   * One hook subscribed to both subagent events, firing at every depth: the
+   * save/restore stack needs the *spawning* agent's depth, and that agent may
+   * itself be a subagent.
+   */
+  hooks(): Hook[] {
+    if (!this.kvPersistence) return [];
+    this.kvHooks ??= [
+      {
+        events: ["subagent:before", "subagent:after"],
+        includeSubagents: true,
+        handler: (ctx) => this.onSubagentEvent(ctx),
+      },
+    ];
+    return this.kvHooks;
+  }
+
+  /** Save on the way into a nested run, restore on the way out. */
+  private async onSubagentEvent(ctx: HookContext): Promise<void> {
+    if (ctx.event === "subagent:before") {
+      await this.saveSlot(ctx.depth);
+    } else if (ctx.event === "subagent:after") {
+      await this.restoreSlot(ctx.depth);
+    }
+  }
+
+  /**
+   * KV spec §3.4: write the slot's prompt cache to `kv-depth-{N}.bin`, freeing
+   * the slot for the subagent. A failure is a warning: the subagent still
+   * runs and this agent re-prefills afterwards.
+   */
+  private async saveSlot(depth: number): Promise<void> {
+    // A stale entry would let a failed save be followed by a restore of the
+    // previous run's file, so clear it before trying.
+    this.savedDepths.delete(depth);
+    if (await this.slotAction("save", depth)) this.savedDepths.add(depth);
+  }
+
+  /**
+   * KV spec §3.5: read `kv-depth-{N}.bin` back into the slot and delete it.
+   * Skipped entirely when the matching save failed — there is nothing on disk
+   * to restore.
+   */
+  private async restoreSlot(depth: number): Promise<void> {
+    if (!this.savedDepths.delete(depth)) return;
+    if (!(await this.slotAction("restore", depth))) return;
+
+    const path = join(this.slotSavePath, kvCacheFileName(depth));
+    try {
+      await unlink(path);
+    } catch (err) {
+      // §4: the file may linger until the next run at this depth overwrites
+      // it; the turn is unaffected.
+      this.warn(`could not delete ${path}: ${messageOf(err)}`);
+    }
+  }
+
+  /**
+   * `POST /slots/{id}?action=save|restore` with `{"filename": …}`. Returns
+   * whether the server accepted it; every failure mode is fail-open and only
+   * produces a warning (KV spec §3.8).
+   */
+  private async slotAction(
+    action: "save" | "restore",
+    depth: number,
+  ): Promise<boolean> {
+    const filename = kvCacheFileName(depth);
+    const endpoint = `${this.endpointBase()}/slots/${this.slotId}?action=${action}`;
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+    if (this.apiKey) headers.Authorization = `Bearer ${this.apiKey}`;
+
+    let response: Response;
+    try {
+      response = await fetch(endpoint, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ filename }),
+      });
+    } catch (err) {
+      this.warn(`KV ${action} of ${filename} failed: ${messageOf(err)}`);
+      return false;
+    }
+    if (!response.ok) {
+      // 501 is the server saying it was started without --slot-save-path.
+      const hint =
+        response.status === 501
+          ? " (start llama-server with --slot-save-path DIR)"
+          : "";
+      this.warn(
+        `KV ${action} of ${filename} failed: HTTP ${response.status}${hint}`,
+      );
+      return false;
+    }
+    return true;
+  }
+
+  /** The base URL without a trailing slash. */
+  private endpointBase(): string {
+    return this.baseUrl.endsWith("/") ? this.baseUrl.slice(0, -1) : this.baseUrl;
+  }
+
+  /** Report a fail-open problem, tagged with the provider it came from. */
+  private warn(message: string): void {
+    this.log(`[${this.name || "llama"}] ${message}`);
+  }
+}
+
+/** The message of a thrown value, whatever was thrown. */
+function messageOf(err: unknown): string {
+  if (err instanceof Error && err.message) return err.message;
+  return String(err);
 }

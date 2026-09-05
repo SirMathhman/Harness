@@ -6,7 +6,7 @@
  * root so a config module can write `import type { Hook } from "vise"`.
  */
 
-/** The lifecycle points at which hooks fire (hooks spec §3.1). */
+/** The lifecycle points at which hooks fire (hooks spec §3.1; KV spec §3.3). */
 export type HookEvent =
   | "tool:before"
   | "tool:after"
@@ -14,7 +14,9 @@ export type HookEvent =
   | "turn:end"
   | "session:start"
   | "session:end"
-  | "on:compaction";
+  | "on:compaction"
+  | "subagent:before"
+  | "subagent:after";
 
 /** Every valid `HookEvent`, in spec order. Used for validation and messages. */
 export const HOOK_EVENTS: readonly HookEvent[] = [
@@ -25,7 +27,24 @@ export const HOOK_EVENTS: readonly HookEvent[] = [
   "session:start",
   "session:end",
   "on:compaction",
+  "subagent:before",
+  "subagent:after",
 ];
+
+/**
+ * The two events whose handlers may return a Promise, which the dispatcher
+ * awaits (KV spec §3.3, §8.1). Every other event stays synchronous-only: a
+ * Promise returned there is an unsupported result, exactly as before.
+ */
+export const ASYNC_HOOK_EVENTS: readonly HookEvent[] = [
+  "subagent:before",
+  "subagent:after",
+];
+
+/** Whether `event` is one of the two events that permit an async handler. */
+export function isAsyncHookEvent(event: HookEvent): boolean {
+  return ASYNC_HOOK_EVENTS.includes(event);
+}
 
 /**
  * The events on which a block is *effective*. A block returned on any other
@@ -76,8 +95,15 @@ export type HookResult =
   | string
   | { message: string; block?: boolean };
 
-/** A hook handler. Must be synchronous (hooks spec §8). */
-export type HookHandler = (ctx: HookContext) => HookResult;
+/**
+ * A hook handler. Synchronous for every event except `subagent:before` and
+ * `subagent:after`, whose handlers may return a Promise that the dispatcher
+ * awaits (hooks spec §8; KV spec §8.1). A Promise returned on any other event
+ * is an unsupported result: it is warned about and ignored.
+ */
+export type HookHandler = (
+  ctx: HookContext,
+) => HookResult | Promise<HookResult>;
 
 /** A user-defined lifecycle handler. */
 export interface Hook {

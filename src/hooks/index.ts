@@ -1,7 +1,9 @@
 export {
+  ASYNC_HOOK_EVENTS,
   BLOCKING_HOOK_EVENTS,
   canBlock,
   HOOK_EVENTS,
+  isAsyncHookEvent,
   isHookEvent,
   type Hook,
   type HookContext,
