@@ -12,6 +12,7 @@ import { c } from "./color.js";
 import { commandArgs, findCommand, type ReplContext } from "./commands.js";
 import {
   compactingLine,
+  reasoningHeaderLine,
   subagentEndLine,
   toolCallLine,
   toolResultLine,
@@ -106,7 +107,7 @@ export async function startRepl(
     },
     onReasoning: (t) => {
       if (!reasoningActive) {
-        process.stdout.write(`\n${c.gray("thinking…")}\n`);
+        process.stdout.write(`\n${reasoningHeaderLine()}\n`);
         reasoningActive = true;
       }
       process.stdout.write(c.gray(t));

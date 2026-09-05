@@ -180,7 +180,11 @@ export async function chatCompletion(
         onToken(token);
       }
       const reasoning = delta?.reasoning_content;
-      if (typeof reasoning === "string" && reasoning.length > 0 && onReasoning) {
+      if (
+        typeof reasoning === "string" &&
+        reasoning.length > 0 &&
+        onReasoning
+      ) {
         onReasoning(reasoning);
       }
     }

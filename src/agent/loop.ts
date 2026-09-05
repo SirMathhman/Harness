@@ -197,7 +197,10 @@ async function maybeCompact(
 
   callbacks.onCompacting?.();
   // on:compaction (hooks §3.1): advisory output lands before the recap call.
-  appendAdvisory(session, session.hooks.dispatch("on:compaction", ctxOf(session)));
+  appendAdvisory(
+    session,
+    session.hooks.dispatch("on:compaction", ctxOf(session)),
+  );
 
   const { system, older, recent } = partitionForCompaction(
     session.messages,

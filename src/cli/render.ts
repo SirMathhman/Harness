@@ -45,6 +45,11 @@ export function compactingLine(indent = ""): string {
   return `${indent}${c.yellow("[compacting context…]")}`;
 }
 
+/** A one-time reasoning header: `thinking…`, indented. */
+export function reasoningHeaderLine(indent = ""): string {
+  return `${indent}${c.gray("thinking…")}`;
+}
+
 /** A subagent end-of-run line: `✓`/`✗ label`, indented. */
 export function subagentEndLine(
   ok: boolean,
