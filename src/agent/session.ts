@@ -5,9 +5,11 @@ import {
   defaultGraph,
   defaultProfileName,
   ProfileHasNoModelError,
+  profileEntries,
   profileNames,
   resolveProfile,
   UnknownProfileError,
+  type ProfileEntry,
   type ResourceGraph,
 } from "../profiles/index.js";
 import {
@@ -24,7 +26,11 @@ export interface SessionOptions {
    * tool, no hooks, the default model.
    */
   graph?: ResourceGraph;
-  /** The profile to start under. Omitted → the graph's default (§3.10 step 5). */
+  /**
+   * The profile to start under. Omitted → the implicit built-in profile
+   * (config spec §3.7). Callers that want to restore a saved profile (or any
+   * other specific one) must resolve it and pass it explicitly.
+   */
   profile?: string;
   /** The LLM client used by the session and any subagents it spawns. */
   client?: LLMClient;
@@ -49,10 +55,15 @@ export interface SessionHandle {
   readonly registry: ToolRegistry;
   /** The active profile's background-command manager. Replaced on switch. */
   readonly manager: BackgroundCommandManager;
-  /** The active profile's name; `""` for the implicit default. */
+  /** The active profile's name; `"Agent"` for the implicit default. */
   readonly profile: string;
   /** Every user-defined profile name, in the order the config created them. */
   profiles(): string[];
+  /**
+   * Every profile, including the implicit built-in one, tagged with its
+   * origin (config spec §3.9): builtin, then global, then project.
+   */
+  profileEntries(): ProfileEntry[];
   /**
    * Switch to `name`, re-resolving prompt, tools, hooks, and model
    * (profiles spec §3.6).
@@ -69,12 +80,12 @@ export interface SessionHandle {
 }
 
 /**
- * Create a new in-memory session (spec §2.1). No persistent state.
- *
- * The session starts under the graph's default profile: the one named
- * `default`, else the first profile the config created, else the implicit
- * empty profile (profiles spec §3.10 step 5). Its system prompt, tool set,
- * hooks, and model all come from resolving that profile.
+ * Create a new in-memory session (spec §2.1). No persistent state of its own —
+ * the caller (the REPL entry point) is responsible for resolving a saved
+ * profile from the state file and passing it as `options.profile` (config
+ * spec §3.7); with no `profile` given, the session starts under the implicit
+ * built-in profile. Its system prompt, tool set, hooks, and model all come
+ * from resolving that profile.
  *
  * `session:start` fires once here, against the starting profile's hooks; its
  * advisory output joins the initial messages (hooks spec §3.5).
@@ -117,6 +128,7 @@ export function createSession(options: SessionOptions = {}): SessionHandle {
     manager: initial.manager,
     profile: startingProfile,
     profiles: () => profileNames(graph),
+    profileEntries: () => profileEntries(graph),
     hooksEnabled: () => hooksEnabled,
     setHooksEnabled(enabled: boolean) {
       hooksEnabled = enabled;
@@ -132,7 +144,7 @@ export function createSession(options: SessionOptions = {}): SessionHandle {
       // the conversation, so they die with it (E21).
       handle.manager.killAll();
 
-      applySystemPrompt(session, next.systemPrompt, graph.switchMode);
+      applySystemPrompt(session, next.systemPrompt, graph.runtime.profileSwitchMode);
       session.config = next.config;
       session.hooks = next.hooks;
       session.profile = name;

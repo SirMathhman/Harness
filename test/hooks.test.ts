@@ -19,6 +19,7 @@ import {
   REPL_COMMANDS,
 } from "../src/cli/repl.js";
 import {
+  IMPLICIT_PROFILE_NAME,
   ViseConfigError,
   type RuntimeSettings,
 } from "../src/profiles/index.js";
@@ -526,7 +527,7 @@ describe("hooks in the agent loop (hooks §3.5, AC 1, 2, 3)", () => {
       task: "t",
       maxIterations: 5,
       depth: 1,
-      profile: "",
+      profile: IMPLICIT_PROFILE_NAME,
     });
     expect(out).toBe("sub done");
     // Only the includeSubagents hook fired, and it saw depth 1.
@@ -551,7 +552,7 @@ describe("hooks in the agent loop (hooks §3.5, AC 1, 2, 3)", () => {
       client: stubClient([finish("try one", "s1"), finish("try two", "s2")]),
     });
     expect(
-      await runner({ task: "t", maxIterations: 5, depth: 1, profile: "" }),
+      await runner({ task: "t", maxIterations: 5, depth: 1, profile: IMPLICIT_PROFILE_NAME }),
     ).toBe("try two");
   });
 

@@ -9,6 +9,7 @@ import {
   IMPLICIT_PROFILE_NAME,
   ProfileHasNoModelError,
   UnknownProfileError,
+  writeStateFile,
   type ResourceGraph,
 } from "../profiles/index.js";
 
@@ -24,13 +25,22 @@ import {
  * - `exit` / `quit` end the session.
  *
  * `graph` is the resource graph built from `.vise/index.ts`; omitted → the
- * built-in defaults (profiles spec §3.8).
+ * built-in defaults (profiles spec §3.8). `profile` is the starting profile,
+ * already resolved from the state file (config spec §3.7); `statePath` is
+ * where that profile and the active model are saved back to on a clean exit
+ * (config spec §3.8.3).
  */
 export async function startRepl(
   graph: ResourceGraph,
+  profile: string,
+  statePath: string,
   initialTask?: string | null,
 ): Promise<void> {
-  const handle = createSession({ graph, render: makeSubagentRender() });
+  const handle = createSession({
+    graph,
+    profile,
+    render: makeSubagentRender(),
+  });
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   let closed = false;
   rl.on("close", () => {
@@ -76,6 +86,13 @@ export async function startRepl(
   // the session is ending, so there is no conversation left to inject it into.
   const ended = handle.session.hooks.dispatch("session:end", { depth: 0 });
   if (ended.advisory) process.stdout.write(`${ended.advisory}\n`);
+
+  // Profile persistence (config spec §3.8.3): every path out of the loop above
+  // is a clean exit (`/exit`, bare `exit`/`quit`, or stdin closing on Ctrl-D),
+  // so the active profile and model are saved here unconditionally. Ctrl-C
+  // mid-turn never reaches this point — it aborts the turn and returns to the
+  // prompt instead (§3.8.3, C13).
+  writeStateFile(statePath, handle.profile, handle.session.config.model ?? "");
 
   handle.manager.killAll();
   rl.close();
@@ -286,15 +303,19 @@ export function profileCommand(
   return `profile: switched to "${name}".`;
 }
 
-/** The `/profile` listing: one line per profile, active one marked `*`. */
+/**
+ * The `/profile` listing (config spec §3.9): every profile from both config
+ * files plus the implicit built-in one, each marked with its origin
+ * (`builtin`, `global`, or `project`), active one marked `*`, in creation
+ * order (builtin, then global, then project).
+ */
 export function profileListing(handle: SessionHandle): string {
-  const names = handle.profiles();
-  if (names.length === 0) {
-    return "profiles: none defined (running the built-in default profile).";
-  }
-  const lines = [`profiles: ${names.length} defined`];
-  for (const name of names) {
-    lines.push(`  ${name === handle.profile ? "*" : " "} ${name}`);
+  const entries = handle.profileEntries();
+  const width = Math.max(...entries.map((e) => e.name.length));
+  const lines = ["Profiles:"];
+  for (const { name, origin } of entries) {
+    const marker = name === handle.profile ? "*" : " ";
+    lines.push(`  ${marker} ${name.padEnd(width)} (${origin})`);
   }
   return lines.join("\n");
 }

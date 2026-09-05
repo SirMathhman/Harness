@@ -5,6 +5,7 @@ import path from "node:path";
 import {
   defaultProfileName,
   findConfigEntry,
+  IMPLICIT_PROFILE_NAME,
   loadViseConfig,
   profileNames,
   resolveProfile,
@@ -83,7 +84,7 @@ describe("config loading (profiles §3.1, §3.10)", () => {
     const { dir, cleanup } = makeProject({});
     expect(findConfigEntry(dir)).toBeNull();
 
-    const graph = await loadViseConfig(dir);
+    const graph = await loadViseConfig(dir, path.join(dir, "no-global"));
     expect(profileNames(graph)).toEqual([]);
     const resolved = resolveProfile(graph, defaultProfileName(graph));
     // Built-in prompt, every built-in tool, no hooks, the default model.
@@ -91,7 +92,9 @@ describe("config loading (profiles §3.1, §3.10)", () => {
     expect(resolved.builtinTools).toBeNull();
     expect(resolved.hooks).toEqual([]);
     expect(resolved.config.baseUrl).toBe("http://localhost:8080");
-    expect(toolsOf(graph, "").sort()).toEqual([...BUILTIN_TOOL_NAMES].sort());
+    expect(toolsOf(graph, IMPLICIT_PROFILE_NAME).sort()).toEqual(
+      [...BUILTIN_TOOL_NAMES].sort(),
+    );
     cleanup();
   });
 
@@ -99,7 +102,7 @@ describe("config loading (profiles §3.1, §3.10)", () => {
     const { dir, cleanup } = makeProject({
       ".vise/index.ts": `export default () => { throw new Error("bad setup"); };`,
     });
-    const err = await loadViseConfig(dir).catch((e: unknown) => e);
+    const err = await loadViseConfig(dir, path.join(dir, "no-global")).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ViseConfigError);
     expect((err as Error).message).toContain("bad setup");
     cleanup();
@@ -109,7 +112,7 @@ describe("config loading (profiles §3.1, §3.10)", () => {
     const { dir, cleanup } = makeProject({
       ".vise/index.ts": `export default (reg) => { this is not typescript`,
     });
-    await expect(loadViseConfig(dir)).rejects.toThrow(ViseConfigError);
+    await expect(loadViseConfig(dir, path.join(dir, "no-global"))).rejects.toThrow(ViseConfigError);
     cleanup();
   });
 
@@ -117,7 +120,7 @@ describe("config loading (profiles §3.1, §3.10)", () => {
     const { dir, cleanup } = makeProject({
       ".vise/index.ts": `export const setup = () => {};`,
     });
-    const err = await loadViseConfig(dir).catch((e: unknown) => e);
+    const err = await loadViseConfig(dir, path.join(dir, "no-global")).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ViseConfigError);
     expect((err as Error).message).toContain("no default export");
     cleanup();
@@ -127,7 +130,7 @@ describe("config loading (profiles §3.1, §3.10)", () => {
     const { dir, cleanup } = makeProject({
       ".vise/index.ts": `export default { profiles: [] };`,
     });
-    const err = await loadViseConfig(dir).catch((e: unknown) => e);
+    const err = await loadViseConfig(dir, path.join(dir, "no-global")).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ViseConfigError);
     expect((err as Error).message).toContain("must be a function");
     cleanup();
@@ -150,7 +153,7 @@ describe("config loading (profiles §3.1, §3.10)", () => {
           reg.createConnection(impl, reg.hookId);
         };`,
     });
-    const graph = await loadViseConfig(dir);
+    const graph = await loadViseConfig(dir, path.join(dir, "no-global"));
     const resolved = resolveProfile(graph, "implement");
     expect(resolved.hooks).toHaveLength(1);
     expect(resolved.hooks[0].hook.handler({} as never)).toBe(
@@ -169,9 +172,9 @@ describe("profile resolution (profiles §3.5)", () => {
     const graph = graphFrom((reg) => {
       reg.createProfile({ name: "bare", systemPrompt: "" });
     });
-    expect(createSession({ graph }).session.messages[0].content).toBe(
-      DEFAULT_SYSTEM_PROMPT,
-    );
+    expect(
+      createSession({ graph, profile: "bare" }).session.messages[0].content,
+    ).toBe(DEFAULT_SYSTEM_PROMPT);
   });
 
   test("a profile with no tool edges gets every built-in tool (AC 6)", () => {
@@ -257,20 +260,22 @@ describe("profile resolution (profiles §3.5)", () => {
     expect(cfg.compactThreshold).toBe(0.8);
   });
 
-  test("the default profile is `default`, else the first one defined", () => {
-    const first = graphFrom((reg) => {
+  test("the default profile is always the implicit built-in one (config §3.7)", () => {
+    // Naming a profile "default" no longer has any special effect: with no
+    // saved state, a session always starts under the implicit profile.
+    const withDefault = graphFrom((reg) => {
       reg.createProfile({ name: "alpha", systemPrompt: "a" });
       reg.createProfile({ name: "default", systemPrompt: "d" });
     });
-    expect(defaultProfileName(first)).toBe("default");
+    expect(defaultProfileName(withDefault)).toBe(IMPLICIT_PROFILE_NAME);
 
     const noDefault = graphFrom((reg) => {
       reg.createProfile({ name: "alpha", systemPrompt: "a" });
       reg.createProfile({ name: "beta", systemPrompt: "b" });
     });
-    expect(defaultProfileName(noDefault)).toBe("alpha");
+    expect(defaultProfileName(noDefault)).toBe(IMPLICIT_PROFILE_NAME);
 
-    expect(defaultProfileName(graphFrom(() => {}))).toBe("");
+    expect(defaultProfileName(graphFrom(() => {}))).toBe(IMPLICIT_PROFILE_NAME);
   });
 
   test("resolving an unknown profile throws, listing the known ones", () => {
@@ -422,21 +427,24 @@ describe("/profile command and switching (profiles §3.6, §3.9)", () => {
     });
   }
 
-  test("the session starts under the default profile (AC 1)", () => {
-    const handle = createSession({ graph: twoProfiles() });
+  test("a session starts under whichever profile it is given (AC 1)", () => {
+    const handle = createSession({ graph: twoProfiles(), profile: "default" });
     expect(handle.profile).toBe("default");
     expect(handle.session.messages[0].content).toBe("you implement");
   });
 
-  test("/profile lists both, marking the active one (AC 2)", () => {
-    const handle = createSession({ graph: twoProfiles() });
+  test("/profile lists both plus the implicit one, marking the active one (AC 2)", () => {
+    const handle = createSession({ graph: twoProfiles(), profile: "default" });
     const listing = profileListing(handle);
     expect(listing).toContain("* default");
-    expect(listing).toContain("  refactor");
+    expect(listing).toContain("refactor");
+    expect(listing).toContain("Agent");
+    expect(listing).toContain("(builtin)");
+    expect(listing).toContain("(project)");
   });
 
   test("/profile refactor re-resolves prompt, tools, and model (AC 3)", () => {
-    const handle = createSession({ graph: twoProfiles() });
+    const handle = createSession({ graph: twoProfiles(), profile: "default" });
     expect(handle.registry.get("write_file")).toBeDefined();
     expect(handle.session.config.baseUrl).toBe("http://localhost:8080");
 
@@ -452,7 +460,7 @@ describe("/profile command and switching (profiles §3.6, §3.9)", () => {
   });
 
   test("a hook on one profile does not fire under another (AC 4)", () => {
-    const handle = createSession({ graph: twoProfiles() });
+    const handle = createSession({ graph: twoProfiles(), profile: "default" });
     expect(handle.session.hooks.dispatch("turn:end").block).toBe("run tests");
     handle.switchProfile("refactor");
     expect(handle.session.hooks.size).toBe(0);
@@ -460,7 +468,7 @@ describe("/profile command and switching (profiles §3.6, §3.9)", () => {
   });
 
   test("conversation history survives a switch; the prompt is replaced", () => {
-    const handle = createSession({ graph: twoProfiles() });
+    const handle = createSession({ graph: twoProfiles(), profile: "default" });
     handle.session.messages.push({ role: "user", content: "earlier work" });
     handle.switchProfile("refactor");
     expect(handle.session.messages[0].content).toBe("you refactor");
@@ -474,11 +482,11 @@ describe("/profile command and switching (profiles §3.6, §3.9)", () => {
 
   test("append mode keeps the old system message and adds the new one", () => {
     const graph = profileGraph((reg, profile) => {
-      reg.setProfileSwitchMode("append");
+      reg.setRuntime({ profileSwitchMode: "append" });
       profile("default", { systemPrompt: "first" });
       profile("second", { systemPrompt: "second" });
     });
-    const handle = createSession({ graph });
+    const handle = createSession({ graph, profile: "default" });
     handle.switchProfile("second");
     const systems = handle.session.messages
       .filter((m) => m.role === "system")
@@ -487,7 +495,7 @@ describe("/profile command and switching (profiles §3.6, §3.9)", () => {
   });
 
   test("/profile nonexistent reports the error and does not switch (AC 10)", () => {
-    const handle = createSession({ graph: twoProfiles() });
+    const handle = createSession({ graph: twoProfiles(), profile: "default" });
     const out = profileCommand(handle, ["nonexistent"]);
     expect(out).toContain("Unknown profile");
     expect(out).toContain("refactor");
@@ -495,9 +503,11 @@ describe("/profile command and switching (profiles §3.6, §3.9)", () => {
     expect(handle.session.messages[0].content).toBe("you implement");
   });
 
-  test("/profile with no profiles defined says so", () => {
+  test("/profile with no user-defined profiles still lists the implicit one", () => {
     const handle = createSession({ graph: modelGraph() });
-    expect(profileListing(handle)).toContain("none defined");
+    const listing = profileListing(handle);
+    expect(listing).toContain("* Agent");
+    expect(listing).toContain("(builtin)");
   });
 
   test("switching to a profile with no usable model is refused (§3.11)", () => {
@@ -513,7 +523,7 @@ describe("/profile command and switching (profiles §3.6, §3.9)", () => {
       // until auto-discovery fills one in.
       reg.createProfile({ name: "modelless", systemPrompt: "nope" });
     });
-    const handle = createSession({ graph });
+    const handle = createSession({ graph, profile: "default" });
 
     const out = profileCommand(handle, ["modelless"]);
 
@@ -545,7 +555,10 @@ describe("hook-tool filtering (profiles §3.7)", () => {
 
   test("the hook fires for the connected tool but not others (AC 5)", () => {
     const fired: string[] = [];
-    const { session } = createSession({ graph: filteredGraph(fired) });
+    const { session } = createSession({
+      graph: filteredGraph(fired),
+      profile: "guarded",
+    });
     session.hooks.dispatch("tool:before", {
       tool: { name: "write_file", args: {} },
     });
@@ -557,7 +570,10 @@ describe("hook-tool filtering (profiles §3.7)", () => {
 
   test("non-tool events ignore the filter and fire normally", () => {
     const fired: string[] = [];
-    const { session } = createSession({ graph: filteredGraph(fired) });
+    const { session } = createSession({
+      graph: filteredGraph(fired),
+      profile: "guarded",
+    });
     session.hooks.dispatch("turn:end");
     expect(fired).toEqual(["turn:end"]);
   });
@@ -576,7 +592,7 @@ describe("hook-tool filtering (profiles §3.7)", () => {
         }),
       );
     });
-    const { session } = createSession({ graph });
+    const { session } = createSession({ graph, profile: "open" });
     for (const name of ["write_file", "read_file"]) {
       session.hooks.dispatch("tool:before", { tool: { name, args: {} } });
     }
@@ -639,7 +655,11 @@ describe("subagent policy (profiles §3.12)", () => {
 
   test("an allowed profile spawns a subagent under it (AC 13)", async () => {
     const { prompts, client } = promptRecorder();
-    const handle = createSession({ graph: policyGraph(), client });
+    const handle = createSession({
+      graph: policyGraph(),
+      profile: "default",
+      client,
+    });
 
     const out = await spawn(handle, { task: "research it", profile: "researcher" });
 
@@ -650,7 +670,7 @@ describe("subagent policy (profiles §3.12)", () => {
   });
 
   test("a forbidden profile returns an error listing the allowed ones (AC 14)", async () => {
-    const handle = createSession({ graph: policyGraph() });
+    const handle = createSession({ graph: policyGraph(), profile: "default" });
     const out = await spawn(handle, { task: "t", profile: "default" });
     expect(out).toContain("is not allowed for subagents");
     expect(out).toContain("Allowed: [worker, researcher]");
@@ -660,7 +680,7 @@ describe("subagent policy (profiles §3.12)", () => {
     const graph = graphFrom((reg) => {
       reg.createProfile({ name: "open", systemPrompt: "o" });
     });
-    const handle = createSession({ graph });
+    const handle = createSession({ graph, profile: "open" });
     const out = await spawn(handle, { task: "t", profile: "ghost" });
     expect(out).toContain("Unknown profile 'ghost'");
     expect(out).toContain("open");
@@ -740,7 +760,9 @@ describe("subagent policy (profiles §3.12)", () => {
       reg.createConnection(p, reg.builtins.tools.read_file);
       reg.createConnection(p, reg.builtins.tools.finish);
     });
-    expect(createSession({ graph }).registry.get("spawn_subagent")).toBeUndefined();
+    expect(
+      createSession({ graph, profile: "sealed" }).registry.get("spawn_subagent"),
+    ).toBeUndefined();
   });
 });
 
@@ -756,7 +778,7 @@ describe("resolved profiles drive the agent loop", () => {
       reg.createConnection(p, reg.builtins.tools.read_file);
       reg.createConnection(p, reg.builtins.tools.finish);
     });
-    const handle = createSession({ graph });
+    const handle = createSession({ graph, profile: "reader" });
     const client: LLMClient = {
       async chat(opts) {
         advertised.push(opts.tools.map((t) => t.name).sort());

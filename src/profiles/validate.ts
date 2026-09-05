@@ -1,8 +1,13 @@
 import { BUILTIN_TOOL_NAMES, FINISH_TOOL_NAME } from "../tools/names.js";
 import { HOOK_EVENTS, isHookEvent } from "../hooks/types.js";
 import { RUNTIME_KEYS } from "../config/defaults.js";
-import type { ResourceGraph } from "./registry.js";
-import { idString, type Resource, type ResourceKind } from "./types.js";
+import { IMPLICIT_PROFILE_NAME, type ResourceGraph } from "./registry.js";
+import {
+  idString,
+  type Resource,
+  type ResourceKind,
+  type ResourceOrigin,
+} from "./types.js";
 
 /**
  * A `.vise/index.ts` that cannot be used. Always fatal: Vise exits rather than
@@ -46,10 +51,53 @@ export function validateGraph(graph: ResourceGraph): ResourceGraph {
   return graph;
 }
 
+/**
+ * Record a name against its kind's seen-names map (config spec §3.3) and push
+ * whichever conflict message fits: a cross-file collision (one "global", one
+ * "project") gets the spec's fixed "Config conflict" wording; anything else
+ * (a duplicate within one file, or a custom resource shadowing a built-in)
+ * gets the older, more specific message.
+ */
+function recordNameConflict(
+  problems: string[],
+  kind: "profile" | "tool" | "model",
+  name: string,
+  origin: ResourceOrigin,
+  seen: Map<string, ResourceOrigin>,
+): void {
+  const prior = seen.get(name);
+  if (prior === undefined) {
+    seen.set(name, origin);
+    return;
+  }
+  const crossFile =
+    (prior === "global" && origin === "project") ||
+    (prior === "project" && origin === "global");
+  if (crossFile) {
+    problems.push(
+      `Config conflict: a ${kind} named "${name}" is defined in both the ` +
+        `global config (~/.vise/index.ts) and the project config ` +
+        `(./.vise/index.ts). Remove one or rename it.`,
+    );
+    return;
+  }
+  if (kind === "tool" && prior === "builtin") {
+    problems.push(
+      `Duplicate tool name "${name}" (a built-in or another custom tool ` +
+        `already uses it).`,
+    );
+    return;
+  }
+  problems.push(`Duplicate ${kind} name "${name}".`);
+}
+
 /** Profile names and tool names must each be unique and well-formed. */
 function validateResources(graph: ResourceGraph, problems: string[]): void {
-  const profileNames = new Set<string>();
-  const toolNames = new Set<string>(BUILTIN_TOOL_NAMES);
+  const profileNames = new Map<string, ResourceOrigin>();
+  const toolNames = new Map<string, ResourceOrigin>(
+    BUILTIN_TOOL_NAMES.map((name) => [name, "builtin" as ResourceOrigin]),
+  );
+  const modelNames = new Map<string, ResourceOrigin>();
 
   for (const resource of graph.resources.values()) {
     switch (resource.kind) {
@@ -62,10 +110,14 @@ function validateResources(graph: ResourceGraph, problems: string[]): void {
           );
           break;
         }
-        if (profileNames.has(name)) {
-          problems.push(`Duplicate profile name "${name}".`);
+        if (name === IMPLICIT_PROFILE_NAME) {
+          problems.push(
+            `Profile name "${IMPLICIT_PROFILE_NAME}" is reserved for the ` +
+              `implicit built-in profile. Choose a different name.`,
+          );
+          break;
         }
-        profileNames.add(name);
+        recordNameConflict(problems, "profile", name, resource.origin, profileNames);
         if (typeof resource.def.systemPrompt !== "string") {
           problems.push(
             `Profile "${name}" must have a string systemPrompt ` +
@@ -83,13 +135,7 @@ function validateResources(graph: ResourceGraph, problems: string[]): void {
           );
           break;
         }
-        if (toolNames.has(name)) {
-          problems.push(
-            `Duplicate tool name "${name}" (a built-in or another custom ` +
-              `tool already uses it).`,
-          );
-        }
-        toolNames.add(name);
+        recordNameConflict(problems, "tool", name, resource.origin, toolNames);
         if (typeof resource.def.handler !== "function") {
           problems.push(`Tool "${name}" must have a handler function.`);
         }
@@ -124,12 +170,15 @@ function validateResources(graph: ResourceGraph, problems: string[]): void {
         if (resource.builtin) break;
         const { name, baseUrl } = resource.def;
         // An empty name is legal and means "whatever this server has loaded":
-        // startup fills it in from /v1/models (spec §3.10).
+        // startup fills it in from /v1/models (spec §3.10). Empty names are
+        // never checked for conflicts — many auto-discovered models can coexist.
         if (typeof name !== "string") {
           problems.push(
             `Model ${idString(resource.id)} must have a string name (use "" ` +
               `to auto-discover it from the server).`,
           );
+        } else if (name !== "") {
+          recordNameConflict(problems, "model", name, resource.origin, modelNames);
         }
         if (typeof baseUrl !== "string" || baseUrl === "") {
           problems.push(
@@ -286,10 +335,10 @@ function validateRuntime(graph: ResourceGraph, problems: string[]): void {
       );
     }
   }
-  if (graph.switchMode !== "replace" && graph.switchMode !== "append") {
+  if (r.profileSwitchMode !== "replace" && r.profileSwitchMode !== "append") {
     problems.push(
-      `setProfileSwitchMode: must be "replace" or "append" (got ` +
-        `${JSON.stringify(graph.switchMode)}).`,
+      `setRuntime: profileSwitchMode must be "replace" or "append" (got ` +
+        `${JSON.stringify(r.profileSwitchMode)}).`,
     );
   }
 }

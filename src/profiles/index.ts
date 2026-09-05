@@ -10,6 +10,7 @@ export {
   type Resource,
   type ResourceId,
   type ResourceKind,
+  type ResourceOrigin,
   type RuntimeSettings,
   type SubagentPolicy,
   type ToolDef,
@@ -28,10 +29,12 @@ export {
 export {
   defaultProfileName,
   ProfileHasNoModelError,
+  profileEntries,
   profileNames,
   resolveProfile,
   systemPromptOf,
   UnknownProfileError,
+  type ProfileEntry,
   type ResolvedProfile,
 } from "./resolve.js";
 export { validateGraph, ViseConfigError } from "./validate.js";
@@ -42,3 +45,10 @@ export {
   findConfigEntry,
   loadViseConfig,
 } from "./load.js";
+export {
+  resolveStartingProfile,
+  stateFilePath,
+  writeStateFile,
+  type StartingProfile,
+  type StateFile,
+} from "./state.js";

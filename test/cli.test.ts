@@ -3,6 +3,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -60,6 +61,44 @@ describe("CLI startup (AC 1)", () => {
     const stderr = await new Response(proc.stderr).text();
     expect(exitCode).toBe(1);
     expect(stderr).toContain("Unknown option(s): --model");
+  });
+});
+
+describe("profile persistence end-to-end (config spec §3.8, AC 9, AC 13, C17)", () => {
+  test("a clean exit saves the active profile and model to ./.vise/state.json", async () => {
+    // An explicit, non-empty model name means no auto-discovery HTTP call is
+    // ever attempted, so the REPL starts up with no real LLM server running.
+    const dir = mkdtempSync(path.join(tmpdir(), "vise-state-e2e-"));
+    mkdirSync(path.join(dir, ".vise"));
+    writeFileSync(
+      path.join(dir, ".vise", "index.ts"),
+      [
+        "export default (reg) => {",
+        "  reg.createConnection(",
+        "    reg.builtins.defaultProfile,",
+        '    reg.createModel({ name: "stub-model", baseUrl: "http://127.0.0.1:1", apiKey: "" }),',
+        "  );",
+        "};",
+      ].join("\n"),
+    );
+    const entry = path.resolve("src/index.ts");
+    const proc = Bun.spawn(["bun", "run", entry], {
+      cwd: dir,
+      stdin: new TextEncoder().encode("/exit\n"),
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const exitCode = await proc.exited;
+    const statePath = path.join(dir, ".vise", "state.json");
+
+    expect(exitCode).toBe(0);
+    expect(existsSync(statePath)).toBe(true);
+    const state = JSON.parse(readFileSync(statePath, "utf8"));
+    expect(state.profile).toBe("Agent");
+    expect(state.lastModel).toBe("stub-model");
+    expect(typeof state.savedAt).toBe("string");
+
+    rmSync(dir, { recursive: true, force: true });
   });
 });
 
@@ -136,6 +175,8 @@ describe("prompt label", () => {
     const graph = modelGraph("http://localhost:8080", {}, (reg) => {
       reg.createProfile({ name: "refactor", systemPrompt: "" });
     });
-    expect(promptLabel(createSession({ graph }))).toBe("vise:refactor");
+    expect(promptLabel(createSession({ graph, profile: "refactor" }))).toBe(
+      "vise:refactor",
+    );
   });
 });

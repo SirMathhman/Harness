@@ -7,10 +7,10 @@ import {
   type HookDef,
   type ModelDef,
   type ProfileDef,
-  type ProfileSwitchMode,
   type Registry,
   type Resource,
   type ResourceId,
+  type ResourceOrigin,
   type RuntimeSettings,
   type ToolDef,
 } from "./types.js";
@@ -21,8 +21,11 @@ export const IMPLICIT_PROFILE_ID = asResourceId("builtin:profile:default");
 /** The id of the model every profile falls back to when it has no model edge. */
 export const DEFAULT_MODEL_ID = asResourceId("builtin:model:default");
 
-/** The name of the implicit default profile. Empty, so it can never collide. */
-export const IMPLICIT_PROFILE_NAME = "";
+/**
+ * The name of the implicit built-in profile (config spec §3.7). Reserved: a
+ * user-defined profile in either config file cannot use this name.
+ */
+export const IMPLICIT_PROFILE_NAME = "Agent";
 
 /** Base URL used by the default model until the config overrides it. */
 export const DEFAULT_BASE_URL = "http://localhost:8080";
@@ -44,10 +47,11 @@ export interface ResourceGraph {
   edgesFrom: ReadonlyMap<ResourceId, readonly Connection[]>;
   /** Profile resources keyed by name, including the implicit default. */
   profiles: ReadonlyMap<string, ResourceId>;
-  /** The non-graph runtime settings. */
+  /**
+   * The non-graph runtime settings, including `profileSwitchMode` (config
+   * spec §3.5) — how `/profile` rewrites the system message.
+   */
   runtime: RuntimeSettings;
-  /** How `/profile` rewrites the system message. */
-  switchMode: ProfileSwitchMode;
 }
 
 /**
@@ -64,20 +68,36 @@ export class ViseRegistry implements Registry {
   private readonly edges: Connection[] = [];
   private readonly counters = new Map<string, number>();
   private runtime: RuntimeSettings = { ...DEFAULT_RUNTIME };
-  private switchMode: ProfileSwitchMode = "replace";
+
+  /**
+   * Which file is currently calling `create*` (config spec §3.2). Defaults to
+   * `"project"` so a bare `new ViseRegistry()` — used by `buildGraphFrom` and
+   * every single-file test — behaves exactly like the project tier always
+   * has. The two-tier loader (`load.ts`) flips this with `setOrigin` around
+   * each file's config call.
+   */
+  private origin: ResourceOrigin = "project";
+
+  /** O(1) name-lookup indexes backing `getProfile`/`getModel`/`getTool`. */
+  private readonly profilesByName = new Map<string, ResourceId>();
+  private readonly modelsByName = new Map<string, ResourceId>();
+  private readonly toolsByName = new Map<string, ResourceId>();
 
   readonly builtins: Registry["builtins"];
 
   constructor() {
-    // The implicit default profile (§3.8). It is always present so a config
-    // can attach resources to the fallback profile, and it is only *selected*
-    // when the config defines no profiles of its own (§3.10 step 5).
+    // The implicit default profile (§3.8, config spec §3.7). It is always
+    // present so a config can attach resources to the fallback profile, and
+    // it is only *selected* by default when no saved profile is restored
+    // from the state file (config spec §3.7).
     this.nodes.set(IMPLICIT_PROFILE_ID, {
       kind: "profile",
       id: IMPLICIT_PROFILE_ID,
       def: { name: IMPLICIT_PROFILE_NAME, systemPrompt: "" },
       implicit: true,
+      origin: "builtin",
     });
+    this.profilesByName.set(IMPLICIT_PROFILE_NAME, IMPLICIT_PROFILE_ID);
 
     // The default model. Its `name` starts empty and is filled in by model
     // auto-discovery at startup unless the config replaces it (§3.10).
@@ -86,6 +106,7 @@ export class ViseRegistry implements Registry {
       id: DEFAULT_MODEL_ID,
       def: { name: "", baseUrl: DEFAULT_BASE_URL, apiKey: "" },
       builtin: true,
+      origin: "builtin",
     });
 
     // Built-in tools are pre-registered as *placeholder* nodes: the graph only
@@ -94,7 +115,8 @@ export class ViseRegistry implements Registry {
     const tools: Record<string, ResourceId> = {};
     for (const name of BUILTIN_TOOL_NAMES) {
       const id = asResourceId(`builtin:${name}`);
-      this.nodes.set(id, { kind: "tool", id, name, def: null });
+      this.nodes.set(id, { kind: "tool", id, name, def: null, origin: "builtin" });
+      this.toolsByName.set(name, id);
       tools[name] = id;
     }
 
@@ -105,27 +127,48 @@ export class ViseRegistry implements Registry {
     };
   }
 
+  /**
+   * Tag every resource created from now on with `origin` (config spec §3.2).
+   * Internal to the loader — not part of the public `Registry` a config
+   * function sees, so a config module can never call it itself.
+   */
+  setOrigin(origin: ResourceOrigin): void {
+    this.origin = origin;
+  }
+
   createProfile(def: ProfileDef): ResourceId {
     const id = this.nextId("profile");
-    this.nodes.set(id, { kind: "profile", id, def, implicit: false });
+    this.nodes.set(id, { kind: "profile", id, def, implicit: false, origin: this.origin });
+    if (typeof def?.name === "string") this.profilesByName.set(def.name, id);
     return id;
   }
 
   createHook(def: HookDef): ResourceId {
     const id = this.nextId("hook");
-    this.nodes.set(id, { kind: "hook", id, def, source: idString(id) });
+    this.nodes.set(id, {
+      kind: "hook",
+      id,
+      def,
+      source: idString(id),
+      origin: this.origin,
+    });
     return id;
   }
 
   createTool(def: ToolDef): ResourceId {
     const id = this.nextId("tool");
-    this.nodes.set(id, { kind: "tool", id, name: def?.name ?? "", def });
+    const name = def?.name ?? "";
+    this.nodes.set(id, { kind: "tool", id, name, def, origin: this.origin });
+    if (name !== "") this.toolsByName.set(name, id);
     return id;
   }
 
   createModel(def: ModelDef): ResourceId {
     const id = this.nextId("model");
-    this.nodes.set(id, { kind: "model", id, def, builtin: false });
+    this.nodes.set(id, { kind: "model", id, def, builtin: false, origin: this.origin });
+    if (typeof def?.name === "string" && def.name !== "") {
+      this.modelsByName.set(def.name, id);
+    }
     return id;
   }
 
@@ -134,11 +177,21 @@ export class ViseRegistry implements Registry {
     to: ResourceId,
     props?: Record<string, unknown>,
   ): void {
+    assertResourceId(from, "from");
+    assertResourceId(to, "to");
     this.edges.push(props === undefined ? { from, to } : { from, to, props });
   }
 
-  setProfileSwitchMode(mode: ProfileSwitchMode): void {
-    this.switchMode = mode;
+  getProfile(name: string): ResourceId | undefined {
+    return this.profilesByName.get(name);
+  }
+
+  getModel(name: string): ResourceId | undefined {
+    return this.modelsByName.get(name);
+  }
+
+  getTool(name: string): ResourceId | undefined {
+    return this.toolsByName.get(name);
   }
 
   setRuntime(settings: Partial<RuntimeSettings>): void {
@@ -173,7 +226,6 @@ export class ViseRegistry implements Registry {
       edgesFrom,
       profiles,
       runtime: { ...this.runtime },
-      switchMode: this.switchMode,
     };
   }
 
@@ -182,6 +234,26 @@ export class ViseRegistry implements Registry {
     const n = this.counters.get(kind) ?? 0;
     this.counters.set(kind, n + 1);
     return asResourceId(`${kind}_${n}`);
+  }
+}
+
+/**
+ * Guard `createConnection` against an unchecked `getProfile`/`getModel`/
+ * `getTool` lookup (config spec §3.4, C5/C6): those return `ResourceId |
+ * undefined`, and a `ResourceId` is opaque, so the only way to catch a caller
+ * that skipped the `undefined` check is at the point it is used.
+ */
+function assertResourceId(
+  id: unknown,
+  label: "from" | "to",
+): asserts id is ResourceId {
+  if (typeof id !== "string") {
+    throw new Error(
+      `createConnection: the "${label}" argument is not a valid ResourceId ` +
+        `(got ${id === undefined ? "undefined" : JSON.stringify(id)}). This ` +
+        `usually means a reg.getProfile()/getModel()/getTool() lookup returned ` +
+        `undefined and was passed in without checking.`,
+    );
   }
 }
 

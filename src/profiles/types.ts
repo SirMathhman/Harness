@@ -32,6 +32,14 @@ export function asResourceId(raw: string): ResourceId {
 /** The four kinds of node in the resource graph (profiles spec §2.2). */
 export type ResourceKind = "profile" | "hook" | "tool" | "model";
 
+/**
+ * Which config file created a resource (config spec §2.1, §3.2).
+ *
+ * `"builtin"` covers the implicit default profile, the default model, and the
+ * built-in tool placeholders — none of which came from either config file.
+ */
+export type ResourceOrigin = "global" | "project" | "builtin";
+
 /** Constraints a profile places on the subagents it spawns (spec §3.12). */
 export interface SubagentPolicy {
   /**
@@ -109,6 +117,11 @@ export interface RuntimeSettings {
    * behavior").
    */
   maxSubagentDepth: number;
+  /**
+   * How `/profile <name>` rewrites the conversation's system message
+   * (config spec §3.5). Formerly a separate `setProfileSwitchMode` method.
+   */
+  profileSwitchMode: ProfileSwitchMode;
 }
 
 /** A directed edge between two resources (spec §3.4). */
@@ -142,10 +155,25 @@ export interface Registry {
     to: ResourceId,
     props?: Record<string, unknown>,
   ): void;
-  /** Set how a profile switch rewrites the system message. Default `replace`. */
-  setProfileSwitchMode(mode: ProfileSwitchMode): void;
   /** Override the non-graph runtime settings. Merged over the defaults. */
   setRuntime(settings: Partial<RuntimeSettings>): void;
+  /**
+   * Look up a profile by name (config spec §3.4). Searches every profile in
+   * the combined graph — global, project, and the implicit built-in.
+   * Returns `undefined` if not found.
+   */
+  getProfile(name: string): ResourceId | undefined;
+  /**
+   * Look up a model by name (config spec §3.4). Returns `undefined` if not
+   * found; a model created with an empty (auto-discovered) name is never
+   * matched.
+   */
+  getModel(name: string): ResourceId | undefined;
+  /**
+   * Look up a tool by name, built-in or custom (config spec §3.4). Returns
+   * `undefined` if not found.
+   */
+  getTool(name: string): ResourceId | undefined;
   /** Well-known ids for the built-in resources. */
   builtins: {
     /** Every built-in tool, keyed by tool name. */
@@ -160,9 +188,27 @@ export interface Registry {
 /** A config module's default export (spec §3.1). */
 export type ViseConfig = (reg: Registry) => void;
 
-/** A resource node, discriminated by kind. */
+/** A resource node, discriminated by kind. Every node carries its origin. */
 export type Resource =
-  | { kind: "profile"; id: ResourceId; def: ProfileDef; implicit: boolean }
-  | { kind: "hook"; id: ResourceId; def: HookDef; source: string }
-  | { kind: "tool"; id: ResourceId; name: string; def: ToolDef | null }
-  | { kind: "model"; id: ResourceId; def: ModelDef; builtin: boolean };
+  | {
+      kind: "profile";
+      id: ResourceId;
+      def: ProfileDef;
+      implicit: boolean;
+      origin: ResourceOrigin;
+    }
+  | { kind: "hook"; id: ResourceId; def: HookDef; source: string; origin: ResourceOrigin }
+  | {
+      kind: "tool";
+      id: ResourceId;
+      name: string;
+      def: ToolDef | null;
+      origin: ResourceOrigin;
+    }
+  | {
+      kind: "model";
+      id: ResourceId;
+      def: ModelDef;
+      builtin: boolean;
+      origin: ResourceOrigin;
+    };

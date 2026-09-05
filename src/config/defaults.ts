@@ -49,6 +49,7 @@ export const DEFAULT_RUNTIME: RuntimeSettings = {
   dynamicTools: false,
   subagentMaxIterations: 50,
   maxSubagentDepth: 3,
+  profileSwitchMode: "replace",
 };
 
 /**

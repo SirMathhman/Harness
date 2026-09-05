@@ -7,9 +7,11 @@ edit, search, and run commands to complete software-engineering tasks in an inte
 REPL.
 
 Everything the agent can do — its system prompt, tools, lifecycle hooks, and model — is
-described by a single TypeScript file, `./.vise/index.ts`, as a graph of **resources**
-connected by **edges**. Named **profiles** group those resources, and `/profile <name>`
-switches between them mid-session.
+described by TypeScript config files, as a graph of **resources** connected by **edges**.
+A project-level `./.vise/index.ts` holds project-specific config; an optional
+user-level `~/.vise/index.ts` holds defaults shared across every project. Both feed the
+same graph. Named **profiles** group those resources, and `/profile <name>` switches
+between them mid-session; the active profile (and model) is remembered across restarts.
 
 There are **no runtime dependencies** — only Node's built-in modules (`fetch`,
 `node:child_process`, `node:fs`, `node:path`, `node:util`, `node:readline`).
@@ -64,8 +66,8 @@ prompt shows it: `vise:refactor> `. Type `/exit` (or `exit` / `quit`) to leave. 
 | ----------------- | ---------------------------------------------------------------------- |
 | `/help`           | List the commands.                                                     |
 | `/context`        | Prompt tokens from the last LLM call vs. the context window.           |
-| `/profile`        | List the profiles, marking the active one with `*`.                    |
-| `/profile <name>` | Switch profiles: prompt, tools, hooks, and model are all re-resolved.  |
+| `/profile`        | List the profiles (with origin: `builtin`/`global`/`project`), `*` marks the active one. |
+| `/profile <name>` | Switch profiles: prompt, tools, hooks, and model are all re-resolved. `/profile Agent` switches back to the implicit built-in profile. |
 | `/hooks`          | List the hooks active for the current profile.                         |
 | `/hooks off\|on`  | Disable or re-enable every hook for the rest of the session.           |
 
@@ -83,11 +85,23 @@ prompt shows it: `vise:refactor> `. Type `/exit` (or `exit` / `quit`) to leave. 
 
 ## Configuration
 
-All configuration lives in **`./.vise/index.ts`**, a TypeScript module whose default
-export is a function taking a `Registry`. There are no environment variables, no JSON
-config file, and no configuration flags. If the file does not exist, Vise runs with
-built-in defaults: every built-in tool, no hooks, the built-in system prompt, and a
-model auto-discovered from the running server.
+Configuration lives in up to two TypeScript files, each a module whose default export is
+a function taking a `Registry`:
+
+- **`~/.vise/index.ts`** (optional) — shared defaults: models, hooks, tools, and
+  profiles you want available in every project.
+- **`./.vise/index.ts`** (optional) — project-specific profiles, models, hooks, and
+  tools.
+
+Both are loaded into the **same graph** — the global file first, so the project file can
+reference its resources by name (see [Cross-file references](#cross-file-references)).
+There are no environment variables, no JSON config file, and no configuration flags. With
+neither file present, Vise runs with built-in defaults: every built-in tool, no hooks,
+the built-in system prompt, and a model auto-discovered from the running server.
+
+If both files define a profile, model, or tool with the same name, Vise exits with a
+fatal "Config conflict" error naming both files — rename or remove one. Hooks have no
+name, so they never conflict; both files' hooks simply coexist in the graph.
 
 ```ts
 // .vise/index.ts
@@ -164,14 +178,43 @@ Two defaults follow from *absence* of edges:
 | `createTool({ name, description, parameters, mutating, handler })` | `ResourceId` | A custom tool.                       |
 | `createModel({ name, baseUrl, apiKey, temperature?, maxContext? })` | `ResourceId` | An LLM endpoint. `name: ""` auto-discovers it. |
 | `createConnection(from, to, props?)`       | `void`       | A directed edge.                                             |
-| `setProfileSwitchMode("replace" \| "append")` | `void`   | How `/profile` rewrites the system message. Default `replace`. |
-| `setRuntime(settings)`                     | `void`       | The settings that are not resources (below).                 |
+| `setRuntime(settings)`                     | `void`       | The settings that are not resources (below), including `profileSwitchMode`. |
+| `getProfile(name)`                         | `ResourceId \| undefined` | Look up a profile (either file, or built-in) by name.  |
+| `getModel(name)`                           | `ResourceId \| undefined` | Look up a model by name. A `name: ""` (auto-discover) model never matches. |
+| `getTool(name)`                            | `ResourceId \| undefined` | Look up a tool, built-in or custom, by name.            |
 | `builtins.tools`                           | `Record<string, ResourceId>` | Every built-in tool, keyed by name.           |
 | `builtins.defaultModel`                    | `ResourceId` | The model used when a profile has no model edge.             |
-| `builtins.defaultProfile`                  | `ResourceId` | The implicit profile used when the config defines none.       |
+| `builtins.defaultProfile`                  | `ResourceId` | The implicit `"Agent"` profile used when a profile has no explicit one. |
 
-`ResourceId` is opaque: an id can only come from a `create*` call or from
-`reg.builtins`, so a connection can never point at something that does not exist.
+`ResourceId` is opaque: an id can only come from a `create*` call, a `get*` lookup, or
+from `reg.builtins`, so a connection can never point at something that does not exist.
+A `get*` lookup can return `undefined`; passing that straight into `createConnection`
+without checking is rejected with a descriptive error rather than silently misbehaving.
+
+#### Cross-file references
+
+The project file runs *after* the global file, against the same `Registry`, so it can
+look resources up by name instead of importing paths:
+
+```ts
+// ~/.vise/index.ts (global)
+export default (reg: Registry) => {
+  reg.createModel({ name: "local", baseUrl: "http://localhost:8080", apiKey: "" });
+};
+
+// ./.vise/index.ts (project)
+export default (reg: Registry) => {
+  const local = reg.getModel("local");
+  if (!local) throw new Error("global model 'local' not found");
+
+  const impl = reg.createProfile({ name: "implement", systemPrompt: "…" });
+  reg.createConnection(impl, local);
+};
+```
+
+There is no `getHook` — hooks have no name, so a project profile cannot connect to a
+global hook. A hook defined in the global file is only active for the profiles *that
+file itself* connects it to.
 
 The config is **composable** — any module that takes a `Registry` can contribute to the
 same graph:
@@ -210,19 +253,55 @@ rather than the agent's capabilities.
 | `dynamicTools`          | boolean        | `false` | Advertise a constant tool surface + `search_tools`/`call_tool`.    |
 | `subagentMaxIterations` | number         | `50`    | Ceiling on a subagent's iteration budget.                          |
 | `maxSubagentDepth`      | number         | `3`     | Depth backstop for profiles that set no `subagent.maxDepth`.       |
+| `profileSwitchMode`     | `"replace"` \| `"append"` | `"replace"` | How `/profile` rewrites the system message.            |
+
+If both files call `setRuntime`, settings are merged **per key**, with the project
+file's value winning over the global file's (which wins over the built-in default).
 
 The model's own `temperature` and `maxContext` come from its `ModelDef`, overridable per
 profile through connection props.
 
 ### Profiles
 
-Exactly one profile is active at a time. The session starts under the profile named
-`default`, or the first one the config created, or — if none are defined — an implicit
-profile with the built-in prompt and every built-in tool.
+Exactly one profile is active at a time. Every session has an implicit built-in profile
+named **`Agent`** — the built-in prompt, every built-in tool, no hooks, the
+auto-discovered default model. The name `Agent` is reserved; a profile in either config
+file cannot use it.
 
-`/profile <name>` re-resolves everything. **Conversation history is retained**; only the
-system message changes, either replaced in place (the default) or appended to, per
-`setProfileSwitchMode`. Switching takes effect between turns, never mid-turn.
+A session starts under `Agent` **unless** a saved profile is restored from the state file
+(see [Profile persistence](#profile-persistence) below) — naming a profile `default` no
+longer selects it automatically.
+
+`/profile <name>` re-resolves everything, including `/profile Agent` to switch back to
+the implicit profile. **Conversation history is retained**; only the system message
+changes, either replaced in place (the default) or appended to, per the `profileSwitchMode`
+runtime setting. Switching takes effect between turns, never mid-turn.
+
+### Profile persistence
+
+On a clean exit (`/exit`, bare `exit`/`quit`, or Ctrl-D), Vise saves the active profile
+name and model to a small state file, and restores it on the next start. Ctrl-C mid-turn
+aborts the turn instead of exiting, so it never triggers a save.
+
+The state file's location depends on whether a project config exists:
+
+| Condition                    | State file            |
+| ----------------------------- | ---------------------- |
+| `./.vise/index.ts` exists     | `./.vise/state.json`   |
+| `./.vise/index.ts` is absent  | `~/.vise/state.json`   |
+
+It is per-user session state, not configuration — add it to your project's
+`.gitignore`:
+
+```gitignore
+# .gitignore
+.vise/state.json
+```
+
+If the saved profile no longer exists in the config, or the file is missing, corrupt, or
+malformed, Vise warns on stderr and starts under `Agent` instead — it never refuses to
+start over a bad state file. The saved model name also pins auto-discovery on restart, so
+the same model is used even if the server's model list has since changed.
 
 ### Subagent policy
 

@@ -13,6 +13,7 @@ import {
   type ModelDef,
   type Resource,
   type ResourceId,
+  type ResourceOrigin,
   type SubagentPolicy,
 } from "./types.js";
 
@@ -75,17 +76,14 @@ export interface ResolvedProfile {
 }
 
 /**
- * Pick the profile a session starts under (spec §3.10 step 5): the one named
- * `default`, else the first profile the config created, else the implicit
- * empty profile.
+ * The profile a session starts under when nothing else says otherwise
+ * (config spec §3.7): always the implicit built-in profile. Naming a profile
+ * `"default"` no longer has any special effect — the only way to start under
+ * a specific profile is to pass one explicitly, or to restore one from the
+ * state file (see `resolveStartingProfile` in `state.ts`).
  */
 export function defaultProfileName(graph: ResourceGraph): string {
-  if (graph.profiles.has("default")) return "default";
-  for (const resource of graph.resources.values()) {
-    if (resource.kind === "profile" && !resource.implicit) {
-      return resource.def.name;
-    }
-  }
+  void graph;
   return IMPLICIT_PROFILE_NAME;
 }
 
@@ -98,6 +96,29 @@ export function profileNames(graph: ResourceGraph): string[] {
     }
   }
   return names;
+}
+
+/** One row of the `/profile` listing (config spec §3.9): a name and its origin. */
+export interface ProfileEntry {
+  name: string;
+  origin: ResourceOrigin;
+}
+
+/**
+ * Every profile in the graph, including the implicit built-in one, in
+ * creation order: builtin, then global, then project (config spec §3.9).
+ * Creation order matches this automatically — the implicit profile is
+ * inserted before any config runs, and the global file runs before the
+ * project file (§3.2).
+ */
+export function profileEntries(graph: ResourceGraph): ProfileEntry[] {
+  const entries: ProfileEntry[] = [];
+  for (const resource of graph.resources.values()) {
+    if (resource.kind === "profile") {
+      entries.push({ name: resource.def.name, origin: resource.origin });
+    }
+  }
+  return entries;
 }
 
 /**

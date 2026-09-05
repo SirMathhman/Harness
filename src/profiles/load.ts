@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { homedir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { defaultGraph, ViseRegistry, type ResourceGraph } from "./registry.js";
@@ -28,26 +29,59 @@ export function findConfigEntry(root: string = process.cwd()): string | null {
 }
 
 /**
- * Load `./.vise/index.ts` and build the session's resource graph
- * (profiles spec §3.10).
+ * Load `~/.vise/index.ts` and `./.vise/index.ts` into one combined resource
+ * graph (config spec §3.2, §3.10).
  *
- * With no config file the built-in defaults apply (§3.8): the implicit
- * profile, the default model, every built-in tool, and no hooks. Any other
- * failure — an import error, a missing or non-function default export, a throw
- * from the config function, an invalid graph — is fatal and raises a
+ * The global file, if present, is loaded **first** into a fresh `Registry` so
+ * the project file can look up its resources by name (§3.4); the project
+ * file, if present, is loaded second into the same registry. With neither
+ * file the built-in defaults apply (§3.8): the implicit profile, the default
+ * model, every built-in tool, and no hooks.
+ *
+ * Any failure — an import error, a missing or non-function default export, a
+ * throw from a config function, an invalid combined graph (including a
+ * global/project name conflict, §3.3) — is fatal and raises a
  * `ViseConfigError` describing the problem.
+ *
+ * `globalRoot` overrides where the global file is looked for; it exists so
+ * tests can point it at an isolated temp directory instead of the real home
+ * directory.
  */
 export async function loadViseConfig(
   root: string = process.cwd(),
+  globalRoot: string = homedir(),
 ): Promise<ResourceGraph> {
-  const entry = findConfigEntry(root);
-  if (entry === null) return defaultGraph();
-  return buildGraphFrom(await importConfig(entry), entry);
+  const registry = new ViseRegistry();
+
+  const globalEntry = findConfigEntry(globalRoot);
+  if (globalEntry !== null) {
+    registry.setOrigin("global");
+    runConfigFn(
+      await importConfig(globalEntry, "~/.vise/index.ts"),
+      registry,
+      "~/.vise/index.ts",
+    );
+  }
+
+  const projectEntry = findConfigEntry(root);
+  if (projectEntry !== null) {
+    registry.setOrigin("project");
+    runConfigFn(
+      await importConfig(projectEntry, "./.vise/index.ts"),
+      registry,
+      "./.vise/index.ts",
+    );
+  }
+
+  if (globalEntry === null && projectEntry === null) return defaultGraph();
+  return validateGraph(registry.build());
 }
 
 /**
  * Run a config function against a fresh registry and validate the result.
- * Exported so tests (and composable configs) can build a graph without a file.
+ * Exported so tests (and composable configs) can build a graph without a
+ * file. Always tags the created resources with origin `"project"` — the
+ * single-file behavior every test in the suite relies on.
  *
  * `source` names the config in error messages.
  */
@@ -56,6 +90,16 @@ export function buildGraphFrom(
   source = "<inline config>",
 ): ResourceGraph {
   const registry = new ViseRegistry();
+  runConfigFn(config, registry, source);
+  return validateGraph(registry.build());
+}
+
+/** Call a config function against `registry`, wrapping a throw as fatal. */
+function runConfigFn(
+  config: ViseConfig,
+  registry: ViseRegistry,
+  source: string,
+): void {
   try {
     config(registry);
   } catch (err) {
@@ -64,11 +108,17 @@ export function buildGraphFrom(
         `${(err as Error).message}`,
     );
   }
-  return validateGraph(registry.build());
 }
 
-/** Dynamically import a config entry and return its validated default export. */
-async function importConfig(entry: string): Promise<ViseConfig> {
+/**
+ * Dynamically import a config entry and return its validated default export.
+ * `displayName` is the path used in error messages (e.g. `~/.vise/index.ts`),
+ * which may differ from `entry` (the real, resolved path actually imported).
+ */
+async function importConfig(
+  entry: string,
+  displayName: string,
+): Promise<ViseConfig> {
   let module: { default?: unknown };
   try {
     // A cache-busting query keeps repeated loads (tests, future reloads) from
@@ -78,20 +128,20 @@ async function importConfig(entry: string): Promise<ViseConfig> {
     )) as { default?: unknown };
   } catch (err) {
     throw new ViseConfigError(
-      `Failed to load ${entry}: ${(err as Error).message}`,
+      `Failed to load ${displayName}: ${(err as Error).message}`,
     );
   }
 
   const exported = module.default;
   if (exported === undefined) {
     throw new ViseConfigError(
-      `${entry} has no default export. It must default-export a function ` +
-        `of type (reg: Registry) => void.`,
+      `${displayName} has no default export. It must default-export a ` +
+        `function of type (reg: Registry) => void.`,
     );
   }
   if (typeof exported !== "function") {
     throw new ViseConfigError(
-      `The default export of ${entry} must be a function of type ` +
+      `The default export of ${displayName} must be a function of type ` +
         `(reg: Registry) => void (got ${describe(exported)}).`,
     );
   }

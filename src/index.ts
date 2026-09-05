@@ -3,21 +3,24 @@ import { CliError, helpText, parseCliArgs } from "./cli/args.js";
 import { startRepl } from "./cli/repl.js";
 import { discoverModel } from "./llm/client.js";
 import {
-  defaultProfileName,
-  loadViseConfig,
   resolveProfile,
+  resolveStartingProfile,
+  stateFilePath,
   ViseConfigError,
   withDiscoveredModel,
+  loadViseConfig,
   type ResourceGraph,
+  type StartingProfile,
 } from "./profiles/index.js";
 
 /**
- * Vise entry point (profiles spec §3.10).
+ * Vise entry point (config spec §3.10).
  *
- * Parses the command line, loads `./.vise/index.ts` into a resource graph,
- * auto-discovers a model when the default model has none, then starts the
- * REPL under the graph's default profile. A bad config is fatal, with a
- * message naming the problem and a non-zero exit code (§4).
+ * Parses the command line, loads `~/.vise/index.ts` and `./.vise/index.ts`
+ * into a combined resource graph, resolves the starting profile from the
+ * state file (§3.7), auto-discovers a model when needed, then starts the REPL
+ * under that profile. A bad config is fatal, with a message naming the
+ * problem and a non-zero exit code (§4).
  */
 async function main(): Promise<void> {
   let args;
@@ -41,12 +44,14 @@ async function main(): Promise<void> {
     throw err;
   }
 
-  graph = await resolveDefaultModel(graph);
+  const statePath = stateFilePath();
+  const starting = resolveStartingProfile(graph, statePath);
+
+  graph = await resolveStartingModel(graph, starting);
 
   // A profile with no usable model cannot run (§3.11). The check is here, not
   // in validation, because it depends on what the running server reports.
-  const startingProfile = defaultProfileName(graph);
-  if (resolveProfile(graph, startingProfile).config.model === null) {
+  if (resolveProfile(graph, starting.profile).config.model === null) {
     return fail(
       "No model could be resolved.\n" +
         "Vise takes the model from the Model resource connected to the active\n" +
@@ -63,20 +68,26 @@ async function main(): Promise<void> {
     );
   }
 
-  await startRepl(graph, args.task);
+  await startRepl(graph, starting.profile, statePath, args.task);
 }
 
 /**
- * Fill in the starting profile's model name from the running server when the
- * config left it blank (spec §3.10). A Model resource that names its model
- * explicitly is left alone, and so is discovery for other profiles: they are
- * resolved on demand by `/profile`.
+ * Fill in the starting profile's model name when the config left it blank
+ * (config spec §3.8.4). The saved `lastModel` wins when there is one — it
+ * pins the model across a restart even if the server's model list changes —
+ * otherwise Vise auto-discovers from the running server's `/v1/models`. A
+ * Model resource that names its model explicitly is left alone, and so is
+ * discovery for other profiles: they are resolved on demand by `/profile`.
  */
-async function resolveDefaultModel(
+async function resolveStartingModel(
   graph: ResourceGraph,
+  starting: StartingProfile,
 ): Promise<ResourceGraph> {
-  const resolved = resolveProfile(graph, defaultProfileName(graph));
+  const resolved = resolveProfile(graph, starting.profile);
   if (resolved.config.model !== null) return graph;
+  if (starting.lastModel !== null) {
+    return withDiscoveredModel(graph, resolved.modelId, starting.lastModel);
+  }
   const discovered = await discoverModel(
     resolved.config.baseUrl,
     resolved.config.apiKey,

@@ -119,8 +119,8 @@ export interface Session {
   /** Subagent nesting depth; 0 for the main session (hooks spec §3.7). */
   depth: number;
   /**
-   * The name of the profile this session is running under; `""` for the
-   * implicit default profile (profiles spec §3.8).
+   * The name of the profile this session is running under; `"Agent"` for the
+   * implicit default profile (config spec §3.7).
    */
   profile: string;
 }

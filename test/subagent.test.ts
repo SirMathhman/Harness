@@ -13,6 +13,7 @@ import { buildToolRegistry, executeToolCalls } from "../src/tools/index.js";
 import { ServerUnreachableError } from "../src/llm/errors.js";
 import type { LLMClient } from "../src/llm/client.js";
 import { HookManager } from "../src/hooks/index.js";
+import { IMPLICIT_PROFILE_NAME } from "../src/profiles/index.js";
 import { modelGraph } from "./helpers.js";
 
 /** A scripted LLM client: returns responses in order, repeating the last. */
@@ -67,7 +68,7 @@ function runnerFor(client: LLMClient) {
 
 /** The options a bare subagent run needs, under the default profile. */
 function runOpts(maxIterations: number) {
-  return { task: "t", maxIterations, depth: 1, profile: "" };
+  return { task: "t", maxIterations, depth: 1, profile: IMPLICIT_PROFILE_NAME };
 }
 
 describe("spawn_subagent tool (§3.3 #9, §3.8)", () => {
