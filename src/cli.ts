@@ -30,6 +30,13 @@ async function main(): Promise<void> {
     return;
   }
 
+  // The agent-server commands (GUI spec §3.1) have their own startup path.
+  if (args.command === "serve" || args.command === "gui") {
+    const { runServer, DEFAULT_GUI_PORT } = await import("./server.js");
+    await runServer(args.port ?? DEFAULT_GUI_PORT, args.command === "gui");
+    return;
+  }
+
   let graph: ResourceGraph;
   try {
     graph = await loadViseConfig();
