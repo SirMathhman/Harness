@@ -1,5 +1,5 @@
 import { homedir } from "node:os";
-import type { Session } from "../types.js";
+import type { Session, Skill } from "../types.js";
 import type { SessionHandle } from "../agent/session.js";
 import { HookManager } from "../hooks/index.js";
 import {
@@ -78,6 +78,11 @@ export const REPL_COMMANDS: ReplCommand[] = [
     summary: "List models; `/model <name>` switches the active model.",
     run: (ctx, args) => modelCommand(ctx.handle, args),
     takesArgs: true,
+  },
+  {
+    name: "/skills",
+    summary: "List the skills available to the agent.",
+    run: (ctx) => skillsListing(ctx.handle.skills()),
   },
   {
     name: "/hooks",
@@ -277,6 +282,27 @@ export function modelListing(handle: SessionHandle): string {
       const marker = id === activeId ? "*" : " ";
       lines.push(`    ${marker} ${name}`);
     }
+  }
+  return lines.join("\n");
+}
+
+/**
+ * The `/skills` listing (skills spec §3.6): every skill in the session, name
+ * and description, in creation order (global first, then project). Read-only —
+ * it never touches the session.
+ *
+ * ```
+ * Skills:
+ *   madge       How to use the madge npm package for dependency analysis
+ *   npm-deps    Managing npm dependencies in this project
+ * ```
+ */
+export function skillsListing(skills: readonly Skill[]): string {
+  if (skills.length === 0) return "No skills defined.";
+  const width = Math.max(...skills.map((s) => s.name.length)) + 4;
+  const lines = ["Skills:"];
+  for (const { name, description } of skills) {
+    lines.push(`  ${name.padEnd(width)}${description}`);
   }
   return lines.join("\n");
 }

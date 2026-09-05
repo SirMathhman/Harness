@@ -17,6 +17,7 @@ export {
   type ToolDef,
   type ViseConfig,
 } from "./types.js";
+export type { Skill } from "../types.js";
 export {
   addDiscoveredModels,
   DEFAULT_BASE_URL,

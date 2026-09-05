@@ -77,6 +77,7 @@ prompt shows it: `vise:refactor> `. Type `/exit` (or `exit` / `quit`) to leave. 
 | `/profile <name>` | Switch profiles: prompt, tools, hooks, and model are all re-resolved. `/profile Agent` switches back to the implicit built-in profile. |
 | `/model`          | List the models declared in `.vise/index.ts` (with origin), `*` marks the active one.                                                  |
 | `/model <name>`   | Switch the active model, adopting its whole resource (`baseUrl`, `apiKey`, `temperature`, `maxContext`). The conversation is kept.     |
+| `/skills`         | List the skills available to the agent (name + description).                                                                           |
 | `/hooks`          | List the hooks active for the current profile.                                                                                         |
 | `/hooks off\|on`  | Disable or re-enable every hook for the rest of the session.                                                                           |
 | `/init`           | Create a `./.vise/index.ts` stub for this project (never overwrites an existing one).                                                  |
@@ -186,6 +187,7 @@ Two defaults follow from _absence_ of edges:
 | `createTool({ name, description, parameters, mutating, handler })`  | `ResourceId`                 | A custom tool.                                                              |
 | `createModel({ name, baseUrl, apiKey, temperature?, maxContext? })` | `ResourceId`                 | An LLM endpoint declared directly, without a provider. Rarely needed.       |
 | `addProvider(provider)`                                             | `ResourceId`                 | Register a provider (see [Providers](#providers)); discovered at startup.   |
+| `createSkill(name, description, text)`                              | `void`                       | A skill — deferred context the agent loads on demand (see [Skills](#skills)). |
 | `createConnection(from, to, props?)`                                | `void`                       | A directed edge.                                                            |
 | `setRuntime(settings)`                                              | `void`                       | The settings that are not resources (below), including `profileSwitchMode`. |
 | `getProfile(name)`                                                  | `ResourceId \| undefined`    | Look up a profile (either file, or built-in) by name.                       |
@@ -451,8 +453,9 @@ ambiguous across providers.
 
 ## Tools
 
-The agent exposes nine built-in tools. A profile's Profile→Tool edges decide which
-of them it actually sees:
+The agent exposes eleven built-in tools. A profile's Profile→Tool edges decide which
+of them it actually sees — except `list_skills` and `read_skill`, which every profile
+always gets, because skills are global to the session:
 
 | Tool             | Mutating | Parameters                                                                  | Description                                                                   |
 | ---------------- | -------- | --------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
@@ -465,6 +468,8 @@ of them it actually sees:
 | `check_command`  | no       | `id`                                                                        | Check the status/output of a background command.                              |
 | `finish`         | no       | `answer`                                                                    | Terminal tool: ends the turn with a final answer.                             |
 | `spawn_subagent` | no       | `task`, `maxIterations`, `systemPrompt?`, `profile?`                        | Run an isolated subagent and return only its final answer.                    |
+| `list_skills`    | no       | —                                                                           | List every skill (name + description). Always present.                        |
+| `read_skill`     | no       | `name`                                                                      | Load one skill's full body, never truncated. Always present.                  |
 
 Custom tools created with `reg.createTool()` are available only to the profiles they are
 connected to.
@@ -597,6 +602,61 @@ advisory messages are joined with newlines into one system message.
   toggle survives a profile switch.
 - **Trust.** Hooks run in-process with Vise's privileges. There is no sandbox.
 
+## Skills
+
+A **skill** is a named body of knowledge the agent loads *on demand* — a library
+reference, a domain procedure, a project convention. Putting all of that in the system
+prompt would bloat every request and hurt KV-cache reuse even when it is irrelevant to
+the task at hand. A skill splits the difference: only its name and one-line description
+live in the system prompt, and the model pulls the body in when it decides the skill is
+relevant.
+
+```ts
+// .vise/index.ts
+import { readFileSync } from "node:fs";
+
+export default (reg: Registry) => {
+  reg.createSkill(
+    "madge",
+    "How to use the madge npm package for dependency analysis",
+    readFileSync(".vise/skills/madge.md", "utf8"),
+  );
+};
+```
+
+The agent's system prompt then ends with a compact index — and nothing more:
+
+```
+## Available Skills
+- madge: How to use the madge npm package for dependency analysis
+- npm-deps: Managing npm dependencies in this project
+```
+
+The model reaches the bodies through two always-present tools: `list_skills` (names and
+descriptions, for when the index has been compacted away) and `read_skill(name)`, which
+returns the body verbatim. A skill body is **never truncated** to `maxToolOutputChars` —
+it is the payload, not incidental tool output. Once read, it stays in the conversation
+as an ordinary tool message and is subject to compaction like anything else.
+
+**Semantics**
+
+- **Global, not graph nodes.** Skills are a side-channel on the resource graph, like
+  providers: no `ResourceId`, no edges, no per-profile scoping. Every profile and every
+  subagent at every depth sees the same index and the same two tools.
+- **Delegation.** Because subagents see the skills too, the main agent can spawn one
+  with "read the `madge` skill and report the commands I need" and keep the body out of
+  its own context entirely.
+- **Unique names.** A duplicate skill name — in one file, or across `~/.vise/index.ts`
+  and `./.vise/index.ts` — is a fatal config error, like a duplicate profile or model.
+- **No skills is fine.** With none defined, the `## Available Skills` section is omitted
+  from the system prompt and the two tools report that none are available.
+- **Static for the session.** Skills are read once from the config at startup; there is
+  no hot-reload, and the index is byte-stable, so it never invalidates the KV cache.
+- **Opaque text.** Vise does not parse, validate, or size-limit a skill body. Keeping it
+  small enough for the context window is the config author's job.
+
+`/skills` lists them in the REPL.
+
 ## Testing
 
 `bun test` runs the full suite (unit + integration). Integration tests drive the real
@@ -687,6 +747,31 @@ required.
 | 10. Config validation         | `kvPersistence.test.ts` (missing `slotSavePath` throws)                    |
 | 11. Async events only there   | `kvPersistence.test.ts` (awaited on subagent events, warned on the rest)   |
 | 12. Integration               | `kvPersistence.test.ts` (mock SSE + `/slots` server, main → sub → main)    |
+
+### Skills acceptance criteria (skills spec §9)
+
+| AC                             | Covered by test                                                          |
+| ------------------------------ | ------------------------------------------------------------------------ |
+| 1. `createSkill` stores it     | `skills.test.ts` (store keyed by name; not a graph node)                 |
+| 2. Empty name                  | `skills.test.ts` ("Skill name must be non-empty.")                       |
+| 3. Duplicate in one file       | `skills.test.ts` (fatal, names the duplicate)                            |
+| 4. Duplicate across files      | `skills.test.ts` (two-tier load → "Config conflict")                     |
+| 5. Index in the system prompt  | `skills.test.ts` (`## Available Skills`, bodies excluded)                |
+| 6. No skills → no section      | `skills.test.ts` (header absent; `appendSkillIndex` is a no-op)          |
+| 7. Creation order              | `skills.test.ts` (global first, then project)                            |
+| 8/13. Always registered        | `skills.test.ts` (default *and* tool-enumerating profiles)               |
+| 9. `list_skills` output        | `skills.test.ts` (one `name: description` per line)                      |
+| 10. `list_skills` empty        | `skills.test.ts` ("No skills available.")                                |
+| 11/18. Read-only               | `skills.test.ts` (`mutating: false` on both)                             |
+| 12/19. Dynamic-tools surface   | `skills.test.ts` (both advertised; both in `CORE_TOOL_NAMES`)            |
+| 14. `read_skill` body          | `skills.test.ts` (full text returned)                                    |
+| 15. No truncation              | `skills.test.ts` (5 KB body under a 100-char cap; a normal tool is cut)  |
+| 16. Unknown skill              | `skills.test.ts` (lists what is available; empty-store variant)          |
+| 17. Empty name                 | `skills.test.ts` (result string, turn not aborted)                       |
+| 20–22. Subagent visibility     | `skills.test.ts` (same index, both tools, body loaded in the subagent)   |
+| 23. `/skills` listing          | `skills.test.ts` (name + description, dispatched by the REPL)            |
+| 24. `/skills` with none        | `skills.test.ts` ("No skills defined.")                                  |
+| 25. Backward compatibility     | `skills.test.ts` (no index, tools present, "no skills" messages)         |
 
 ## Troubleshooting
 

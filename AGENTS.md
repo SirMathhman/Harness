@@ -55,14 +55,15 @@ src/
   agent/            # loop.ts (runTurn), session.ts, subagent.ts
   llm/              # client.ts, sse.ts (stream parser), errors.ts
   tools/            # registry, dispatch, execute (ordering), fileTools, commands,
-                    # search, finish, spawnSubagent, metaTools, catalog, names
+                    # search, finish, spawnSubagent, metaTools, catalog, names,
+                    # skills (list_skills/read_skill + the skill index)
   context/          # compaction.ts (token accounting + recap/truncation)
   hooks/            # manager.ts, types.ts, index.ts (lifecycle dispatch)
   profiles/         # registry, load, resolve, validate, state, defaults, types
   providers/        # llamaProvider.ts, types.ts, index.ts
   cli/              # args, repl, commands, render, color
 test/               # *.test.ts (unit + integration), helpers.ts
-specs/              # v0.1.0/, v0.2.0/, v0.3.0/ — the specification documents
+specs/              # v0.1.0/ … v0.4.0/ — the specification documents
 .vise/              # project-level config (index.ts) + state.json (gitignored)
 ```
 
@@ -122,7 +123,13 @@ descriptive error.
 - **No provider → fatal at startup.** A config must register at least one provider
   (e.g. `reg.addProvider(new LlamaProvider({ url: "http://localhost:8080" }))`), or Vise
   exits with "No models available". There is no built-in default model.
-- **Config conflicts are fatal:** a profile/model/tool defined with the same name in both
+- **Skills are global and always available:** `reg.createSkill(name, description, text)`
+  puts a one-line index entry in every system prompt (main agent and subagents alike)
+  and registers `list_skills`/`read_skill` in every profile's registry — outside the
+  Profile→Tool edge rule. `read_skill` sets `Tool.noTruncate`, so its result skips the
+  `maxToolOutputChars` cap. Skills are a side-channel like providers: no `ResourceId`,
+  no edges.
+- **Config conflicts are fatal:** a profile/model/tool/skill defined with the same name in both
   `~/.vise/index.ts` and `./.vise/index.ts` is a "Config conflict" error. Hooks have no
   name and never conflict.
 - **`setRuntime` merges per key** (project file wins over global, which wins over
@@ -140,6 +147,6 @@ descriptive error.
 
 - `README.md` — full user-facing docs: config reference, Registry API, providers, tools,
   hooks, profiles, troubleshooting.
-- `specs/v0.1.0/`, `specs/v0.2.0/`, `specs/v0.3.0/` — the specification documents (the
+- `specs/v0.1.0/` … `specs/v0.4.0/` — the specification documents (the
   source of truth for behavior and acceptance criteria).
 - `WBS.md` — work breakdown structure and acceptance-criteria traceability.

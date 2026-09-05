@@ -201,6 +201,27 @@ export interface Registry {
    * no provider with that name is registered.
    */
   getProvider(name: string): ResourceId | undefined;
+  /**
+   * Create a skill — a named body of deferred context (skills spec §3.1).
+   *
+   * Skills are a side-channel, not graph nodes: they have no `ResourceId`,
+   * cannot be connected to a profile, and are visible to every agent at every
+   * depth. Only `name` and `description` reach the system prompt (the skill
+   * index); the model pulls `text` in on demand with the `read_skill` tool.
+   *
+   * @param name        Unique, non-empty name. Any non-empty string is valid;
+   *                    there is no character-set restriction.
+   * @param description One-line summary shown in the skill index and returned
+   *                    by `list_skills`. The model reads it to decide whether
+   *                    the skill is worth loading.
+   * @param text        The full body. Returned verbatim by `read_skill`,
+   *                    never truncated to `maxToolOutputChars`.
+   *
+   * @throws if `name` is empty, or if a skill with the same name was already
+   *   created — in this file or in the other config file. Either is a fatal
+   *   config error naming the duplicate.
+   */
+  createSkill(name: string, description: string, text: string): void;
   /** Create a directed connection between two resources. */
   createConnection(
     from: ResourceId,

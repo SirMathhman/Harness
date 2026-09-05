@@ -1,6 +1,7 @@
 import type { Config, Message, Session } from "../types.js";
 import { DEFAULT_SUBAGENT_PROMPT } from "../config/defaults.js";
 import {
+  appendSkillIndex,
   buildToolRegistry,
   ToolRegistry,
   type BackgroundCommandManager,
@@ -132,6 +133,9 @@ export function materializeProfile(
   const { registry, manager } = buildToolRegistry(config, {
     builtins: resolved.builtinTools,
     custom: resolved.customTools,
+    // Skills are global (skills spec §3.7): every agent, at every depth, gets
+    // the same store behind `list_skills` / `read_skill`.
+    skills: ctx.graph.skills,
   });
 
   // The provider behind this agent's active model may contribute hooks of its
@@ -185,7 +189,13 @@ export function materializeProfile(
     registry,
     manager,
     hooks,
-    systemPrompt: overrides.systemPrompt ?? systemPromptOf(resolved),
+    // The skill index is appended last, after the profile's own prompt (or the
+    // subagent prompt an override supplies), so every agent in the tree sees
+    // the same compact list of what it can load (skills spec §3.3, §3.7).
+    systemPrompt: appendSkillIndex(
+      overrides.systemPrompt ?? systemPromptOf(resolved),
+      ctx.graph.skills,
+    ),
   };
 }
 
@@ -283,15 +293,16 @@ export function makeSubagentRunner(
       resolved.config.systemPrompt ??
       DEFAULT_SUBAGENT_PROMPT;
 
-    const { config, registry, manager, hooks } = materializeProfile(
-      resolved,
-      ctx,
-      opts.depth,
-      { maxIterations: opts.maxIterations, systemPrompt },
-    );
+    const materialized = materializeProfile(resolved, ctx, opts.depth, {
+      maxIterations: opts.maxIterations,
+      systemPrompt,
+    });
+    const { config, registry, manager, hooks } = materialized;
 
     const session: Session = {
-      messages: [{ role: "system", content: systemPrompt }],
+      // `materialized.systemPrompt`, not the bare `systemPrompt` above: it
+      // carries the skill index (skills spec §3.7).
+      messages: [{ role: "system", content: materialized.systemPrompt }],
       config,
       lastPromptTokens: null,
       hooks,

@@ -135,7 +135,10 @@ export async function dispatch(
     const raw = await tool.handler(call.arguments);
     return {
       tool_call_id: call.id,
-      content: truncate(raw, maxToolOutputChars),
+      // `noTruncate` exempts a tool whose result *is* the payload — read_skill
+      // returns a skill body verbatim (skills spec §3.5).
+      content:
+        tool.noTruncate === true ? raw : truncate(raw, maxToolOutputChars),
     };
   } catch (err) {
     // E1: wrap handler exceptions into an error result string.

@@ -1,4 +1,4 @@
-import type { Session } from "../types.js";
+import type { Session, Skill } from "../types.js";
 import type { ToolRegistry, BackgroundCommandManager } from "../tools/index.js";
 import type { LLMClient } from "../llm/client.js";
 import {
@@ -75,6 +75,11 @@ export interface SessionHandle {
   readonly profile: string;
   /** Every user-defined profile name, in the order the config created them. */
   profiles(): string[];
+  /**
+   * Every skill in the session, in creation order (skills spec §3.6). Skills
+   * are global, so this does not change on a profile switch.
+   */
+  skills(): Skill[];
   /**
    * Every profile, including the implicit built-in one, tagged with its
    * origin (config spec §3.9): builtin, then global, then project.
@@ -178,6 +183,7 @@ export function createSession(options: SessionOptions = {}): SessionHandle {
     profile: startingProfile,
     profiles: () => profileNames(graph),
     profileEntries: () => profileEntries(graph),
+    skills: () => [...graph.skills.values()],
     hooksEnabled: () => hooksEnabled,
     setHooksEnabled(enabled: boolean) {
       hooksEnabled = enabled;

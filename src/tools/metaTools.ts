@@ -15,6 +15,11 @@ export const CORE_TOOL_NAMES = [
   "list_dir",
   "search",
   "finish",
+  // The skill tools are constant-surface too (skills spec §3.4, §3.5): the
+  // index in the system prompt is useless if loading a skill needs a
+  // `search_tools` round-trip first.
+  "list_skills",
+  "read_skill",
 ] as const;
 
 /**

@@ -1,4 +1,4 @@
-import type { Config, Tool } from "../types.js";
+import type { Config, Skill, Tool } from "../types.js";
 import { BackgroundCommandManager } from "./commands.js";
 import { makeCheckCommandTool, makeRunCommandTool } from "./commands.js";
 import {
@@ -15,6 +15,7 @@ import {
   makeCallToolTool,
   makeSearchToolsTool,
 } from "./metaTools.js";
+import { makeListSkillsTool, makeReadSkillTool, NO_SKILLS } from "./skills.js";
 
 /** Which tools a session's registry should hold (profiles spec §3.5 rule 2). */
 export interface ToolSelection {
@@ -28,6 +29,12 @@ export interface ToolSelection {
    * connected to the active profile.
    */
   custom?: Tool[];
+  /**
+   * The session's skill store (skills spec §3.2), keyed by name. Backs
+   * `list_skills` and `read_skill`. Omitted → an empty store, which is a
+   * valid session: both tools report that no skills are available.
+   */
+  skills?: ReadonlyMap<string, Skill>;
 }
 
 /**
@@ -73,6 +80,13 @@ export function buildToolRegistry(
   for (const tool of builtins) {
     if (wanted(tool.name)) registry.register(tool);
   }
+  // The two skill tools are registered unconditionally, outside the
+  // Profile→Tool edge rule: skills are global to the session, so every
+  // profile at every depth can list and load them (skills spec §2.2, §3.8).
+  const skills = selection.skills ?? NO_SKILLS;
+  registry.register(makeListSkillsTool(skills));
+  registry.register(makeReadSkillTool(skills));
+
   for (const tool of selection.custom ?? []) {
     registry.register(tool);
   }
@@ -94,3 +108,13 @@ export { ToolRegistry, dispatch, validateArgs } from "./registry.js";
 export { executeToolCalls, type ToolLifecycle } from "./execute.js";
 export { BackgroundCommandManager } from "./commands.js";
 export { BUILTIN_TOOL_NAMES, FINISH_TOOL_NAME } from "./names.js";
+export {
+  appendSkillIndex,
+  makeListSkillsTool,
+  makeReadSkillTool,
+  skillIndexLines,
+  skillIndexSection,
+  NO_SKILLS,
+  SKILL_INDEX_HEADER,
+  SKILL_TOOL_NAMES,
+} from "./skills.js";

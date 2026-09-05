@@ -33,6 +33,12 @@ export type {
 export type { JsonSchema, JsonSchemaProperty, Tool } from "./types.js";
 
 /**
+ * A skill — a named body of deferred context created with
+ * `reg.createSkill()` (skills spec §2.1).
+ */
+export type { Skill } from "./types.js";
+
+/**
  * The provider API (providers spec §3.1, §3.2): `Provider` for a custom
  * backend, `LlamaProvider` for an OpenAI-compatible llama.cpp server.
  */

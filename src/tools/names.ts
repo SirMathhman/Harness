@@ -15,6 +15,8 @@ export const BUILTIN_TOOL_NAMES = [
   "check_command",
   "finish",
   "spawn_subagent",
+  "list_skills",
+  "read_skill",
 ] as const;
 
 export type BuiltinToolName = (typeof BUILTIN_TOOL_NAMES)[number];

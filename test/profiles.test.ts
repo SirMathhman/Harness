@@ -198,7 +198,15 @@ describe("profile resolution (profiles §3.5)", () => {
       reg.createConnection(p, reg.builtins.tools.search);
       reg.createConnection(p, reg.builtins.tools.finish);
     });
-    expect(toolsOf(graph, "narrow")).toEqual(["finish", "read_file", "search"]);
+    // The two skill tools are outside the Profile->Tool edge rule: skills
+    // are global, so every profile gets them (skills spec §2.2, AC-13).
+    expect(toolsOf(graph, "narrow")).toEqual([
+      "finish",
+      "list_skills",
+      "read_file",
+      "read_skill",
+      "search",
+    ]);
   });
 
   test("custom tools appear only when explicitly connected", () => {
@@ -209,7 +217,12 @@ describe("profile resolution (profiles §3.5)", () => {
       reg.createConnection(p, used);
       reg.createConnection(p, reg.builtins.tools.finish);
     });
-    expect(toolsOf(graph, "custom")).toEqual(["deploy", "finish"]);
+    expect(toolsOf(graph, "custom")).toEqual([
+      "deploy",
+      "finish",
+      "list_skills",
+      "read_skill",
+    ]);
   });
 
   test("a profile with no hook edges has no hooks active", () => {
@@ -843,6 +856,11 @@ describe("resolved profiles drive the agent loop", () => {
       client,
     );
     expect(result.answer).toBe("done");
-    expect(advertised[0]).toEqual(["finish", "read_file"]);
+    expect(advertised[0]).toEqual([
+      "finish",
+      "list_skills",
+      "read_file",
+      "read_skill",
+    ]);
   });
 });

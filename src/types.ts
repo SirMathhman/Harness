@@ -45,6 +45,31 @@ export interface Tool {
   description: string;
   /** Execute the tool. Must return a string (success output or error text). */
   handler(args: Record<string, unknown>): Promise<string>;
+  /**
+   * When true, the tool's result is not truncated to `maxToolOutputChars`
+   * (skills spec §3.5). Used by `read_skill`, whose result *is* the
+   * knowledge payload — truncating it would defeat the purpose.
+   */
+  noTruncate?: boolean;
+}
+
+/**
+ * A named body of deferred context (skills spec §2.1).
+ *
+ * Only the `name` and `description` live in the system prompt (the skill
+ * index); the `text` is loaded on demand by the `read_skill` tool. Skills are
+ * a side-channel on the `ResourceGraph`, like providers: they are not graph
+ * nodes, have no `ResourceId`, and are global to the session.
+ */
+export interface Skill {
+  /** Unique, non-empty name. */
+  name: string;
+  /** One-line summary for the skill index. */
+  description: string;
+  /** The full body, loaded on demand via `read_skill`. */
+  text: string;
+  /** Which config file created this skill. */
+  origin: "global" | "project";
 }
 
 /** Minimal JSON-schema shape used for tool parameter declarations. */

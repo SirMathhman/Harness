@@ -1,6 +1,7 @@
 import { BUILTIN_TOOL_NAMES } from "../tools/names.js";
 import { DEFAULT_RUNTIME } from "../config/defaults.js";
 import type { Provider } from "../providers/types.js";
+import type { Skill } from "../types.js";
 import {
   asResourceId,
   idString,
@@ -67,6 +68,14 @@ export interface ResourceGraph {
    * to ids.
    */
   providerNames: ReadonlyMap<string, ResourceId>;
+  /**
+   * Every skill, keyed by name (skills spec §3.2). Populated by
+   * `reg.createSkill()` during config loading; read-only after `build()`.
+   * Like providers, skills are NOT graph nodes: they never appear in
+   * `resources` and cannot be the source or target of a `Connection`.
+   * Iteration order is creation order — global file first, then project.
+   */
+  skills: ReadonlyMap<string, Skill>;
 }
 
 /**
@@ -107,6 +116,13 @@ export class ViseRegistry implements Registry {
   private readonly providerNames = new Map<string, ResourceId>();
   /** Per-class counters backing auto-generated provider names (§3.2). */
   private readonly providerNameCounters = new Map<string, number>();
+
+  /**
+   * The skill store (skills spec §3.2): another side-channel, keyed by name.
+   * Insertion order is creation order, which is global-then-project because
+   * the loader runs the global file first (§3.3).
+   */
+  private readonly skills = new Map<string, Skill>();
 
   readonly builtins: Registry["builtins"];
 
@@ -226,6 +242,41 @@ export class ViseRegistry implements Registry {
   }
 
   /**
+   * Create a skill (skills spec §3.1). Skills are a side-channel, not graph
+   * nodes: `createSkill` returns nothing, because there is no `ResourceId`
+   * to connect anything to.
+   *
+   * A duplicate name is fatal here rather than in `validateGraph`, because
+   * the store is keyed by name — a second `createSkill` with the same name
+   * would silently overwrite the first before validation ever ran.
+   */
+  createSkill(name: string, description: string, text: string): void {
+    if (typeof name !== "string" || name === "") {
+      throw new Error("Skill name must be non-empty.");
+    }
+    const prior = this.skills.get(name);
+    if (prior !== undefined) {
+      const crossFile = prior.origin !== this.origin;
+      throw new Error(
+        crossFile
+          ? `Config conflict: a skill named "${name}" is defined in both ` +
+            `the global config (~/.vise/index.ts) and the project config ` +
+            `(./.vise/index.ts). Remove one or rename it.`
+          : `Duplicate skill name "${name}". Each skill must have a unique ` +
+            `name.`,
+      );
+    }
+    this.skills.set(name, {
+      name,
+      description: typeof description === "string" ? description : "",
+      text: typeof text === "string" ? text : "",
+      // A skill created by the built-in tier is impossible: `origin` is only
+      // ever "global" or "project" while a config function is running.
+      origin: this.origin === "global" ? "global" : "project",
+    });
+  }
+
+  /**
    * `llama_0`, `llama_1`, … — the provider's constructor name, lowercased
    * and with a trailing "Provider" stripped, plus a per-class counter
    * (providers spec §3.2).
@@ -294,6 +345,7 @@ export class ViseRegistry implements Registry {
       runtime: { ...this.runtime },
       providers: this.providers,
       providerNames: this.providerNames,
+      skills: this.skills,
     };
   }
 
