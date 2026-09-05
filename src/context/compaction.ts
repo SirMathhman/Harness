@@ -62,38 +62,46 @@ export function partitionForCompaction(
 }
 
 /**
- * Build the message array for a summarization (recap) LLM call.
+ * Build the message array for the recap (summarization) LLM call
+ * (spec v0.2.0 §3.3).
+ *
+ * The recap request is the existing conversation plus ONE appended `user`
+ * instruction — NOT a fresh transcript. This keeps the request's prefix
+ * identical to the cached main conversation, so a prefix-caching backend
+ * (e.g. llama.cpp `llama-server` with `cache_prompt`) only prefills the short
+ * instruction. The instruction is count-based: it tells the model to summarize
+ * everything before the most recent `compactKeepMessages` messages, which are
+ * retained verbatim and must be excluded from the summary.
+ *
+ * The appended instruction is transient: callers must NOT add it to
+ * `session.messages`.
  */
-export function buildRecapPrompt(older: Message[]): Message[] {
-  const transcript = older
-    .map((m) => {
-      const role = m.role;
-      const content = m.content ?? "";
-      if (role === "assistant" && m.tool_calls && m.tool_calls.length > 0) {
-        const calls = m.tool_calls
-          .map((tc) => `${tc.name}(${JSON.stringify(tc.arguments)})`)
-          .join(", ");
-        return `assistant: [tool calls: ${calls}]${content ? " " + content : ""}`;
-      }
-      if (role === "tool") return `tool result: ${content}`;
-      return `${role}: ${content}`;
-    })
-    .join("\n");
-
+export function buildRecapRequest(
+  messages: Message[],
+  config: Config,
+): Message[] {
+  const keep = config.compactKeepMessages;
   return [
+    ...messages,
     {
       role: "user",
       content:
-        "Summarize the work done so far in this coding session, including files " +
-        "changed, commands run, and any open issues, in a few concise bullet points.\n\n" +
-        `Conversation so far:\n${transcript}`,
+        "Summarize the work done so far in this coding session, covering only " +
+        "the earlier part of the conversation — everything before the most " +
+        `recent ${keep} messages, which are retained separately and must be ` +
+        "excluded from the summary. Include files changed, commands run, and " +
+        "any open issues, in a few concise bullet points. Do not call any " +
+        "tools; respond with the summary text only.",
     },
   ];
 }
 
 /**
- * Rebuild the message array after a successful recap:
- * [system…, recap-as-user-message, …recent].
+ * Rebuild the message array after a successful recap (spec v0.2.0 §3.4):
+ * [system…, recap-as-system-message, …recent].
+ *
+ * The recap is a `system` message placed mid-conversation; the system prompt
+ * and the recent tail are carried over verbatim (same objects, same order).
  */
 export function applyRecap(
   system: Message[],
@@ -102,7 +110,7 @@ export function applyRecap(
 ): Message[] {
   return [
     ...system,
-    { role: "user", content: `Summary of prior work:\n${recap}` },
+    { role: "system", content: `Summary of prior work:\n${recap}` },
     ...recent,
   ];
 }

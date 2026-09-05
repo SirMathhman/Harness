@@ -9,7 +9,7 @@ import {
 import { LLMError } from "../llm/errors.js";
 import {
   applyRecap,
-  buildRecapPrompt,
+  buildRecapRequest,
   partitionForCompaction,
   shouldCompact,
   truncateCompaction,
@@ -206,19 +206,31 @@ async function maybeCompact(
     session.messages,
     session.config,
   );
-  if (older.length === 0) return;
+  if (older.length === 0) return; // E-C1: nothing to summarize.
 
   try {
+    // Spec v0.2.0 §3.3: the recap request is the cached conversation plus one
+    // appended instruction, sent with the same advertised tools as the main
+    // call, so the prefix is reused and only the instruction is prefilled.
+    // The instruction message is transient — never added to session.messages.
     const recap = await client.chat({
       config: session.config,
-      messages: buildRecapPrompt(older),
-      tools: [],
+      messages: buildRecapRequest(session.messages, session.config),
+      tools: registry.advertised(),
       signal,
+      onToken: callbacks.onToken,
+      onReasoning: callbacks.onReasoning,
     });
+    // E-C5: ignore any tool_calls; only content is used. E-C4: an empty or
+    // whitespace-only recap is a failure -> fall back to truncation.
+    if (recap.content.trim().length === 0) {
+      session.messages = truncateCompaction(session.messages, session.config);
+      return;
+    }
     session.messages = applyRecap(system, recap.content, recent);
   } catch (err) {
-    if (err instanceof LLMError) throw err; // connectivity errors abort the turn
-    // E7: recap failed for another reason -> fall back to truncation.
+    if (err instanceof LLMError) throw err; // E-C2: connectivity errors abort the turn
+    // E-C3/E7: recap failed for another reason -> fall back to truncation.
     session.messages = truncateCompaction(session.messages, session.config);
   }
 }
