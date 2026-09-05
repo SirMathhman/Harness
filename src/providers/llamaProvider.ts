@@ -42,6 +42,12 @@ export interface LlamaProviderOptions {
    * fail-open (KV spec §3.8), so this is the only trace one leaves.
    */
   log?: (message: string) => void;
+  /**
+   * Where KV save/restore success notices go. Defaults to stdout, so the user
+   * sees the cache being saved and loaded in the terminal. Kept separate from
+   * `log` (stderr) so informational output never mixes with warnings.
+   */
+  note?: (message: string) => void;
 }
 
 /** One entry of llama.cpp's `GET /v1/models` response (wire shape). */
@@ -86,6 +92,7 @@ export class LlamaProvider implements Provider {
   private readonly slotId: number;
   private readonly slotSavePath: string;
   private readonly log: (message: string) => void;
+  private readonly note: (message: string) => void;
   /**
    * The depths whose `subagent:before` save actually succeeded. A restore is
    * only attempted for a depth in this set, so a failed save is never followed
@@ -107,6 +114,8 @@ export class LlamaProvider implements Provider {
     this.slotSavePath = options.slotSavePath ?? "";
     this.log =
       options.log ?? ((message) => process.stderr.write(`${message}\n`));
+    this.note =
+      options.note ?? ((message) => process.stdout.write(`${message}\n`));
 
     // KV spec §3.1: without the directory the provider cannot delete its cache
     // files, which would leave the disk dirty — a fatal config error, not a
@@ -211,8 +220,10 @@ export class LlamaProvider implements Provider {
     // A stale entry would let a failed save be followed by a restore of the
     // previous run's file, so clear it before trying.
     this.savedDepths.delete(depth);
-    if (await this.slotAction("save", depth, model))
+    if (await this.slotAction("save", depth, model)) {
       this.savedDepths.add(depth);
+      this.noteMessage(`KV cache saved to ${kvCacheFileName(depth)}`);
+    }
   }
 
   /**
@@ -232,6 +243,7 @@ export class LlamaProvider implements Provider {
       // it; the turn is unaffected.
       this.warn(`could not delete ${path}: ${messageOf(err)}`);
     }
+    this.noteMessage(`KV cache restored from ${kvCacheFileName(depth)}`);
   }
 
   /**
@@ -294,6 +306,11 @@ export class LlamaProvider implements Provider {
   /** Report a fail-open problem, tagged with the provider it came from. */
   private warn(message: string): void {
     this.log(`[${this.name || "llama"}] ${message}`);
+  }
+
+  /** Report a successful save/restore, tagged with the provider it came from. */
+  private noteMessage(message: string): void {
+    this.note(`[${this.name || "llama"}] ${message}`);
   }
 }
 
