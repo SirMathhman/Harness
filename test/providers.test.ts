@@ -387,7 +387,9 @@ describe("profile model-selection whitelist (providers spec §3.4)", () => {
         });
         reg.createConnection(p, model);
       }),
-    ).toThrow(/is connected to model "manual" which is not in its models whitelist/);
+    ).toThrow(
+      /is connected to model "manual" which is not in its models whitelist/,
+    );
   });
 });
 
@@ -417,6 +419,34 @@ describe("/model across providers (providers spec §3.8)", () => {
     expect(() => handle.switchModel("shared")).toThrow(AmbiguousModelError);
     handle.switchModel("llama_b/shared");
     expect(handle.session.config.baseUrl).toBe("http://b");
+  });
+
+  test("a model name containing a slash is matched exactly before the provider split", () => {
+    const graph = withDiscovered(
+      (reg) => {
+        reg.addProvider({
+          name: "llama",
+          async discoverModels() {
+            return [];
+          },
+        });
+      },
+      {
+        llama: [
+          {
+            name: "peculiar-ragdoll/Dirk-Qwen3.8-27B-GGUF:Q4_K_XL",
+            baseUrl: "http://x",
+            apiKey: "",
+          },
+        ],
+      },
+    );
+    const handle = createSession({ graph });
+    handle.switchModel("peculiar-ragdoll/Dirk-Qwen3.8-27B-GGUF:Q4_K_XL");
+    expect(handle.session.config.model).toBe(
+      "peculiar-ragdoll/Dirk-Qwen3.8-27B-GGUF:Q4_K_XL",
+    );
+    expect(handle.session.config.baseUrl).toBe("http://x");
   });
 
   test("switching outside the active profile's whitelist is rejected (E-P7)", () => {

@@ -92,8 +92,25 @@ export async function startRepl(
     closed = true;
   });
 
+  // Reasoning is display-only: it streams in gray and is never sent back to
+  // the model. `reasoningActive` tracks the reasoning→content transition so
+  // the answer starts on a fresh line; it is reset at the start of each turn.
+  let reasoningActive = false;
   const callbacks: AgentCallbacks = {
-    onToken: (t) => process.stdout.write(t),
+    onToken: (t) => {
+      if (reasoningActive) {
+        process.stdout.write("\n");
+        reasoningActive = false;
+      }
+      process.stdout.write(t);
+    },
+    onReasoning: (t) => {
+      if (!reasoningActive) {
+        process.stdout.write(`\n${c.gray("thinking…")}\n`);
+        reasoningActive = true;
+      }
+      process.stdout.write(c.gray(t));
+    },
     onToolCall: (name, args) =>
       process.stdout.write(`\n${toolCallLine(name, args)}\n`),
     onToolResult: (name, ok, summary) =>
@@ -103,6 +120,7 @@ export async function startRepl(
 
   // Run an initial task if one was passed on the command line.
   if (initialTask) {
+    reasoningActive = false;
     await executeTurn(handle, callbacks, initialTask);
   }
 
@@ -122,6 +140,7 @@ export async function startRepl(
       if (cmd.exits) break;
       continue;
     }
+    reasoningActive = false;
     await executeTurn(handle, callbacks, input);
   }
 

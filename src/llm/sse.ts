@@ -6,6 +6,8 @@ export interface ChatCompletionChunk {
     delta?: {
       role?: string;
       content?: string | null;
+      /** Reasoning/thinking tokens (e.g. Qwen3 via llama.cpp). */
+      reasoning_content?: string | null;
       tool_calls?: StreamToolCallDelta[];
     };
     finish_reason?: string | null;

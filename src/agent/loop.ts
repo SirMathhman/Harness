@@ -3,6 +3,7 @@ import type { HookOutcome } from "../hooks/index.js";
 import {
   defaultLLMClient,
   type LLMClient,
+  type ReasoningCallback,
   type TokenCallback,
 } from "../llm/client.js";
 import { LLMError } from "../llm/errors.js";
@@ -22,6 +23,8 @@ import {
 /** Callbacks the CLI uses to render live output (spec §3.6). */
 export interface AgentCallbacks {
   onToken?: TokenCallback;
+  /** Called for each reasoning/thinking token as it streams in. */
+  onReasoning?: ReasoningCallback;
   /** Called once per tool call before it runs: `→ name(args)`. */
   onToolCall?: (name: string, args: Record<string, unknown>) => void;
   /** Called once per tool result: condensed `✓`/`✗` line. */
@@ -82,6 +85,7 @@ export async function runTurn(
       tools: registry.advertised(),
       signal,
       onToken: callbacks.onToken,
+      onReasoning: callbacks.onReasoning,
     });
 
     // Track usage for compaction (spec §3.5).

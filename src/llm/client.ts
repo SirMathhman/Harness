@@ -9,6 +9,9 @@ import { accumulate, streamSSE } from "./sse.js";
 /** Callback invoked for each assistant text token as it streams in. */
 export type TokenCallback = (token: string) => void;
 
+/** Callback invoked for each reasoning/thinking token as it streams in. */
+export type ReasoningCallback = (token: string) => void;
+
 /** Options for a single LLM call. */
 export interface LLMCallOptions {
   config: Config;
@@ -16,6 +19,11 @@ export interface LLMCallOptions {
   tools: Tool[];
   signal?: AbortSignal;
   onToken?: TokenCallback;
+  /**
+   * Receives reasoning/thinking tokens (e.g. Qwen3's `reasoning_content`) as
+   * they stream in. Omitted → reasoning is not surfaced.
+   */
+  onReasoning?: ReasoningCallback;
   /** Request timeout in ms (E4). Defaults to a generous value. */
   timeoutMs?: number;
 }
@@ -106,7 +114,7 @@ export function buildRequestPayload(
 export async function chatCompletion(
   opts: LLMCallOptions,
 ): Promise<LLMResponse> {
-  const { config, messages, tools, signal, onToken } = opts;
+  const { config, messages, tools, signal, onToken, onReasoning } = opts;
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
   const url = `${config.baseUrl.replace(/\/$/, "")}/v1/chat/completions`;
@@ -166,9 +174,14 @@ export async function chatCompletion(
     const chunks = [];
     for await (const chunk of streamSSE(response.body, controller.signal)) {
       chunks.push(chunk);
-      const token = chunk.choices?.[0]?.delta?.content;
+      const delta = chunk.choices?.[0]?.delta;
+      const token = delta?.content;
       if (typeof token === "string" && token.length > 0 && onToken) {
         onToken(token);
+      }
+      const reasoning = delta?.reasoning_content;
+      if (typeof reasoning === "string" && reasoning.length > 0 && onReasoning) {
+        onReasoning(reasoning);
       }
     }
     return accumulate(chunks);

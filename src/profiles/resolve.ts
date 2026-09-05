@@ -206,11 +206,18 @@ export function allModelEntries(graph: ResourceGraph): ModelListEntry[] {
  * Every model matching `ref`: a bare model name, or `<provider>/<name>`
  * (providers spec §3.8). A bare name can match more than one entry when
  * several providers serve a model with that name (E-P6).
+ *
+ * A `ref` containing `/` is first tried as an exact model name — model names
+ * themselves may contain slashes (e.g. HF-style `repo/file` ids) — and only
+ * falls back to the `<provider>/<name>` split when nothing matches exactly.
  */
 export function findModelsByRef(
   graph: ResourceGraph,
   ref: string,
 ): ModelListEntry[] {
+  const exact = allModelEntries(graph).filter((e) => e.name === ref);
+  if (exact.length > 0) return exact;
+
   const slash = ref.indexOf("/");
   if (slash > 0) {
     const providerName = ref.slice(0, slash);
@@ -256,8 +263,7 @@ export function availableModelIds(
     if (providerName === undefined) continue;
 
     for (const el of selection) {
-      const [wantProvider, pattern] =
-        typeof el === "string" ? [el, null] : el;
+      const [wantProvider, pattern] = typeof el === "string" ? [el, null] : el;
       if (wantProvider !== providerName) continue;
       if (pattern === null) {
         out.push(id);
