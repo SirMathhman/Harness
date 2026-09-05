@@ -195,9 +195,9 @@ export class LlamaProvider implements Provider {
   /** Save on the way into a nested run, restore on the way out. */
   private async onSubagentEvent(ctx: HookContext): Promise<void> {
     if (ctx.event === "subagent:before") {
-      await this.saveSlot(ctx.depth);
+      await this.saveSlot(ctx.depth, ctx.model);
     } else if (ctx.event === "subagent:after") {
-      await this.restoreSlot(ctx.depth);
+      await this.restoreSlot(ctx.depth, ctx.model);
     }
   }
 
@@ -206,11 +206,11 @@ export class LlamaProvider implements Provider {
    * the slot for the subagent. A failure is a warning: the subagent still
    * runs and this agent re-prefills afterwards.
    */
-  private async saveSlot(depth: number): Promise<void> {
+  private async saveSlot(depth: number, model?: string): Promise<void> {
     // A stale entry would let a failed save be followed by a restore of the
     // previous run's file, so clear it before trying.
     this.savedDepths.delete(depth);
-    if (await this.slotAction("save", depth)) this.savedDepths.add(depth);
+    if (await this.slotAction("save", depth, model)) this.savedDepths.add(depth);
   }
 
   /**
@@ -218,9 +218,9 @@ export class LlamaProvider implements Provider {
    * Skipped entirely when the matching save failed — there is nothing on disk
    * to restore.
    */
-  private async restoreSlot(depth: number): Promise<void> {
+  private async restoreSlot(depth: number, model?: string): Promise<void> {
     if (!this.savedDepths.delete(depth)) return;
-    if (!(await this.slotAction("restore", depth))) return;
+    if (!(await this.slotAction("restore", depth, model))) return;
 
     const path = join(this.slotSavePath, kvCacheFileName(depth));
     try {
@@ -233,16 +233,23 @@ export class LlamaProvider implements Provider {
   }
 
   /**
-   * `POST /slots/{id}?action=save|restore` with `{"filename": …}`. Returns
-   * whether the server accepted it; every failure mode is fail-open and only
-   * produces a warning (KV spec §3.8).
+   * `POST /slots/{id}?action=save|restore` with `{"filename": …, "model": …}`.
+   * The `model` field is required by a llama.cpp *router* (one server, many
+   * models), which needs it to know which model's slot to act on; a plain
+   * single-model server ignores it. Returns whether the server accepted it;
+   * every failure mode is fail-open and only produces a warning (KV spec §3.8).
    */
   private async slotAction(
     action: "save" | "restore",
     depth: number,
+    model?: string,
   ): Promise<boolean> {
     const filename = kvCacheFileName(depth);
     const endpoint = `${this.endpointBase()}/slots/${this.slotId}?action=${action}`;
+    const body = JSON.stringify({
+      filename,
+      ...(model !== undefined && model !== "" ? { model } : {}),
+    });
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
     };
@@ -253,12 +260,14 @@ export class LlamaProvider implements Provider {
       response = await fetch(endpoint, {
         method: "POST",
         headers,
-        body: JSON.stringify({ filename }),
+        body,
       });
     } catch (err) {
       this.warn(`KV ${action} of ${filename} failed: ${messageOf(err)}`);
       return false;
     }
+
+    const responseBody = await response.text();
     if (!response.ok) {
       // 501 is the server saying it was started without --slot-save-path.
       const hint =
@@ -266,7 +275,7 @@ export class LlamaProvider implements Provider {
           ? " (start llama-server with --slot-save-path DIR)"
           : "";
       this.warn(
-        `KV ${action} of ${filename} failed: HTTP ${response.status}${hint}`,
+        `KV ${action} of ${filename} failed: HTTP ${response.status}${hint} body=${responseBody}`,
       );
       return false;
     }
@@ -275,7 +284,9 @@ export class LlamaProvider implements Provider {
 
   /** The base URL without a trailing slash. */
   private endpointBase(): string {
-    return this.baseUrl.endsWith("/") ? this.baseUrl.slice(0, -1) : this.baseUrl;
+    return this.baseUrl.endsWith("/")
+      ? this.baseUrl.slice(0, -1)
+      : this.baseUrl;
   }
 
   /** Report a fail-open problem, tagged with the provider it came from. */

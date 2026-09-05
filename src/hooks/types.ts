@@ -82,6 +82,13 @@ export interface HookContext {
   cwd: string;
   /** Subagent depth. 0 = parent session. */
   depth: number;
+  /**
+   * The active model name of the agent whose event this is. Present for
+   * `subagent:before` / `subagent:after` (the spawner's model, KV spec §3.6);
+   * a provider's KV save/restore sends it to a llama.cpp router, which needs
+   * it to know which model's slot to act on.
+   */
+  model?: string;
 }
 
 /**

@@ -49,6 +49,11 @@ export interface HookDispatchOptions {
     args: Record<string, unknown>;
     result?: string;
   };
+  /**
+   * The active model name of the agent whose event this is, for
+   * `subagent:before` / `subagent:after` (KV spec §3.6).
+   */
+  model?: string;
 }
 
 export interface HookManagerOptions {
@@ -201,6 +206,7 @@ export class HookManager {
         cwd: this.cwd,
         depth,
         ...(options.tool ? { tool: options.tool } : {}),
+        ...(options.model !== undefined ? { model: options.model } : {}),
       },
       blocking: canBlock(event),
       blocks: [],

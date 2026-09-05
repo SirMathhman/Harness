@@ -82,6 +82,12 @@ export interface SpawnerContext {
   hooks: HookManager;
   /** The spawning agent's depth: 0 for the main agent. */
   depth: number;
+  /**
+   * The spawning agent's active model name (KV spec §3.6). The runner passes
+   * it to the `subagent:before` / `subagent:after` dispatches so a provider's
+   * KV save/restore can tell a llama.cpp router which model's slot to act on.
+   */
+  model?: string;
 }
 
 /** One profile turned into the concrete pieces an agent loop needs. */
@@ -150,7 +156,11 @@ export function materializeProfile(
   ) {
     registry.register(
       makeSpawnSubagentTool({
-        runner: makeSubagentRunner(ctx, { hooks, depth }),
+        runner: makeSubagentRunner(ctx, {
+          hooks,
+          depth,
+          ...(config.model !== null ? { model: config.model } : {}),
+        }),
         depth,
         parentProfile: resolved.name,
         policy: resolved.subagent,
@@ -302,6 +312,7 @@ export function makeSubagentRunner(
       if (spawner !== undefined) {
         await spawner.hooks.dispatchAsync("subagent:before", {
           depth: spawner.depth,
+          ...(spawner.model !== undefined ? { model: spawner.model } : {}),
         });
       }
 
@@ -344,6 +355,7 @@ export function makeSubagentRunner(
       if (spawner !== undefined) {
         await spawner.hooks.dispatchAsync("subagent:after", {
           depth: spawner.depth,
+          ...(spawner.model !== undefined ? { model: spawner.model } : {}),
         });
       }
       // E21: the subagent's background-command handles are discarded with the
