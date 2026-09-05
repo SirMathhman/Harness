@@ -4,6 +4,7 @@ export {
   type Connection,
   type HookDef,
   type ModelDef,
+  type ModelSelection,
   type ProfileDef,
   type ProfileSwitchMode,
   type Registry,
@@ -17,19 +18,22 @@ export {
   type ViseConfig,
 } from "./types.js";
 export {
+  addDiscoveredModels,
   DEFAULT_BASE_URL,
-  DEFAULT_MODEL_ID,
   defaultGraph,
   IMPLICIT_PROFILE_ID,
   IMPLICIT_PROFILE_NAME,
   ViseRegistry,
-  withDiscoveredModel,
+  type DiscoveryResult,
   type ResourceGraph,
 } from "./registry.js";
 export {
+  AmbiguousModelError,
+  allModelEntries,
+  availableModelIds,
   defaultProfileName,
-  findModel,
-  modelEntries,
+  findModelsByRef,
+  ModelNotAvailableError,
   ProfileHasNoModelError,
   profileEntries,
   profileNames,
@@ -37,8 +41,9 @@ export {
   systemPromptOf,
   UnknownModelError,
   UnknownProfileError,
-  type ModelEntry,
+  type ModelListEntry,
   type ProfileEntry,
+  type ResolveProfileModelOptions,
   type ResolvedProfile,
 } from "./resolve.js";
 export { validateGraph, ViseConfigError } from "./validate.js";

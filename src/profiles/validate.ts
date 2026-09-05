@@ -2,8 +2,10 @@ import { BUILTIN_TOOL_NAMES, FINISH_TOOL_NAME } from "../tools/names.js";
 import { HOOK_EVENTS, isHookEvent } from "../hooks/types.js";
 import { RUNTIME_KEYS } from "../config/defaults.js";
 import { IMPLICIT_PROFILE_NAME, type ResourceGraph } from "./registry.js";
+import { availableModelIds } from "./resolve.js";
 import {
   idString,
+  type ModelSelection,
   type Resource,
   type ResourceKind,
   type ResourceOrigin,
@@ -41,6 +43,7 @@ export function validateGraph(graph: ResourceGraph): ResourceGraph {
   validateConnections(graph, problems);
   validateProfileToolSets(graph, problems);
   validateSubagentPolicies(graph, problems);
+  validateModelWhitelists(graph, problems);
   validateRuntime(graph, problems);
 
   if (problems.length > 0) {
@@ -167,11 +170,10 @@ function validateResources(graph: ResourceGraph, problems: string[]): void {
         break;
       }
       case "model": {
-        if (resource.builtin) break;
+        if (resource.discovered) break;
         const { name, baseUrl } = resource.def;
-        // An empty name is legal and means "whatever this server has loaded":
-        // startup fills it in from /v1/models (spec §3.10). Empty names are
-        // never checked for conflicts — many auto-discovered models can coexist.
+        // An empty name is legal (a model the config never intends to address
+        // by name); empty names are never checked for conflicts.
         if (typeof name !== "string") {
           problems.push(
             `Model ${idString(resource.id)} must have a string name (use "" ` +
@@ -281,6 +283,71 @@ function validateSubagentPolicies(
       );
     }
   }
+}
+
+/**
+ * A profile's `models` whitelist (providers spec §3.4, §3.11):
+ * - every provider name it references must be registered (E-P3);
+ * - a `Profile → Model` connection, if any, must target a model within the
+ *   whitelist's available set (E-P5). This is checkable here (rather than
+ *   deferred to startup) because a connection can only ever target a model
+ *   that already exists when the config runs — i.e. one declared via
+ *   `reg.createModel()`, which never carries a `provider` field and is
+ *   therefore either matched by every profile (no whitelist) or by none
+ *   (any non-empty whitelist, since whitelist elements are provider
+ *   references).
+ */
+function validateModelWhitelists(graph: ResourceGraph, problems: string[]): void {
+  for (const resource of graph.resources.values()) {
+    if (resource.kind !== "profile") continue;
+    const selection = resource.def.models;
+    if (selection === undefined) continue;
+    const where = resource.implicit
+      ? "the default profile"
+      : `Profile "${resource.def.name}"`;
+
+    if (!Array.isArray(selection)) {
+      problems.push(`${where} has a "models" whitelist that must be an array.`);
+      continue;
+    }
+
+    for (const element of selection) {
+      const providerName = typeof element === "string" ? element : element?.[0];
+      if (typeof providerName !== "string" || !graph.providerNames.has(providerName)) {
+        const known = [...graph.providerNames.keys()];
+        problems.push(
+          `${where} references unknown provider ${JSON.stringify(providerName)} ` +
+            `in its models whitelist. Registered providers: ` +
+            `${known.length > 0 ? known.join(", ") : "(none)"}.`,
+        );
+      }
+    }
+
+    if (selection.length === 0) continue;
+
+    const connectedModel = firstModelEdgeTarget(graph, resource.id);
+    if (connectedModel === null) continue;
+
+    const available = availableModelIds(graph, selection as ModelSelection);
+    if (!available.includes(connectedModel.id)) {
+      problems.push(
+        `${where} is connected to model "${connectedModel.name}" which is ` +
+          `not in its models whitelist.`,
+      );
+    }
+  }
+}
+
+/** The first Profile→Model connection's target, if any, name included. */
+function firstModelEdgeTarget(
+  graph: ResourceGraph,
+  profileId: Resource["id"],
+): { id: Resource["id"]; name: string } | null {
+  for (const edge of graph.edgesFrom.get(profileId) ?? []) {
+    const target = graph.resources.get(edge.to);
+    if (target?.kind === "model") return { id: target.id, name: target.def.name };
+  }
+  return null;
 }
 
 /** Range-check the values a config passed to `reg.setRuntime()`. */

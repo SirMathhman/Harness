@@ -45,6 +45,15 @@ const toolCall = (
   usage: null,
 });
 
+/** A placeholder parent model, for tests that don't care which model is used. */
+const stubParentModel = {
+  baseUrl: "http://parent:1",
+  model: "parent-model",
+  apiKey: "",
+  temperature: 0.2,
+  maxContext: 8192,
+};
+
 /** A spawn tool with the boring options filled in. */
 function spawnTool(
   runner: SubagentRunner,
@@ -57,6 +66,7 @@ function spawnTool(
     fallbackMaxDepth: 3,
     subagentMaxIterations: 50,
     knownProfiles: [],
+    parentModel: stubParentModel,
     ...overrides,
   });
 }
@@ -68,7 +78,13 @@ function runnerFor(client: LLMClient) {
 
 /** The options a bare subagent run needs, under the default profile. */
 function runOpts(maxIterations: number) {
-  return { task: "t", maxIterations, depth: 1, profile: IMPLICIT_PROFILE_NAME };
+  return {
+    task: "t",
+    maxIterations,
+    depth: 1,
+    profile: IMPLICIT_PROFILE_NAME,
+    parentModel: stubParentModel,
+  };
 }
 
 describe("spawn_subagent tool (§3.3 #9, §3.8)", () => {
@@ -178,7 +194,7 @@ describe("subagent runner (§3.8.2, §3.8.5)", () => {
     const runner = runnerFor(client);
     const out = await runner(runOpts(5));
     expect(out).toContain("subagent failed:");
-    expect(out).toContain("Cannot reach llama.cpp server");
+    expect(out).toContain("Cannot reach LLM server");
   });
 
   test("typed turn outcome distinguishes cap from plain text (E10 vs E11)", async () => {

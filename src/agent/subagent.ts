@@ -15,12 +15,15 @@ import { LLMError } from "../llm/errors.js";
 import { defaultLLMClient, type LLMClient } from "../llm/client.js";
 import { HookManager } from "../hooks/index.js";
 import {
+  availableModelIds,
   profileNames,
   resolveProfile,
   systemPromptOf,
   UnknownProfileError,
+  type ModelSelection,
   type ResolvedProfile,
   type ResourceGraph,
+  type ResourceId,
 } from "../profiles/index.js";
 
 /**
@@ -125,6 +128,13 @@ export function materializeProfile(
         fallbackMaxDepth: config.maxSubagentDepth,
         subagentMaxIterations: config.subagentMaxIterations,
         knownProfiles: profileNames(ctx.graph),
+        parentModel: {
+          baseUrl: config.baseUrl,
+          model: config.model,
+          apiKey: config.apiKey,
+          temperature: config.temperature,
+          maxContext: config.maxContext,
+        },
       }),
     );
   }
@@ -165,9 +175,35 @@ export function makeSubagentRunner(ctx: AgentContext): SubagentRunner {
   return async (opts: SubagentRunOptions): Promise<string> => {
     const emit = (event: SubagentRenderEvent) => ctx.render?.(opts.depth, event);
 
+    // Model selection for a subagent (providers spec §3.7): a non-empty
+    // `models` whitelist on its profile picks the first match; otherwise (or
+    // when the whitelist matches nothing, E-P8) it inherits the parent's
+    // active model verbatim. Unlike normal resolution, a `Profile → Model`
+    // connection and the state file's `lastModel` are never consulted here.
+    const selection = profileModelSelection(ctx.graph, opts.profile);
+    let modelId: ResourceId | null = null;
+    let inheritParent = false;
+    if (selection && selection.length > 0) {
+      const available = availableModelIds(ctx.graph, selection);
+      if (available.length > 0) {
+        modelId = available[0];
+      } else {
+        ctx.log?.(
+          `Warning: subagent profile "${opts.profile}" has a models ` +
+            `whitelist that matches no models. Falling back to the parent's ` +
+            `active model.`,
+        );
+        inheritParent = true;
+      }
+    } else {
+      inheritParent = true;
+    }
+
     let resolved: ResolvedProfile;
     try {
-      resolved = resolveProfile(ctx.graph, opts.profile);
+      resolved = resolveProfile(ctx.graph, opts.profile, {
+        modelId: inheritParent ? null : modelId,
+      });
     } catch (err) {
       // The tool validates the name first, so this is only reachable if the
       // graph changed underneath us. Still data, never control.
@@ -176,6 +212,20 @@ export function makeSubagentRunner(ctx: AgentContext): SubagentRunner {
         return `subagent failed: ${err.message}`;
       }
       throw err;
+    }
+
+    if (inheritParent) {
+      resolved = {
+        ...resolved,
+        config: {
+          ...resolved.config,
+          baseUrl: opts.parentModel.baseUrl,
+          model: opts.parentModel.model,
+          apiKey: opts.parentModel.apiKey,
+          temperature: opts.parentModel.temperature,
+          maxContext: opts.parentModel.maxContext,
+        },
+      };
     }
 
     // A subagent's prompt: the explicit one from the call, else its profile's
@@ -249,6 +299,16 @@ export function makeSubagentRunner(ctx: AgentContext): SubagentRunner {
       manager.killAll();
     }
   };
+}
+
+/** A profile's `models` whitelist, by name, or `undefined` if it has none. */
+function profileModelSelection(
+  graph: ResourceGraph,
+  name: string,
+): ModelSelection | undefined {
+  const id = graph.profiles.get(name);
+  const resource = id !== undefined ? graph.resources.get(id) : undefined;
+  return resource?.kind === "profile" ? resource.def.models : undefined;
 }
 
 /** The most recent non-empty assistant text in a message list, or null. */

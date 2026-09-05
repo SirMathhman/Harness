@@ -23,27 +23,31 @@ import { DEFAULT_CONFIG } from "../src/config/defaults.js";
 import { CONFIG_STUB, writeConfigStub } from "../src/profiles/index.js";
 import { modelGraph } from "./helpers.js";
 
-describe("CLI startup (AC 1)", () => {
-  test("prints a setup hint and exits non-zero when no model is resolvable", async () => {
-    // Run the entry point in a project whose model auto-discovers from a port
-    // nothing is listening on, so discovery fails deterministically regardless
-    // of whether a real server happens to be running on this machine.
-    const dir = mkdtempSync(path.join(tmpdir(), "vise-nomodel-"));
+/**
+ * Env overrides that point `os.homedir()` at an empty, isolated directory, so
+ * a subprocess test never picks up the real machine's `~/.vise/index.ts`.
+ */
+function isolatedHomeEnv(): Record<string, string | undefined> {
+  const fakeHome = mkdtempSync(path.join(tmpdir(), "vise-fakehome-"));
+  return { ...process.env, HOME: fakeHome, USERPROFILE: fakeHome };
+}
+
+describe("CLI startup (AC 1; providers spec §3.6, §4 E-P0)", () => {
+  test("exits non-zero when no provider is registered", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "vise-noprovider-"));
     mkdirSync(path.join(dir, ".vise"));
     writeFileSync(
       path.join(dir, ".vise", "index.ts"),
       [
         "export default (reg) => {",
-        "  reg.createConnection(",
-        "    reg.builtins.defaultProfile,",
-        '    reg.createModel({ name: "", baseUrl: "http://127.0.0.1:1", apiKey: "" }),',
-        "  );",
+        "  // no reg.addProvider() call",
         "};",
       ].join("\n"),
     );
-    const entry = path.resolve("src/index.ts");
+    const entry = path.resolve("src/cli.ts");
     const proc = Bun.spawn(["bun", "run", entry], {
       cwd: dir,
+      env: isolatedHomeEnv(),
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -51,12 +55,41 @@ describe("CLI startup (AC 1)", () => {
     const stderr = await new Response(proc.stderr).text();
     rmSync(dir, { recursive: true, force: true });
     expect(exitCode).toBe(1);
-    expect(stderr).toContain("No model could be resolved");
+    expect(stderr).toContain("No models available");
+  });
+
+  test("exits non-zero when every registered provider discovers zero models", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "vise-nomodel-"));
+    mkdirSync(path.join(dir, ".vise"));
+    writeFileSync(
+      path.join(dir, ".vise", "index.ts"),
+      [
+        "export default (reg) => {",
+        "  reg.addProvider({",
+        '    name: "empty",',
+        "    async discoverModels() { return []; },",
+        "  });",
+        "};",
+      ].join("\n"),
+    );
+    const entry = path.resolve("src/cli.ts");
+    const proc = Bun.spawn(["bun", "run", entry], {
+      cwd: dir,
+      env: isolatedHomeEnv(),
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const exitCode = await proc.exited;
+    const stderr = await new Response(proc.stderr).text();
+    rmSync(dir, { recursive: true, force: true });
+    expect(exitCode).toBe(1);
+    expect(stderr).toContain("No models available");
   });
 
   test("rejects configuration flags, which now live in .vise/index.ts", async () => {
-    const proc = Bun.spawn(["bun", "run", "src/index.ts", "--model", "x"], {
+    const proc = Bun.spawn(["bun", "run", "src/cli.ts", "--model", "x"], {
       cwd: process.cwd(),
+      env: isolatedHomeEnv(),
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -69,24 +102,27 @@ describe("CLI startup (AC 1)", () => {
 
 describe("profile persistence end-to-end (config spec §3.8, AC 9, AC 13, C17)", () => {
   test("a clean exit saves the active profile and model to ./.vise/state.json", async () => {
-    // An explicit, non-empty model name means no auto-discovery HTTP call is
-    // ever attempted, so the REPL starts up with no real LLM server running.
+    // A provider that discovers one model with no real network call, so the
+    // REPL starts up deterministically with no real LLM server running.
     const dir = mkdtempSync(path.join(tmpdir(), "vise-state-e2e-"));
     mkdirSync(path.join(dir, ".vise"));
     writeFileSync(
       path.join(dir, ".vise", "index.ts"),
       [
         "export default (reg) => {",
-        "  reg.createConnection(",
-        "    reg.builtins.defaultProfile,",
-        '    reg.createModel({ name: "stub-model", baseUrl: "http://127.0.0.1:1", apiKey: "" }),',
-        "  );",
+        "  reg.addProvider({",
+        '    name: "stub",',
+        "    async discoverModels() {",
+        '      return [{ name: "stub-model", baseUrl: "http://127.0.0.1:1", apiKey: "" }];',
+        "    },",
+        "  });",
         "};",
       ].join("\n"),
     );
-    const entry = path.resolve("src/index.ts");
+    const entry = path.resolve("src/cli.ts");
     const proc = Bun.spawn(["bun", "run", entry], {
       cwd: dir,
+      env: isolatedHomeEnv(),
       stdin: new TextEncoder().encode("/exit\n"),
       stdout: "pipe",
       stderr: "pipe",
@@ -210,13 +246,12 @@ describe("/model command", () => {
     });
   }
 
-  test("lists config models, marking the active one", () => {
+  test("lists every model, marking the active one", () => {
     const handle = createSession({ graph: twoModelGraph() });
     const text = modelCommand(handle);
     expect(text).toContain("Models:");
     expect(text).toContain("* test-model");
     expect(text).toContain("other-model");
-    expect(text).toContain("(project)");
   });
 
   test("switches to a config model, adopting its whole resource", () => {

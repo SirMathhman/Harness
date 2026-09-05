@@ -27,6 +27,15 @@ import type { LLMResponse } from "../src/types.js";
 import type { LLMClient } from "../src/llm/client.js";
 import { graphFrom, modelGraph, profileGraph } from "./helpers.js";
 
+/** A placeholder parent model, for subagent runs that don't care which model is used. */
+const stubParentModel = {
+  baseUrl: "http://localhost:8080",
+  model: "test-model",
+  apiKey: "",
+  temperature: 0.2,
+  maxContext: 8192,
+};
+
 /** Register hooks inline (no file), all attributed to `source`. */
 function manager(
   hooks: Hook[],
@@ -154,10 +163,13 @@ describe("hook dispatch and result application (hooks §3.4, §3.5)", () => {
     expect(out.advisory).toBeNull();
   });
 
-  test("multiple blocks are joined with \"; \"", () => {
+  test('multiple blocks are joined with "; "', () => {
     const m = manager([
       { events: ["tool:before"], handler: () => "no" },
-      { events: ["tool:before"], handler: () => ({ message: "nope", block: true }) },
+      {
+        events: ["tool:before"],
+        handler: () => ({ message: "nope", block: true }),
+      },
     ]);
     expect(m.dispatch("tool:before").block).toBe("no; nope");
   });
@@ -165,7 +177,10 @@ describe("hook dispatch and result application (hooks §3.4, §3.5)", () => {
   test("advisories are joined with a newline", () => {
     const m = manager([
       { events: ["tool:after"], handler: () => ({ message: "warn 1" }) },
-      { events: ["tool:after"], handler: () => ({ message: "warn 2", block: false }) },
+      {
+        events: ["tool:after"],
+        handler: () => ({ message: "warn 2", block: false }),
+      },
     ]);
     const out = m.dispatch("tool:after");
     expect(out.advisory).toBe("warn 1\nwarn 2");
@@ -183,7 +198,13 @@ describe("hook dispatch and result application (hooks §3.4, §3.5)", () => {
   });
 
   test("a block on a non-blocking event becomes an advisory (§3.1)", () => {
-    for (const event of ["tool:after", "turn:start", "session:start", "session:end", "on:compaction"] as const) {
+    for (const event of [
+      "tool:after",
+      "turn:start",
+      "session:start",
+      "session:end",
+      "on:compaction",
+    ] as const) {
       const m = manager([{ events: [event], handler: () => "ignored block" }]);
       const out = m.dispatch(event);
       expect(out.block).toBeNull();
@@ -194,9 +215,26 @@ describe("hook dispatch and result application (hooks §3.4, §3.5)", () => {
   test("all hooks run in registration order with no short-circuit", () => {
     const seen: string[] = [];
     const m = manager([
-      { events: ["turn:end"], handler: () => { seen.push("first"); return "stop"; } },
-      { events: ["turn:end"], handler: () => { seen.push("second"); } },
-      { events: ["turn:end"], handler: () => { seen.push("third"); return "also stop"; } },
+      {
+        events: ["turn:end"],
+        handler: () => {
+          seen.push("first");
+          return "stop";
+        },
+      },
+      {
+        events: ["turn:end"],
+        handler: () => {
+          seen.push("second");
+        },
+      },
+      {
+        events: ["turn:end"],
+        handler: () => {
+          seen.push("third");
+          return "also stop";
+        },
+      },
     ]);
     expect(m.dispatch("turn:end").block).toBe("stop; also stop");
     expect(seen).toEqual(["first", "second", "third"]);
@@ -205,8 +243,18 @@ describe("hook dispatch and result application (hooks §3.4, §3.5)", () => {
   test("only hooks subscribed to the event fire", () => {
     const fired: string[] = [];
     const m = manager([
-      { events: ["turn:start"], handler: () => { fired.push("start"); } },
-      { events: ["turn:end", "tool:before"], handler: (c) => { fired.push(c.event); } },
+      {
+        events: ["turn:start"],
+        handler: () => {
+          fired.push("start");
+        },
+      },
+      {
+        events: ["turn:end", "tool:before"],
+        handler: (c) => {
+          fired.push(c.event);
+        },
+      },
     ]);
     m.dispatch("tool:before");
     expect(fired).toEqual(["tool:before"]);
@@ -215,7 +263,14 @@ describe("hook dispatch and result application (hooks §3.4, §3.5)", () => {
   test("the context carries event, tool, cwd, and depth", () => {
     const seen: HookContext[] = [];
     const m = manager(
-      [{ events: ["tool:after"], handler: (c) => { seen.push(c); } }],
+      [
+        {
+          events: ["tool:after"],
+          handler: (c) => {
+            seen.push(c);
+          },
+        },
+      ],
       { cwd: "/proj" },
     );
     m.dispatch("tool:after", {
@@ -234,8 +289,19 @@ describe("hook dispatch and result application (hooks §3.4, §3.5)", () => {
     const ran: string[] = [];
     const m = manager(
       [
-        { events: ["turn:end"], handler: () => { throw new Error("boom"); } },
-        { events: ["turn:end"], handler: () => { ran.push("after"); return "also"; } },
+        {
+          events: ["turn:end"],
+          handler: () => {
+            throw new Error("boom");
+          },
+        },
+        {
+          events: ["turn:end"],
+          handler: () => {
+            ran.push("after");
+            return "also";
+          },
+        },
       ],
       { log: (msg) => logs.push(msg) },
     );
@@ -248,7 +314,14 @@ describe("hook dispatch and result application (hooks §3.4, §3.5)", () => {
   test("a throw on a non-blocking event becomes an advisory (§3.6)", () => {
     const logs: string[] = [];
     const m = manager(
-      [{ events: ["tool:after"], handler: () => { throw new Error("lint crashed"); } }],
+      [
+        {
+          events: ["tool:after"],
+          handler: () => {
+            throw new Error("lint crashed");
+          },
+        },
+      ],
       { log: (msg) => logs.push(msg) },
     );
     const out = m.dispatch("tool:after");
@@ -261,8 +334,14 @@ describe("hook dispatch and result application (hooks §3.4, §3.5)", () => {
     const logs: string[] = [];
     const m = manager(
       [
-        { events: ["turn:end"], handler: (() => 42) as unknown as Hook["handler"] },
-        { events: ["turn:end"], handler: (() => ({ nope: true })) as unknown as Hook["handler"] },
+        {
+          events: ["turn:end"],
+          handler: (() => 42) as unknown as Hook["handler"],
+        },
+        {
+          events: ["turn:end"],
+          handler: (() => ({ nope: true })) as unknown as Hook["handler"],
+        },
       ],
       { log: (msg) => logs.push(msg) },
     );
@@ -277,8 +356,19 @@ describe("hook dispatch and result application (hooks §3.4, §3.5)", () => {
   test("subagent hooks fire only with includeSubagents (§3.7, AC 6)", () => {
     const fired: string[] = [];
     const m = manager([
-      { events: ["turn:end"], handler: () => { fired.push("parent-only"); } },
-      { events: ["turn:end"], handler: () => { fired.push("subagents"); }, includeSubagents: true },
+      {
+        events: ["turn:end"],
+        handler: () => {
+          fired.push("parent-only");
+        },
+      },
+      {
+        events: ["turn:end"],
+        handler: () => {
+          fired.push("subagents");
+        },
+        includeSubagents: true,
+      },
     ]);
     m.dispatch("turn:end", { depth: 0 });
     expect(fired).toEqual(["parent-only", "subagents"]);
@@ -290,7 +380,15 @@ describe("hook dispatch and result application (hooks §3.4, §3.5)", () => {
 
   test("a disabled manager is a no-op (§3.8, AC 5)", () => {
     let fired = 0;
-    const m = manager([{ events: ["turn:end"], handler: () => { fired++; return "no"; } }]);
+    const m = manager([
+      {
+        events: ["turn:end"],
+        handler: () => {
+          fired++;
+          return "no";
+        },
+      },
+    ]);
     m.setEnabled(false);
     expect(m.active).toBe(false);
     expect(m.dispatch("turn:end").block).toBeNull();
@@ -419,7 +517,12 @@ describe("hooks in the agent loop (hooks §3.5, AC 1, 2, 3)", () => {
   test("tool:after sees the tool's result string", async () => {
     const results: (string | undefined)[] = [];
     const { session, registry } = hookSession([
-      { events: ["tool:after"], handler: (ctx) => { results.push(ctx.tool?.result); } },
+      {
+        events: ["tool:after"],
+        handler: (ctx) => {
+          results.push(ctx.tool?.result);
+        },
+      },
     ]);
     await runTurn(
       session,
@@ -427,7 +530,10 @@ describe("hooks in the agent loop (hooks §3.5, AC 1, 2, 3)", () => {
       registry,
       {},
       undefined,
-      stubClient([call("t1", "read_file", { path: "/no/such/file" }), finish("x")]),
+      stubClient([
+        call("t1", "read_file", { path: "/no/such/file" }),
+        finish("x"),
+      ]),
     );
     expect(results).toHaveLength(1);
     expect(typeof results[0]).toBe("string");
@@ -452,7 +558,10 @@ describe("hooks in the agent loop (hooks §3.5, AC 1, 2, 3)", () => {
 
   test("session:start advisory joins the initial messages", () => {
     const { session } = hookSession([
-      { events: ["session:start"], handler: () => ({ message: "hooks armed" }) },
+      {
+        events: ["session:start"],
+        handler: () => ({ message: "hooks armed" }),
+      },
     ]);
     expect(session.messages.map((m) => m.content)).toContain("hooks armed");
   });
@@ -528,6 +637,7 @@ describe("hooks in the agent loop (hooks §3.5, AC 1, 2, 3)", () => {
       maxIterations: 5,
       depth: 1,
       profile: IMPLICIT_PROFILE_NAME,
+      parentModel: stubParentModel,
     });
     expect(out).toBe("sub done");
     // Only the includeSubagents hook fired, and it saw depth 1.
@@ -552,7 +662,13 @@ describe("hooks in the agent loop (hooks §3.5, AC 1, 2, 3)", () => {
       client: stubClient([finish("try one", "s1"), finish("try two", "s2")]),
     });
     expect(
-      await runner({ task: "t", maxIterations: 5, depth: 1, profile: IMPLICIT_PROFILE_NAME }),
+      await runner({
+        task: "t",
+        maxIterations: 5,
+        depth: 1,
+        profile: IMPLICIT_PROFILE_NAME,
+        parentModel: stubParentModel,
+      }),
     ).toBe("try two");
   });
 
@@ -590,9 +706,16 @@ describe("/hooks REPL command (hooks §3.8, AC 5)", () => {
   test("/hooks lists events, subagent flag, tool filter, and source", () => {
     const m = new HookManager(
       [
-        { hook: { events: ["turn:end"], handler: () => undefined }, source: "gate.ts" },
         {
-          hook: { events: ["tool:after", "tool:before"], handler: () => undefined, includeSubagents: true },
+          hook: { events: ["turn:end"], handler: () => undefined },
+          source: "gate.ts",
+        },
+        {
+          hook: {
+            events: ["tool:after", "tool:before"],
+            handler: () => undefined,
+            includeSubagents: true,
+          },
           source: "lint.ts",
           tools: ["write_file"],
         },
@@ -645,8 +768,6 @@ describe("/hooks REPL command (hooks §3.8, AC 5)", () => {
 
   test("/hooks rejects an unknown argument with usage", () => {
     const handle = createSession({ graph: modelGraph() });
-    expect(hooksCommand(handle, ["maybe"])).toContain(
-      "Usage: /hooks [on|off]",
-    );
+    expect(hooksCommand(handle, ["maybe"])).toContain("Usage: /hooks [on|off]");
   });
 });

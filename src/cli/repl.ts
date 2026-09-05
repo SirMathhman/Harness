@@ -11,6 +11,36 @@ import {
 import { commandArgs, findCommand, type ReplContext } from "./commands.js";
 
 /**
+ * Whether `readline`'s own terminal handling (raw-mode input + its own
+ * per-keystroke echo) should be turned off, leaving the console's native
+ * cooked-mode echo as the only one.
+ *
+ * `readline` echoes each keystroke itself when `terminal: true` (the default
+ * for a TTY), which normally works because it also puts the terminal into
+ * raw mode, suppressing the OS's own echo. Two environments are known not to
+ * honor that raw-mode request, so the OS keeps echoing on top of readline's
+ * echo and every keystroke shows up doubled (confirmed via `bun run` in a
+ * plain Windows PowerShell console: "test" renders as "tteesstt"):
+ *
+ * - Running under **Bun on Windows** (`bun run src/index.ts`): Bun's stdin
+ *   handling on `win32` doesn't reliably disable the Windows console's own
+ *   `ENABLE_ECHO_INPUT`, regardless of the shell hosting it.
+ * - An **MSYS2/mintty-based shell** (Git Bash, `MSYSTEM` set to e.g.
+ *   `MINGW64`): its pty layer doesn't relay the raw-mode request either.
+ *
+ * The console's own cooked-mode line editing (typing, backspace, Enter)
+ * still works fine with `terminal: false`; only readline's own history/
+ * line-editing niceties are lost, which is the right trade to make here.
+ */
+function shouldDisableReadlineEcho(): boolean {
+  const isBunOnWindows =
+    process.platform === "win32" && typeof process.versions.bun === "string";
+  const isMsysPty =
+    typeof process.env.MSYSTEM === "string" && process.env.MSYSTEM !== "";
+  return isBunOnWindows || isMsysPty;
+}
+
+/**
  * Run the interactive REPL (spec §3.6).
  *
  * - Multi-turn: history is retained across prompts, including across a
@@ -21,24 +51,33 @@ import { commandArgs, findCommand, type ReplContext } from "./commands.js";
  *   returns to the prompt.
  * - `exit` / `quit` end the session.
  *
- * `graph` is the resource graph built from `.vise/index.ts`; omitted → the
+ * `graph` is the resource graph built from `.vise/index.ts`, including every
+ * model discovered from its providers (providers spec §3.6); omitted → the
  * built-in defaults (profiles spec §3.8). `profile` is the starting profile,
  * already resolved from the state file (config spec §3.7); `statePath` is
  * where that profile and the active model are saved back to on a clean exit
- * (config spec §3.8.3).
+ * (config spec §3.8.3). `lastModel` is the model name saved alongside it,
+ * used to pin the active model whenever a profile is (re)selected (providers
+ * spec §3.4, §3.9).
  */
 export async function startRepl(
   graph: ResourceGraph,
   profile: string,
   statePath: string,
+  lastModel: string | null,
   initialTask?: string | null,
 ): Promise<void> {
   const handle = createSession({
     graph,
     profile,
+    lastModel,
     render: makeSubagentRender(),
   });
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  const rl = createInterface({
+    input: process.stdin,
+    output: process.stdout,
+    terminal: process.stdin.isTTY === true && !shouldDisableReadlineEcho(),
+  });
   let closed = false;
   rl.on("close", () => {
     closed = true;

@@ -87,11 +87,12 @@ describe("config loading (profiles §3.1, §3.10)", () => {
     const graph = await loadViseConfig(dir, path.join(dir, "no-global"));
     expect(profileNames(graph)).toEqual([]);
     const resolved = resolveProfile(graph, defaultProfileName(graph));
-    // Built-in prompt, every built-in tool, no hooks, the default model.
+    // Built-in prompt, every built-in tool, no hooks. No provider is
+    // registered, so there is no model at all (providers spec §1.1, §3.11).
     expect(resolved.config.systemPrompt).toBeNull();
     expect(resolved.builtinTools).toBeNull();
     expect(resolved.hooks).toEqual([]);
-    expect(resolved.config.baseUrl).toBe("http://localhost:8080");
+    expect(resolved.config.model).toBeNull();
     expect(toolsOf(graph, IMPLICIT_PROFILE_NAME).sort()).toEqual(
       [...BUILTIN_TOOL_NAMES].sort(),
     );
@@ -102,7 +103,9 @@ describe("config loading (profiles §3.1, §3.10)", () => {
     const { dir, cleanup } = makeProject({
       ".vise/index.ts": `export default () => { throw new Error("bad setup"); };`,
     });
-    const err = await loadViseConfig(dir, path.join(dir, "no-global")).catch((e: unknown) => e);
+    const err = await loadViseConfig(dir, path.join(dir, "no-global")).catch(
+      (e: unknown) => e,
+    );
     expect(err).toBeInstanceOf(ViseConfigError);
     expect((err as Error).message).toContain("bad setup");
     cleanup();
@@ -112,7 +115,9 @@ describe("config loading (profiles §3.1, §3.10)", () => {
     const { dir, cleanup } = makeProject({
       ".vise/index.ts": `export default (reg) => { this is not typescript`,
     });
-    await expect(loadViseConfig(dir, path.join(dir, "no-global"))).rejects.toThrow(ViseConfigError);
+    await expect(
+      loadViseConfig(dir, path.join(dir, "no-global")),
+    ).rejects.toThrow(ViseConfigError);
     cleanup();
   });
 
@@ -120,7 +125,9 @@ describe("config loading (profiles §3.1, §3.10)", () => {
     const { dir, cleanup } = makeProject({
       ".vise/index.ts": `export const setup = () => {};`,
     });
-    const err = await loadViseConfig(dir, path.join(dir, "no-global")).catch((e: unknown) => e);
+    const err = await loadViseConfig(dir, path.join(dir, "no-global")).catch(
+      (e: unknown) => e,
+    );
     expect(err).toBeInstanceOf(ViseConfigError);
     expect((err as Error).message).toContain("no default export");
     cleanup();
@@ -130,7 +137,9 @@ describe("config loading (profiles §3.1, §3.10)", () => {
     const { dir, cleanup } = makeProject({
       ".vise/index.ts": `export default { profiles: [] };`,
     });
-    const err = await loadViseConfig(dir, path.join(dir, "no-global")).catch((e: unknown) => e);
+    const err = await loadViseConfig(dir, path.join(dir, "no-global")).catch(
+      (e: unknown) => e,
+    );
     expect(err).toBeInstanceOf(ViseConfigError);
     expect((err as Error).message).toContain("must be a function");
     cleanup();
@@ -156,9 +165,7 @@ describe("config loading (profiles §3.1, §3.10)", () => {
     const graph = await loadViseConfig(dir, path.join(dir, "no-global"));
     const resolved = resolveProfile(graph, "implement");
     expect(resolved.hooks).toHaveLength(1);
-    expect(resolved.hooks[0].hook.handler({} as never)).toBe(
-      "tests must pass",
-    );
+    expect(resolved.hooks[0].hook.handler({} as never)).toBe("tests must pass");
     cleanup();
   });
 });
@@ -239,13 +246,23 @@ describe("profile resolution (profiles §3.5)", () => {
     expect(resolveProfile(graph, "hot").config.maxContext).toBe(4096);
   });
 
-  test("a profile with no model edge uses the global default model", () => {
+  test("a profile with no model edge and no whitelist picks up any declared model (providers spec §3.4)", () => {
     const graph = graphFrom((reg) => {
+      reg.createModel({ name: "solo", baseUrl: "http://localhost:9", apiKey: "" });
       reg.createProfile({ name: "plain", systemPrompt: "p" });
     });
     expect(resolveProfile(graph, "plain").config.baseUrl).toBe(
-      "http://localhost:8080",
+      "http://localhost:9",
     );
+  });
+
+  test("a profile with no model edge and no models anywhere has no usable model (providers spec §3.11)", () => {
+    const graph = graphFrom((reg) => {
+      reg.createProfile({ name: "plain", systemPrompt: "p" });
+    });
+    const resolved = resolveProfile(graph, "plain");
+    expect(resolved.modelId).toBeNull();
+    expect(resolved.config.model).toBeNull();
   });
 
   test("setRuntime values reach the resolved config", () => {
@@ -401,6 +418,11 @@ describe("/profile command and switching (profiles §3.6, §3.9)", () => {
   /** Two profiles differing in prompt, tool set, hooks, and model. */
   function twoProfiles(): ResourceGraph {
     return graphFrom((reg) => {
+      const standard = reg.createModel({
+        name: "standard-model",
+        baseUrl: "http://localhost:8080",
+        apiKey: "",
+      });
       const fast = reg.createModel({
         name: "fast-model",
         baseUrl: "http://localhost:1",
@@ -414,12 +436,13 @@ describe("/profile command and switching (profiles §3.6, §3.9)", () => {
         name: "refactor",
         systemPrompt: "you refactor",
       });
-      // default: all built-in tools, one turn:end hook, the default model.
+      // default: all built-in tools, one turn:end hook, its own model.
       reg.createConnection(
         def,
         reg.createHook({ events: ["turn:end"], handler: () => "run tests" }),
       );
-      // refactor: read-only tools, no hooks, an explicit model.
+      reg.createConnection(def, standard);
+      // refactor: read-only tools, no hooks, a different explicit model.
       for (const tool of ["read_file", "search", "finish"] as const) {
         reg.createConnection(refactor, reg.builtins.tools[tool]);
       }
@@ -510,8 +533,16 @@ describe("/profile command and switching (profiles §3.6, §3.9)", () => {
     expect(listing).toContain("(builtin)");
   });
 
-  test("switching to a profile with no usable model is refused (§3.11)", () => {
+  test("switching to a profile with no usable model is refused (§3.11; providers spec §3.4)", () => {
     const graph = graphFrom((reg) => {
+      // Registered so the whitelist below is valid (E-P3), but it never
+      // matches "m", which has no `provider` field.
+      reg.addProvider({
+        name: "unrelated",
+        async discoverModels() {
+          return [];
+        },
+      });
       const model = reg.createModel({
         name: "m",
         baseUrl: "http://localhost:8080",
@@ -519,9 +550,12 @@ describe("/profile command and switching (profiles §3.6, §3.9)", () => {
       });
       const ok = reg.createProfile({ name: "default", systemPrompt: "ok" });
       reg.createConnection(ok, model);
-      // "modelless" has no model edge, and the default model has no name
-      // until auto-discovery fills one in.
-      reg.createProfile({ name: "modelless", systemPrompt: "nope" });
+      // "modelless" has no model edge, and its whitelist matches nothing.
+      reg.createProfile({
+        name: "modelless",
+        systemPrompt: "nope",
+        models: ["unrelated"],
+      });
     });
     const handle = createSession({ graph, profile: "default" });
 
@@ -661,7 +695,10 @@ describe("subagent policy (profiles §3.12)", () => {
       client,
     });
 
-    const out = await spawn(handle, { task: "research it", profile: "researcher" });
+    const out = await spawn(handle, {
+      task: "research it",
+      profile: "researcher",
+    });
 
     expect(out).toBe("sub done");
     // The subagent ran under the researcher profile's own prompt, tools, and
@@ -720,12 +757,22 @@ describe("subagent policy (profiles §3.12)", () => {
       maxIterations: 4,
       depth: 1,
       profile: "worker",
+      parentModel: {
+        baseUrl: "http://localhost:8080",
+        model: "test-model",
+        apiKey: "",
+        temperature: 0.2,
+        maxContext: 8192,
+      },
     });
     expect(out).toBe("gave up");
   });
 
   test("maxDepth: 0 forbids subagents outright (AC 17)", async () => {
-    const handle = createSession({ graph: policyGraph(), profile: "researcher" });
+    const handle = createSession({
+      graph: policyGraph(),
+      profile: "researcher",
+    });
     const out = await spawn(handle, { task: "t" });
     expect(out).toBe("Error: Subagent depth limit reached (max: 0)");
   });
@@ -761,7 +808,9 @@ describe("subagent policy (profiles §3.12)", () => {
       reg.createConnection(p, reg.builtins.tools.finish);
     });
     expect(
-      createSession({ graph, profile: "sealed" }).registry.get("spawn_subagent"),
+      createSession({ graph, profile: "sealed" }).registry.get(
+        "spawn_subagent",
+      ),
     ).toBeUndefined();
   });
 });

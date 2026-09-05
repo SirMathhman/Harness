@@ -129,7 +129,9 @@ describe("two-tier config loading (config spec §3.2, §3.10)", () => {
 
   test("a broken global config is fatal, just like a broken project config (AC 16, C2-C4)", async () => {
     const { globalRoot, root, cleanup } = twoTierProject({
-      global: { ".vise/index.ts": `export default () => { throw new Error("global boom"); };` },
+      global: {
+        ".vise/index.ts": `export default () => { throw new Error("global boom"); };`,
+      },
     });
     const err = await loadViseConfig(root, globalRoot).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ViseConfigError);
@@ -143,10 +145,13 @@ describe("two-tier config loading (config spec §3.2, §3.10)", () => {
 // ---------------------------------------------------------------------------
 
 describe("cross-file name conflicts (config spec §3.3, C1)", () => {
-  const conflictOf = async (kind: "profile" | "model" | "tool", snippet: {
-    global: string;
-    project: string;
-  }) => {
+  const conflictOf = async (
+    kind: "profile" | "model" | "tool",
+    snippet: {
+      global: string;
+      project: string;
+    },
+  ) => {
     const { globalRoot, root, cleanup } = twoTierProject({
       global: { ".vise/index.ts": snippet.global },
       project: { ".vise/index.ts": snippet.project },
@@ -203,7 +208,11 @@ describe("cross-file name conflicts (config spec §3.3, C1)", () => {
 describe("name-lookup API (config spec §3.4)", () => {
   test("getProfile/getModel/getTool find resources by name", () => {
     const reg = new ViseRegistry();
-    const model = reg.createModel({ name: "local", baseUrl: "http://x", apiKey: "" });
+    const model = reg.createModel({
+      name: "local",
+      baseUrl: "http://x",
+      apiKey: "",
+    });
     const profile = reg.createProfile({ name: "implement", systemPrompt: "" });
     const tool = reg.createTool({
       name: "deploy",
@@ -298,7 +307,11 @@ describe("the implicit Agent profile (config spec §3.7)", () => {
 
   test("/profile Agent switches to the implicit profile (AC 15, C20)", () => {
     const graph = graphFrom((reg) => {
-      const model = reg.createModel({ name: "m", baseUrl: "http://localhost:8080", apiKey: "" });
+      const model = reg.createModel({
+        name: "m",
+        baseUrl: "http://localhost:8080",
+        apiKey: "",
+      });
       reg.createConnection(reg.builtins.defaultProfile, model);
       const other = reg.createProfile({ name: "other", systemPrompt: "o" });
       reg.createConnection(other, model);
@@ -377,7 +390,9 @@ describe("/profile listing origin markers (config spec §3.9, AC 14)", () => {
 
 describe("state file location (config spec §3.8.1, AC 13)", () => {
   test("with a project config present, state lives under ./.vise", () => {
-    const { dir, cleanup } = makeProject({ ".vise/index.ts": "export default () => {};" });
+    const { dir, cleanup } = makeProject({
+      ".vise/index.ts": "export default () => {};",
+    });
     expect(stateFilePath(dir, "/nonexistent-home")).toBe(
       path.join(dir, ".vise", "state.json"),
     );
@@ -485,7 +500,7 @@ describe("starting-profile resolution (config spec §3.7, §3.8.4)", () => {
     cleanup();
   });
 
-  test("a saved profile of \"Agent\" restores the implicit profile without warning (C22)", () => {
+  test('a saved profile of "Agent" restores the implicit profile without warning (C22)', () => {
     const { dir, cleanup } = makeProject({
       ".vise/state.json": JSON.stringify({
         profile: "Agent",

@@ -3,10 +3,13 @@ import type { Session } from "../types.js";
 import type { SessionHandle } from "../agent/session.js";
 import { HookManager } from "../hooks/index.js";
 import {
+  AmbiguousModelError,
+  ModelNotAvailableError,
   ProfileHasNoModelError,
   UnknownModelError,
   UnknownProfileError,
   writeConfigStub,
+  type ResourceId,
 } from "../profiles/index.js";
 
 /** The context a REPL command receives when it runs. */
@@ -183,13 +186,15 @@ export function profileListing(handle: SessionHandle): string {
 }
 
 /**
- * The `/model` command.
+ * The `/model` command (providers spec §3.8).
  *
- * With no argument it lists every model declared in the config, marking the
- * active one with `*`. With a name it switches the session to that model,
- * adopting its whole resource — `baseUrl`, `apiKey`, `temperature`, and
- * `maxContext` — while keeping the conversation and system prompt. An unknown
- * name is reported and nothing changes.
+ * With no argument it lists every discovered/declared model, grouped by
+ * provider, marking the active one with `*`. With a name — a bare model name,
+ * or `<provider>/<name>` to disambiguate — it switches the session to that
+ * model, adopting its whole resource (`baseUrl`, `apiKey`, `temperature`,
+ * `maxContext`) while keeping the conversation and system prompt. An unknown
+ * name, an ambiguous one, or one outside the active profile's `models`
+ * whitelist is reported and nothing changes.
  */
 export function modelCommand(
   handle: SessionHandle,
@@ -203,7 +208,11 @@ export function modelCommand(
   try {
     handle.switchModel(name);
   } catch (err) {
-    if (err instanceof UnknownModelError) {
+    if (
+      err instanceof UnknownModelError ||
+      err instanceof AmbiguousModelError ||
+      err instanceof ModelNotAvailableError
+    ) {
       return err.message;
     }
     throw err;
@@ -212,24 +221,54 @@ export function modelCommand(
 }
 
 /**
- * The `/model` listing: every config model in creation order, each marked with
- * its origin, the active one marked `*`. The active model is whatever the
- * session's config currently names; it may not appear in the list when the
- * session is running the built-in default (auto-discovered) model.
+ * The `/model` listing (providers spec §3.8): every discovered/declared
+ * model, grouped by the provider that discovered it (or "(no provider)" for
+ * one declared directly via `reg.createModel()`), the active one marked `*`.
+ *
+ * ```
+ * Models:
+ *   llama_0 (http://localhost:8080):
+ *     * qwen2.5-coder-32b
+ *     llama-3-70b
+ *   openrouter (https://openrouter.ai/api/v1):
+ *     anthropic/claude-sonnet-4
+ * ```
  */
 export function modelListing(handle: SessionHandle): string {
   const entries = handle.modelEntries();
-  const active = handle.session.config.model;
+  const activeId = handle.activeModelId();
   if (entries.length === 0) {
-    return `models: none defined in .vise/index.ts (active: ${
-      active ?? "auto-discovered"
+    return `models: none available (active: ${
+      handle.session.config.model ?? "none"
     }).`;
   }
-  const width = Math.max(...entries.map((e) => e.name.length));
+
+  // Grouped by (provider, baseUrl): every model from a real provider shares
+  // one baseUrl, but two explicit `reg.createModel()` models (no provider)
+  // can point at different servers, so they only share a group when their
+  // baseUrl also matches.
+  const groups = new Map<
+    string,
+    { label: string; baseUrl: string; rows: { id: ResourceId; name: string }[] }
+  >();
+  for (const entry of entries) {
+    const label = entry.providerName ?? "(no provider)";
+    const key = `${label} ${entry.baseUrl}`;
+    let group = groups.get(key);
+    if (!group) {
+      group = { label, baseUrl: entry.baseUrl, rows: [] };
+      groups.set(key, group);
+    }
+    group.rows.push({ id: entry.id, name: entry.name });
+  }
+
   const lines = ["Models:"];
-  for (const { name, origin } of entries) {
-    const marker = name === active ? "*" : " ";
-    lines.push(`  ${marker} ${name.padEnd(width)} (${origin})`);
+  for (const { label, baseUrl, rows } of groups.values()) {
+    lines.push(`  ${label} (${baseUrl}):`);
+    for (const { id, name } of rows) {
+      const marker = id === activeId ? "*" : " ";
+      lines.push(`    ${marker} ${name}`);
+    }
   }
   return lines.join("\n");
 }

@@ -8,6 +8,7 @@
  */
 import type { Hook } from "../hooks/types.js";
 import type { Tool } from "../types.js";
+import type { Provider } from "../providers/types.js";
 
 /**
  * An opaque handle to a resource in the graph (profiles spec §5).
@@ -55,7 +56,7 @@ export interface SubagentPolicy {
   maxDepth?: number;
 }
 
-/** A named agent configuration (spec §3.3). */
+/** A named agent configuration (spec §3.3; providers spec §3.3). */
 export interface ProfileDef {
   /** Unique, non-empty name; the argument to `/profile <name>`. */
   name: string;
@@ -63,7 +64,31 @@ export interface ProfileDef {
   systemPrompt: string;
   /** Constraints on subagents spawned by this profile. */
   subagent?: SubagentPolicy;
+  /**
+   * A whitelist of models available to this profile (providers spec §3.4).
+   * Omitted or empty → all discovered/declared models are available.
+   */
+  models?: ModelSelection;
 }
+
+/**
+ * A whitelist of models available to a profile (providers spec §3.4).
+ *
+ * Each element is either:
+ * - `string`: a provider name. All models from that provider are included.
+ * - `[string, string]`: a tuple of `[providerName, modelRegex]`. Only models
+ *   from that provider whose name matches the regex are included (full-string
+ *   match, i.e. `^regex$`).
+ *
+ * The whitelist is a filter: it restricts which models are available, it does
+ * not create or configure them. A model with no `provider` (declared via
+ * `reg.createModel()`) can never match a whitelist element — it is only ever
+ * reachable through a `Profile → Model` connection (providers spec §3.5).
+ *
+ * If the array is missing or empty, all discovered/declared models are
+ * available (no filtering).
+ */
+export type ModelSelection = (string | [string, string])[];
 
 /** A lifecycle handler, identical in shape to a hook-file entry. */
 export type HookDef = Hook;
@@ -83,6 +108,14 @@ export interface ModelDef {
   temperature?: number;
   /** Context-window size in tokens. A connection prop can override it. */
   maxContext?: number;
+  /**
+   * The `ResourceId` of the `Provider` that discovered this model (providers
+   * spec §3.3). Set by the harness at startup; never set by the config
+   * function. `undefined` for a model declared directly via
+   * `reg.createModel()`. Used to disambiguate models that share a name
+   * across providers, and to test a profile's `models` whitelist.
+   */
+  provider?: ResourceId;
 }
 
 /**
@@ -149,6 +182,25 @@ export interface Registry {
   createTool(def: ToolDef): ResourceId;
   /** Create a model resource. Returns its id. */
   createModel(def: ModelDef): ResourceId;
+  /**
+   * Register a provider with the registry (providers spec §3.3). The
+   * provider is stored in a side-channel — not a graph node — and is queried
+   * at startup to discover models.
+   *
+   * If `provider.name` is empty, the registry assigns an auto-generated name
+   * (e.g. `"llama_0"`) and sets it on the provider.
+   *
+   * @returns The provider's `ResourceId`, used as the `provider` field on the
+   *   `Model` resources created from what it discovers.
+   * @throws if a provider with the same (explicit or auto-generated) name is
+   *   already registered.
+   */
+  addProvider(provider: Provider): ResourceId;
+  /**
+   * Look up a provider by name (providers spec §3.3). Returns `undefined` if
+   * no provider with that name is registered.
+   */
+  getProvider(name: string): ResourceId | undefined;
   /** Create a directed connection between two resources. */
   createConnection(
     from: ResourceId,
@@ -178,10 +230,15 @@ export interface Registry {
   builtins: {
     /** Every built-in tool, keyed by tool name. */
     tools: Record<string, ResourceId>;
-    /** The model used by any profile with no model edge. */
-    defaultModel: ResourceId;
     /** The implicit profile used when the config defines none. */
     defaultProfile: ResourceId;
+    /**
+     * Every registered provider, keyed by name (providers spec §3.3).
+     * Populated as providers are added via `addProvider()`. There is no
+     * built-in default model: with no provider registered, Vise exits with a
+     * fatal error at startup rather than falling back to one.
+     */
+    providers: Record<string, ResourceId>;
   };
 }
 
@@ -209,6 +266,11 @@ export type Resource =
       kind: "model";
       id: ResourceId;
       def: ModelDef;
-      builtin: boolean;
+      /**
+       * True for a `Model` resource created by the harness from provider
+       * discovery at startup (providers spec §3.6); false for one declared
+       * directly via `reg.createModel()`.
+       */
+      discovered: boolean;
       origin: ResourceOrigin;
     };

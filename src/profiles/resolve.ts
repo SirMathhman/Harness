@@ -1,16 +1,12 @@
 import type { Config, Tool } from "../types.js";
 import type { RegisteredHook } from "../hooks/manager.js";
 import { DEFAULT_CONFIG, DEFAULT_SYSTEM_PROMPT } from "../config/defaults.js";
-import {
-  DEFAULT_BASE_URL,
-  DEFAULT_MODEL_ID,
-  IMPLICIT_PROFILE_NAME,
-  type ResourceGraph,
-} from "./registry.js";
+import { IMPLICIT_PROFILE_NAME, type ResourceGraph } from "./registry.js";
 import {
   idString,
   type Connection,
   type ModelDef,
+  type ModelSelection,
   type Resource,
   type ResourceId,
   type ResourceOrigin,
@@ -33,26 +29,27 @@ export class UnknownProfileError extends Error {
 
 /**
  * Raised when a profile resolves to no usable model, which the agent loop
- * cannot run against (profiles spec §3.11).
+ * cannot run against (profiles spec §3.11; providers spec §3.11).
  *
- * At startup this is reported by the entry point, which can also try model
- * auto-discovery first; on a `/profile` switch it aborts the switch and leaves
- * the session on the profile it was already using.
+ * At startup this is fatal; on a `/profile` switch it aborts the switch and
+ * leaves the session on the profile it was already using.
  */
 export class ProfileHasNoModelError extends Error {
   constructor(readonly profileName: string) {
     super(
       `Profile "${profileName}" has no model. Connect a Model resource to it ` +
-        `in ./.vise/index.ts, or start a llama.cpp server so the default ` +
-        `model can be auto-discovered.`,
+        `in ./.vise/index.ts, or register a provider in .vise/index.ts so a ` +
+        `model can be discovered (e.g. reg.addProvider(new LlamaProvider({ ` +
+        `url: "http://localhost:8080" }))).`,
     );
   }
 }
 
 /**
  * Everything a session needs to run under one profile (profiles spec §3.5).
- * Produced purely from a `ResourceGraph` plus a profile name — no I/O, no
- * side effects — so switching profiles is just re-resolving.
+ * Produced purely from a `ResourceGraph` plus a profile name (and, for model
+ * selection, the options below) — no I/O, no side effects — so switching
+ * profiles is just re-resolving.
  */
 export interface ResolvedProfile {
   /** The profile's name; `""` for the implicit default. */
@@ -60,11 +57,16 @@ export interface ResolvedProfile {
   /** The resolved runtime + model configuration for the agent loop. */
   config: Config;
   /**
-   * The Model resource this profile resolved to. Startup writes the
-   * auto-discovered model name back onto it when `config.model` is null
-   * (spec §3.10).
+   * The Model resource this profile resolved to, or `null` when it has no
+   * usable model (providers spec §3.11).
    */
-  modelId: ResourceId;
+  modelId: ResourceId | null;
+  /**
+   * The models available to this profile after `models` whitelist filtering
+   * (providers spec §3.4), in discovery order. Every model when the profile
+   * declares no whitelist.
+   */
+  availableModelIds: ResourceId[];
   /**
    * The built-in tools this profile may use, or `null` when the profile has no
    * tool edges at all — which means *every* built-in tool (spec §3.5 rule 2).
@@ -125,80 +127,193 @@ export function profileEntries(graph: ResourceGraph): ProfileEntry[] {
 }
 
 /**
- * Raised when `/model <name>` names a model that is not declared in the
- * config. The known list is the set of config models (see `modelEntries`).
+ * Raised when `/model <name>` (or `<provider>/<name>`) names no known model
+ * (providers spec §3.8, §4 E-P7's sibling "no match" case).
  */
 export class UnknownModelError extends Error {
+  constructor(readonly modelName: string) {
+    super(`Unknown model "${modelName}".`);
+  }
+}
+
+/**
+ * Raised when a bare `/model <name>` matches more than one provider
+ * (providers spec §4, E-P6).
+ */
+export class AmbiguousModelError extends Error {
   constructor(
     readonly modelName: string,
-    known: readonly string[],
+    readonly providers: readonly string[],
   ) {
     super(
-      known.length === 0
-        ? `Unknown model "${modelName}". No models are defined in .vise/index.ts.`
-        : `Unknown model "${modelName}". Available: ${known.join(", ")}.`,
+      `Model '${modelName}' is ambiguous. Use '<provider>/<name>' to ` +
+        `disambiguate. Providers: ${providers.join(", ")}.`,
     );
   }
 }
 
-/** One row of the `/model` listing: a config model's name and its origin. */
-export interface ModelEntry {
+/**
+ * Raised when `/model` targets a model outside the active profile's
+ * `models` whitelist (providers spec §4, E-P7).
+ */
+export class ModelNotAvailableError extends Error {
+  constructor(
+    readonly modelName: string,
+    readonly profileName: string,
+    available: readonly string[],
+  ) {
+    super(
+      `Model '${modelName}' is not available for profile '${profileName}'. ` +
+        `Available: ${available.length > 0 ? available.join(", ") : "(none)"}.`,
+    );
+  }
+}
+
+/** One model in the graph, ready for `/model` listing or lookup (providers spec §3.8). */
+export interface ModelListEntry {
+  id: ResourceId;
   name: string;
-  origin: ResourceOrigin;
+  baseUrl: string;
+  /** The provider that discovered it, or `null` for an explicit `reg.createModel()` model. */
+  providerName: string | null;
 }
 
 /**
- * Every model declared in the config, in creation order (for `/model`).
- *
- * The built-in default model is excluded — it has no name until auto-discovery
- * fills it in, and it is not something a user declares. A model created with
- * an empty name is likewise excluded, for the same reason.
+ * Every model in the graph — config-declared or provider-discovered — in
+ * creation/discovery order (providers spec §3.8). A model with an empty name
+ * (legacy `reg.createModel({ name: "" })`) is excluded: it can never be
+ * addressed by name.
  */
-export function modelEntries(graph: ResourceGraph): ModelEntry[] {
-  const entries: ModelEntry[] = [];
-  for (const resource of graph.resources.values()) {
-    if (
-      resource.kind === "model" &&
-      !resource.builtin &&
-      resource.def.name !== ""
-    ) {
-      entries.push({ name: resource.def.name, origin: resource.origin });
-    }
+export function allModelEntries(graph: ResourceGraph): ModelListEntry[] {
+  const out: ModelListEntry[] = [];
+  for (const [id, resource] of graph.resources) {
+    if (resource.kind !== "model" || resource.def.name === "") continue;
+    const providerName =
+      resource.def.provider !== undefined
+        ? (graph.providers.get(resource.def.provider)?.name ?? null)
+        : null;
+    out.push({
+      id,
+      name: resource.def.name,
+      baseUrl: resource.def.baseUrl,
+      providerName,
+    });
   }
-  return entries;
+  return out;
 }
 
 /**
- * The `ModelDef` of the config model named `name`, or `undefined` when no
- * config model has that name. The built-in default is never matched.
+ * Every model matching `ref`: a bare model name, or `<provider>/<name>`
+ * (providers spec §3.8). A bare name can match more than one entry when
+ * several providers serve a model with that name (E-P6).
  */
-export function findModel(
+export function findModelsByRef(
   graph: ResourceGraph,
-  name: string,
-): ModelDef | undefined {
-  for (const resource of graph.resources.values()) {
-    if (
-      resource.kind === "model" &&
-      !resource.builtin &&
-      resource.def.name === name
-    ) {
-      return resource.def;
-    }
+  ref: string,
+): ModelListEntry[] {
+  const slash = ref.indexOf("/");
+  if (slash > 0) {
+    const providerName = ref.slice(0, slash);
+    const modelName = ref.slice(slash + 1);
+    return allModelEntries(graph).filter(
+      (e) => e.providerName === providerName && e.name === modelName,
+    );
   }
-  return undefined;
+  return allModelEntries(graph).filter((e) => e.name === ref);
+}
+
+/** The `ResourceId`s of every named Model resource, in creation/discovery order. */
+function allModelIds(graph: ResourceGraph): ResourceId[] {
+  const out: ResourceId[] = [];
+  for (const [id, resource] of graph.resources) {
+    if (resource.kind === "model" && resource.def.name !== "") out.push(id);
+  }
+  return out;
 }
 
 /**
- * Resolve a profile into the active configuration (profiles spec §3.5).
+ * The models available to a profile after `models` whitelist filtering
+ * (providers spec §3.4). A missing or empty selection means every model in
+ * the graph. A provider-less model (declared via `reg.createModel()`) can
+ * never match a non-empty whitelist, since whitelist elements are always
+ * provider references — it remains reachable only through a direct
+ * `Profile → Model` connection.
+ */
+export function availableModelIds(
+  graph: ResourceGraph,
+  selection: ModelSelection | undefined,
+): ResourceId[] {
+  const all = allModelIds(graph);
+  if (!selection || selection.length === 0) return all;
+
+  const out: ResourceId[] = [];
+  for (const id of all) {
+    const resource = graph.resources.get(id);
+    if (resource?.kind !== "model" || resource.def.provider === undefined) {
+      continue;
+    }
+    const providerName = graph.providers.get(resource.def.provider)?.name;
+    if (providerName === undefined) continue;
+
+    for (const el of selection) {
+      const [wantProvider, pattern] =
+        typeof el === "string" ? [el, null] : el;
+      if (wantProvider !== providerName) continue;
+      if (pattern === null) {
+        out.push(id);
+        break;
+      }
+      let re: RegExp;
+      try {
+        re = new RegExp(`^(?:${pattern})$`);
+      } catch {
+        continue;
+      }
+      if (re.test(resource.def.name)) {
+        out.push(id);
+        break;
+      }
+    }
+  }
+  return out;
+}
+
+/** Options steering which model a resolved profile ends up with. */
+export interface ResolveProfileModelOptions {
+  /**
+   * Use this model id verbatim, bypassing the `Profile → Model` connection
+   * and whitelist logic entirely. Pass `null` for "no model". Used by
+   * subagent spawn, which applies its own model-selection rules (providers
+   * spec §3.7) instead of the ones below.
+   */
+  modelId?: ResourceId | null;
+  /**
+   * A model name to prefer when the profile has no `Profile → Model`
+   * connection (the state file's `lastModel`, providers spec §3.4, §3.9).
+   * Ignored when `modelId` is given.
+   */
+  modelNameHint?: string | null;
+}
+
+/**
+ * Resolve a profile into the active configuration (profiles spec §3.5;
+ * providers spec §3.4–§3.6).
  *
  * Traversal follows only the profile's *outgoing* edges, with a visited set so
  * a cyclic config cannot loop forever (spec §8, the DAG assumption).
+ *
+ * Model selection (when `modelOptions.modelId` is not given): a
+ * `Profile → Model` connection wins outright; otherwise the profile's
+ * `models` whitelist is filtered against every model in the graph, and the
+ * active model is `modelNameHint` if it names one of the filtered models,
+ * else the first of them, else `null` (no usable model).
  *
  * @throws UnknownProfileError when `name` names no profile in the graph.
  */
 export function resolveProfile(
   graph: ResourceGraph,
   name: string,
+  modelOptions: ResolveProfileModelOptions = {},
 ): ResolvedProfile {
   const profileId = graph.profiles.get(name);
   const profile = profileId && graph.resources.get(profileId);
@@ -239,14 +354,39 @@ export function resolveProfile(
     }
   }
 
-  const modelId = modelEdge?.to ?? DEFAULT_MODEL_ID;
-  const model = modelDefOf(graph, modelId);
+  const available = availableModelIds(graph, profile.def.models);
+
+  let modelId: ResourceId | null;
+  // The connection prop override (temperature/maxContext) only applies when
+  // the connected model is the one actually in effect.
+  let propsEdge: Connection | null = null;
+  if (modelOptions.modelId !== undefined) {
+    modelId = modelOptions.modelId;
+  } else if (modelEdge !== null) {
+    // A Profile → Model connection pins the model, overriding the whitelist's
+    // active-model selection (providers spec §3.5). Validation (E-P5) already
+    // rejects a connection to a model outside a non-empty whitelist.
+    modelId = modelEdge.to;
+    propsEdge = modelEdge;
+  } else if (available.length === 0) {
+    modelId = null;
+  } else if (modelOptions.modelNameHint) {
+    const hintName = modelOptions.modelNameHint;
+    modelId =
+      available.find((id) => nameOfModel(graph, id) === hintName) ??
+      available[0];
+  } else {
+    modelId = available[0];
+  }
+
+  const model = modelId !== null ? modelDefOf(graph, modelId) : NO_MODEL_DEF;
   const systemPrompt =
     profile.def.systemPrompt === "" ? null : profile.def.systemPrompt;
 
   return {
     name,
     modelId,
+    availableModelIds: available,
     config: {
       ...graph.runtime,
       baseUrl: model.baseUrl,
@@ -255,11 +395,11 @@ export function resolveProfile(
       // Connection props override the model's own parameters (spec §3.5),
       // which in turn override the built-in defaults.
       temperature:
-        numberProp(modelEdge, "temperature") ??
+        numberProp(propsEdge, "temperature") ??
         model.temperature ??
         DEFAULT_CONFIG.temperature,
       maxContext:
-        numberProp(modelEdge, "maxContext") ??
+        numberProp(propsEdge, "maxContext") ??
         model.maxContext ??
         DEFAULT_CONFIG.maxContext,
       systemPrompt,
@@ -297,15 +437,19 @@ function registerHook(
   };
 }
 
-/**
- * The `ModelDef` behind a resource id. The fallback covers a graph whose
- * default model node was somehow removed; an empty `name` resolves to
- * `config.model === null`, which the caller reports as "no model".
- */
+/** The sentinel `ModelDef` for "no model resolved". */
+const NO_MODEL_DEF: ModelDef = { name: "", baseUrl: "", apiKey: "" };
+
+/** The `ModelDef` behind a resource id, or the "no model" sentinel. */
 function modelDefOf(graph: ResourceGraph, id: ResourceId): ModelDef {
   const resource = graph.resources.get(id);
-  if (resource?.kind === "model") return resource.def;
-  return { name: "", baseUrl: DEFAULT_BASE_URL, apiKey: "" };
+  return resource?.kind === "model" ? resource.def : NO_MODEL_DEF;
+}
+
+/** The `name` of the Model resource behind `id`, or `undefined`. */
+function nameOfModel(graph: ResourceGraph, id: ResourceId): string | undefined {
+  const resource = graph.resources.get(id);
+  return resource?.kind === "model" ? resource.def.name : undefined;
 }
 
 /** Read a numeric override off a connection's props, if it has one. */

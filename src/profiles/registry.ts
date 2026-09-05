@@ -1,5 +1,6 @@
 import { BUILTIN_TOOL_NAMES } from "../tools/names.js";
 import { DEFAULT_RUNTIME } from "../config/defaults.js";
+import type { Provider } from "../providers/types.js";
 import {
   asResourceId,
   idString,
@@ -18,16 +19,17 @@ import {
 /** The id of the implicit profile used when the config defines none (§3.8). */
 export const IMPLICIT_PROFILE_ID = asResourceId("builtin:profile:default");
 
-/** The id of the model every profile falls back to when it has no model edge. */
-export const DEFAULT_MODEL_ID = asResourceId("builtin:model:default");
-
 /**
  * The name of the implicit built-in profile (config spec §3.7). Reserved: a
  * user-defined profile in either config file cannot use this name.
  */
 export const IMPLICIT_PROFILE_NAME = "Agent";
 
-/** Base URL used by the default model until the config overrides it. */
+/**
+ * Base URL a llama.cpp server typically listens on. Retained only for
+ * documentation purposes (providers spec §3.11) — there is no default model
+ * or default provider, so this is never used by the harness itself.
+ */
 export const DEFAULT_BASE_URL = "http://localhost:8080";
 
 /**
@@ -52,6 +54,19 @@ export interface ResourceGraph {
    * spec §3.5) — how `/profile` rewrites the system message.
    */
   runtime: RuntimeSettings;
+  /**
+   * Every registered provider, keyed by its `ResourceId` (providers spec
+   * §3.3). Providers are NOT graph nodes: they never appear in `resources`
+   * and cannot be the source or target of a `Connection`. Iteration order is
+   * registration order, which doubles as discovery order.
+   */
+  providers: ReadonlyMap<ResourceId, Provider>;
+  /**
+   * Provider names mapped to their `ResourceId` (providers spec §3.3). Used
+   * to resolve `models` whitelist specs (which reference providers by name)
+   * to ids.
+   */
+  providerNames: ReadonlyMap<string, ResourceId>;
 }
 
 /**
@@ -83,6 +98,16 @@ export class ViseRegistry implements Registry {
   private readonly modelsByName = new Map<string, ResourceId>();
   private readonly toolsByName = new Map<string, ResourceId>();
 
+  /**
+   * Registered providers (providers spec §3.3): a side-channel, not graph
+   * nodes. Iteration order is registration order, which doubles as discovery
+   * order at startup.
+   */
+  private readonly providers = new Map<ResourceId, Provider>();
+  private readonly providerNames = new Map<string, ResourceId>();
+  /** Per-class counters backing auto-generated provider names (§3.2). */
+  private readonly providerNameCounters = new Map<string, number>();
+
   readonly builtins: Registry["builtins"];
 
   constructor() {
@@ -99,16 +124,6 @@ export class ViseRegistry implements Registry {
     });
     this.profilesByName.set(IMPLICIT_PROFILE_NAME, IMPLICIT_PROFILE_ID);
 
-    // The default model. Its `name` starts empty and is filled in by model
-    // auto-discovery at startup unless the config replaces it (§3.10).
-    this.nodes.set(DEFAULT_MODEL_ID, {
-      kind: "model",
-      id: DEFAULT_MODEL_ID,
-      def: { name: "", baseUrl: DEFAULT_BASE_URL, apiKey: "" },
-      builtin: true,
-      origin: "builtin",
-    });
-
     // Built-in tools are pre-registered as *placeholder* nodes: the graph only
     // needs their names, because the real `Tool` objects are constructed per
     // session from the resolved config.
@@ -122,10 +137,17 @@ export class ViseRegistry implements Registry {
 
     this.builtins = {
       tools,
-      defaultModel: DEFAULT_MODEL_ID,
       defaultProfile: IMPLICIT_PROFILE_ID,
+      providers: this.providersRecord,
     };
   }
+
+  /**
+   * The mutable object backing `builtins.providers`. `addProvider()` writes
+   * to it directly, so `builtins.providers` reflects every provider added so
+   * far even though `builtins` itself is assigned once, in the constructor.
+   */
+  private readonly providersRecord: Record<string, ResourceId> = {};
 
   /**
    * Tag every resource created from now on with `origin` (config spec §3.2).
@@ -165,11 +187,55 @@ export class ViseRegistry implements Registry {
 
   createModel(def: ModelDef): ResourceId {
     const id = this.nextId("model");
-    this.nodes.set(id, { kind: "model", id, def, builtin: false, origin: this.origin });
+    this.nodes.set(id, {
+      kind: "model",
+      id,
+      def,
+      discovered: false,
+      origin: this.origin,
+    });
     if (typeof def?.name === "string" && def.name !== "") {
       this.modelsByName.set(def.name, id);
     }
     return id;
+  }
+
+  addProvider(provider: Provider): ResourceId {
+    let name = provider.name;
+    if (!name) {
+      name = this.autoProviderName(provider);
+      // The interface declares `name` readonly for consumers; the registry
+      // is the one place allowed to fill in an omitted name.
+      (provider as { name: string }).name = name;
+    }
+    if (this.providerNames.has(name)) {
+      throw new Error(
+        `Duplicate provider name "${name}". Each provider must have a ` +
+          `unique name.`,
+      );
+    }
+    const id = this.nextId("provider");
+    this.providers.set(id, provider);
+    this.providerNames.set(name, id);
+    this.providersRecord[name] = id;
+    return id;
+  }
+
+  getProvider(name: string): ResourceId | undefined {
+    return this.providerNames.get(name);
+  }
+
+  /**
+   * `llama_0`, `llama_1`, … — the provider's constructor name, lowercased
+   * and with a trailing "Provider" stripped, plus a per-class counter
+   * (providers spec §3.2).
+   */
+  private autoProviderName(provider: Provider): string {
+    const className = provider.constructor?.name ?? "";
+    const base = className.replace(/Provider$/, "").toLowerCase() || "provider";
+    const n = this.providerNameCounters.get(base) ?? 0;
+    this.providerNameCounters.set(base, n + 1);
+    return `${base}_${n}`;
   }
 
   createConnection(
@@ -226,6 +292,8 @@ export class ViseRegistry implements Registry {
       edgesFrom,
       profiles,
       runtime: { ...this.runtime },
+      providers: this.providers,
+      providerNames: this.providerNames,
     };
   }
 
@@ -259,30 +327,51 @@ function assertResourceId(
 
 /**
  * The graph used when no `.vise/index.ts` exists (spec §3.8): the implicit
- * default profile, the default model, and no edges at all — which resolves to
- * every built-in tool, no hooks, and the built-in system prompt.
+ * default profile, no providers, and no edges at all — which resolves to
+ * every built-in tool, no hooks, and the built-in system prompt. There is no
+ * default model (providers spec §1.1): startup is fatal with zero providers.
  */
 export function defaultGraph(): ResourceGraph {
   return new ViseRegistry().build();
 }
 
 /**
- * Return a copy of `graph` in which model `id` carries `name`.
- *
- * Used once at startup after auto-discovery has asked the running server which
- * model it has loaded (spec §3.10): a Model resource with an empty `name` —
- * the built-in default among them — means "whatever this server has loaded".
- * Everything else is shared by reference; the graph is immutable, so this is
- * safe.
+ * One provider's discovery result, keyed by its `ResourceId` (providers spec
+ * §3.6).
  */
-export function withDiscoveredModel(
+export interface DiscoveryResult {
+  providerId: ResourceId;
+  models: ModelDef[];
+}
+
+/**
+ * Return a copy of `graph` with a new `Model` resource for every discovered
+ * model (providers spec §3.6, startup step 3b).
+ *
+ * Called once at startup, after every registered provider's
+ * `discoverModels()` has resolved. Each `Model` carries the id of the
+ * provider that discovered it. Everything else is shared by reference; the
+ * graph is immutable, so this is safe. Discovery order (provider registration
+ * order, then the order `discoverModels()` returned) is preserved because a
+ * `Map` iterates in insertion order.
+ */
+export function addDiscoveredModels(
   graph: ResourceGraph,
-  id: ResourceId,
-  name: string,
+  results: readonly DiscoveryResult[],
 ): ResourceGraph {
-  const existing = graph.resources.get(id);
-  if (existing === undefined || existing.kind !== "model") return graph;
   const resources = new Map(graph.resources);
-  resources.set(id, { ...existing, def: { ...existing.def, name } });
+  let n = 0;
+  for (const { providerId, models } of results) {
+    for (const def of models) {
+      const id = asResourceId(`discovered_model_${n++}`);
+      resources.set(id, {
+        kind: "model",
+        id,
+        def: { ...def, provider: providerId },
+        discovered: true,
+        origin: "builtin",
+      });
+    }
+  }
   return { ...graph, resources };
 }

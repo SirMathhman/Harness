@@ -1,29 +1,33 @@
 # Vise
 
 A local, self-contained LLM coding-agent harness. It runs a coding agent in a
-tool-calling loop against a [llama.cpp](https://github.com/ggml-org/llama.cpp) server's
-OpenAI-compatible `POST /v1/chat/completions` endpoint, letting the model read, write,
-edit, search, and run commands to complete software-engineering tasks in an interactive
-REPL.
+tool-calling loop against any OpenAI-compatible `POST /v1/chat/completions` endpoint —
+[llama.cpp](https://github.com/ggml-org/llama.cpp), OpenRouter, Ollama, vLLM, or anything
+else that speaks the same wire protocol — letting the model read, write, edit, search,
+and run commands to complete software-engineering tasks in an interactive REPL.
 
-Everything the agent can do — its system prompt, tools, lifecycle hooks, and model — is
+Everything the agent can do — its system prompt, tools, lifecycle hooks, and models — is
 described by TypeScript config files, as a graph of **resources** connected by **edges**.
 A project-level `./.vise/index.ts` holds project-specific config; an optional
 user-level `~/.vise/index.ts` holds defaults shared across every project. Both feed the
-same graph. Named **profiles** group those resources, and `/profile <name>` switches
-between them mid-session; the active profile (and model) is remembered across restarts.
+same graph. A config also registers one or more **providers** — a config-time convention
+the harness queries at startup to discover the models a backend has loaded. Named
+**profiles** group resources and (optionally) a whitelist of the models they may use, and
+`/profile <name>` switches between them mid-session; the active profile and model are
+remembered across restarts.
 
 There are **no runtime dependencies** — only Node's built-in modules (`fetch`,
 `node:child_process`, `node:fs`, `node:path`, `node:util`, `node:readline`).
 
 ## Prerequisites
 
-- **Node.js 22.18+** (or [Bun](https://bun.sh)). `./.vise/index.ts` is imported
-  directly, so the runtime must be able to load TypeScript — Node strips types natively
-  from 22.18, and Bun always can. On an older runtime, write the config as
-  `./.vise/index.js` instead.
-- A **running llama.cpp server** with tool-calling enabled. Start it with the `--jinja`
-  flag so the model's chat template emits tool calls:
+- **[Bun](https://bun.sh) 1.3+**. Both the harness and its TypeScript configuration
+  files execute directly from source; no compilation or Node runtime is required.
+- A **running OpenAI-compatible LLM server** with tool-calling enabled, and at least one
+  **provider** registered in `.vise/index.ts` (see [Providers](#providers) below) — with
+  no provider registered, Vise exits with a fatal error at startup rather than guessing.
+  For llama.cpp's `llama-server`, start it with `--jinja` so the model's chat template
+  emits tool calls:
 
   ```bash
   llama-server -m your-model.gguf --jinja --port 8080
@@ -35,20 +39,22 @@ There are **no runtime dependencies** — only Node's built-in modules (`fetch`,
   curl http://localhost:8080/v1/models
   ```
 
-## Install & Build
+## Install
 
 ```bash
 bun install        # or: npm install
-bun run build      # compiles TypeScript to dist/
 ```
+
+There is no build step. The package executes TypeScript directly (`src/cli.ts`), while
+`src/index.ts` exports the side-effect-free public API for `.vise/index.ts`.
 
 ## Run
 
 ```bash
-# Development (runs the TypeScript source directly):
+# Interactive REPL:
 bun run dev
 
-# Production (runs the compiled output):
+# Or using the start script:
 bun run start
 
 # Pass an initial task as a positional argument (run as the first turn):
@@ -77,15 +83,14 @@ prompt shows it: `vise:refactor> `. Type `/exit` (or `exit` / `quit`) to leave. 
 
 ## Scripts
 
-| Script              | Description                             |
-| ------------------- | --------------------------------------- |
-| `bun run build`     | Compile TypeScript to `dist/`           |
-| `bun run dev`       | Run the agent from source               |
-| `bun run start`     | Run the compiled agent                  |
-| `bun test`          | Run the test suite (unit + integration) |
-| `bun run lint`      | Lint with ESLint                        |
-| `bun run lint:fix`  | Lint and auto-fix                       |
-| `bun run typecheck` | Type-check without emitting             |
+| Script              | Description                              |
+| ------------------- | ---------------------------------------- |
+| `bun run dev`       | Run the agent from source (`src/cli.ts`) |
+| `bun run start`     | Run the agent from source (`src/cli.ts`) |
+| `bun test`          | Run the test suite (unit + integration)  |
+| `bun run lint`      | Lint with ESLint                         |
+| `bun run lint:fix`  | Lint and auto-fix                        |
+| `bun run typecheck` | Type-check without emitting              |
 
 ## Configuration
 
@@ -101,7 +106,9 @@ Both are loaded into the **same graph** — the global file first, so the projec
 reference its resources by name (see [Cross-file references](#cross-file-references)).
 There are no environment variables, no JSON config file, and no configuration flags. With
 neither file present, Vise runs with built-in defaults: every built-in tool, no hooks,
-the built-in system prompt, and a model auto-discovered from the running server.
+and the built-in system prompt — but **no model**, since there is no built-in default and
+no provider is registered. A config must register at least one [provider](#providers), or
+Vise exits at startup with a fatal error.
 
 If both files define a profile, model, or tool with the same name, Vise exits with a
 fatal "Config conflict" error naming both files — rename or remove one. Hooks have no
@@ -109,17 +116,14 @@ name, so they never conflict; both files' hooks simply coexist in the graph.
 
 ```ts
 // .vise/index.ts
-import type { Registry } from "vise";
+import { LlamaProvider, type Registry } from "vise";
 
 export default (reg: Registry) => {
   // Settings that are not resources.
   reg.setRuntime({ maxIterations: 40, commandTimeoutMs: 120_000 });
 
-  const local = reg.createModel({
-    name: "qwen2.5-coder-32b",
-    baseUrl: "http://localhost:8080",
-    apiKey: "",
-  });
+  // Discovers every model loaded on the server at startup (see Providers below).
+  reg.addProvider(new LlamaProvider({ url: "http://localhost:8080" }));
 
   const implement = reg.createProfile({
     name: "default",
@@ -137,15 +141,13 @@ export default (reg: Registry) => {
     handler: (ctx) => runTests(ctx.cwd), // a string return blocks `finish`
   });
 
-  // implement: every built-in tool, the test gate, the local model.
+  // implement: every built-in tool, the test gate, whichever model is discovered.
   reg.createConnection(implement, tests);
-  reg.createConnection(implement, local);
 
-  // review: read-only, cooler sampling, no hooks.
+  // review: read-only, no hooks.
   for (const tool of ["read_file", "list_dir", "search", "finish"] as const) {
     reg.createConnection(review, reg.builtins.tools[tool]);
   }
-  reg.createConnection(review, local, { temperature: 0.1 });
 };
 ```
 
@@ -170,25 +172,28 @@ Two defaults follow from _absence_ of edges:
   a turn by calling `finish`, a profile that enumerates its tools **must** include
   `reg.builtins.tools.finish`; omitting it is a fatal config error.
 - A profile with **no hook edges** has **no** hooks. Hooks are never global.
-- A profile with **no model edge** uses the default model, which auto-discovers its name
-  from `GET /v1/models` on the running server.
+- A profile with **no model edge** sees every model allowed by its `models` whitelist (see
+  [Providers](#providers)) — every discovered/declared model when it has none. A
+  `Profile → Model` connection pins one specific model instead, overriding that selection.
 
 ### Registry API
 
 | Method                                                              | Returns                      | Description                                                                 |
 | ------------------------------------------------------------------- | ---------------------------- | --------------------------------------------------------------------------- |
-| `createProfile({ name, systemPrompt, subagent? })`                  | `ResourceId`                 | A named configuration. `systemPrompt: ""` means the built-in one.           |
+| `createProfile({ name, systemPrompt, subagent?, models? })`         | `ResourceId`                 | A named configuration. `systemPrompt: ""` means the built-in one.           |
 | `createHook({ events, handler, includeSubagents? })`                | `ResourceId`                 | A lifecycle handler (see [Hooks](#hooks)).                                  |
 | `createTool({ name, description, parameters, mutating, handler })`  | `ResourceId`                 | A custom tool.                                                              |
-| `createModel({ name, baseUrl, apiKey, temperature?, maxContext? })` | `ResourceId`                 | An LLM endpoint. `name: ""` auto-discovers it.                              |
+| `createModel({ name, baseUrl, apiKey, temperature?, maxContext? })` | `ResourceId`                 | An LLM endpoint declared directly, without a provider. Rarely needed.       |
+| `addProvider(provider)`                                             | `ResourceId`                 | Register a provider (see [Providers](#providers)); discovered at startup.   |
 | `createConnection(from, to, props?)`                                | `void`                       | A directed edge.                                                            |
 | `setRuntime(settings)`                                              | `void`                       | The settings that are not resources (below), including `profileSwitchMode`. |
 | `getProfile(name)`                                                  | `ResourceId \| undefined`    | Look up a profile (either file, or built-in) by name.                       |
-| `getModel(name)`                                                    | `ResourceId \| undefined`    | Look up a model by name. A `name: ""` (auto-discover) model never matches.  |
+| `getModel(name)`                                                    | `ResourceId \| undefined`    | Look up an explicitly `createModel()`-declared model by name.               |
 | `getTool(name)`                                                     | `ResourceId \| undefined`    | Look up a tool, built-in or custom, by name.                                |
+| `getProvider(name)`                                                 | `ResourceId \| undefined`    | Look up a registered provider by name.                                      |
 | `builtins.tools`                                                    | `Record<string, ResourceId>` | Every built-in tool, keyed by name.                                         |
-| `builtins.defaultModel`                                             | `ResourceId`                 | The model used when a profile has no model edge.                            |
 | `builtins.defaultProfile`                                           | `ResourceId`                 | The implicit `"Agent"` profile used when a profile has no explicit one.     |
+| `builtins.providers`                                                | `Record<string, ResourceId>` | Every registered provider, keyed by name.                                   |
 
 `ResourceId` is opaque: an id can only come from a `create*` call, a `get*` lookup, or
 from `reg.builtins`, so a connection can never point at something that does not exist.
@@ -272,9 +277,9 @@ profile through connection props.
 ### Profiles
 
 Exactly one profile is active at a time. Every session has an implicit built-in profile
-named **`Agent`** — the built-in prompt, every built-in tool, no hooks, the
-auto-discovered default model. The name `Agent` is reserved; a profile in either config
-file cannot use it.
+named **`Agent`** — the built-in prompt, every built-in tool, no hooks, and (with no
+`models` whitelist of its own) whichever model the active-model selection below picks.
+The name `Agent` is reserved; a profile in either config file cannot use it.
 
 A session starts under `Agent` **unless** a saved profile is restored from the state file
 (see [Profile persistence](#profile-persistence) below) — naming a profile `default` no
@@ -308,8 +313,10 @@ It is per-user session state, not configuration — add it to your project's
 
 If the saved profile no longer exists in the config, or the file is missing, corrupt, or
 malformed, Vise warns on stderr and starts under `Agent` instead — it never refuses to
-start over a bad state file. The saved model name also pins auto-discovery on restart, so
-the same model is used even if the server's model list has since changed.
+start over a bad state file. The saved model name also pins the active-model selection on
+restart (and on every later `/profile` switch), so the same model is used even if a
+provider's model list has since changed — as long as a model with that name is still in
+the profile's available set.
 
 ### Subagent policy
 
@@ -343,6 +350,62 @@ the global `maxSubagentDepth`.
 
 A task may be passed positionally and is run as the first turn. Any other flag is
 rejected with a pointer to `./.vise/index.ts`.
+
+## Providers
+
+A **provider** is a config-time convention — not a graph node — that the harness queries
+at startup to discover the models a backend has loaded. Register one or more with
+`reg.addProvider()`; with none registered (or if every one discovers zero models), Vise
+exits with a fatal error rather than falling back to anything.
+
+```ts
+import { LlamaProvider, type Registry } from "vise";
+
+export default (reg: Registry) => {
+  reg.addProvider(new LlamaProvider({ url: "http://localhost:8080" }));
+};
+```
+
+- **`LlamaProvider`** is the built-in provider for an OpenAI-compatible llama.cpp server.
+  It queries `GET {url}/v1/models` at startup and creates one `Model` resource per entry
+  — including router mode, where one server serves several models.
+- A **custom provider** is just an object with a `name` and an async `discoverModels()`
+  returning `ModelDef[]`; it never needs to throw — an unreachable backend or an empty or
+  malformed response should just resolve to `[]`, which Vise treats as "this provider
+  found nothing" (a warning, not fatal, as long as some provider found something).
+- **`name`** disambiguates providers in `models` whitelists and `/model` output; omit it
+  and Vise assigns one (`llama_0`, `llama_1`, …). Two providers with the same name is a
+  fatal config error.
+
+### Model selection
+
+A profile's `models` field is a whitelist of the models it may use:
+
+```ts
+reg.createProfile({
+  name: "cheap",
+  systemPrompt: "…",
+  models: ["openrouter", ["llama_0", "^qwen.*$"]],
+});
+```
+
+- A bare provider name includes every model from that provider.
+- A `[providerName, regex]` tuple includes only that provider's models whose name
+  matches the regex (full-string match).
+- Omitted or empty → every discovered/declared model is available.
+- The active model is whichever the state file's `lastModel` names, if it's in the
+  available set; otherwise the first one, in discovery order. A `Profile → Model`
+  connection (still supported, mainly for a model declared directly via
+  `reg.createModel()`) pins one model outright, overriding this selection — it must
+  itself be in the whitelist, or the config is rejected.
+- A subagent whose profile has no whitelist inherits the parent's exact active model
+  (including its `baseUrl`, `apiKey`, `temperature`, and `maxContext`) rather than
+  picking its own; one with a whitelist picks the first match, falling back to the
+  parent's model (with a warning) if the whitelist matches nothing.
+
+`/model` lists every discovered/declared model grouped by provider, the active one marked
+`*`; `/model <name>` switches to it, or `/model <provider>/<name>` when the bare name is
+ambiguous across providers.
 
 ## Tools
 
@@ -488,21 +551,21 @@ required.
 
 ### Acceptance-criteria → test mapping (spec §9)
 
-| AC                         | Covered by test                                                                       |
-| -------------------------- | ------------------------------------------------------------------------------------- |
-| 1. Startup / setup hint    | `cli.test.ts` (setup hint + non-zero exit), `discover.test.ts` (model auto-discovery) |
-| 2. Happy path              | `integration.test.ts` (finish directly; tool round-trip)                              |
-| 3. Multi-turn history      | `integration.test.ts` (history retained)                                              |
-| 4. Tool correctness        | `tools.test.ts` (file/search tools), `commands.test.ts`                               |
-| 5. Self-correction         | `integration.test.ts` (bad args fed back), `tools.test.ts` (dispatch)                 |
-| 6. Tool failure (no abort) | `integration.test.ts` (tool failure), `tools.test.ts` (dispatch)                      |
-| 7. Server-down abort       | `integration.test.ts` (server-down)                                                   |
-| 8. Compaction              | `compaction.test.ts` (trigger, boundary pairing, truncation)                          |
-| 9. Command timeout         | `commands.test.ts` (foreground timeout)                                               |
-| 10. Background commands    | `commands.test.ts` (background + check + killAll)                                     |
-| 11. Parallel tool calls    | `sse.test.ts` (multi tool-call accumulation), `tools.test.ts` (ordering)              |
-| 12. Configuration          | `profiles.test.ts` (loading, `setRuntime`, validation)                                |
-| 13. No persistence         | `cli.test.ts` (in-memory session, no config file created)                             |
+| AC                         | Covered by test                                                                   |
+| -------------------------- | --------------------------------------------------------------------------------- |
+| 1. Startup / setup hint    | `cli.test.ts` (setup hint + non-zero exit), `providers.test.ts` (model discovery) |
+| 2. Happy path              | `integration.test.ts` (finish directly; tool round-trip)                          |
+| 3. Multi-turn history      | `integration.test.ts` (history retained)                                          |
+| 4. Tool correctness        | `tools.test.ts` (file/search tools), `commands.test.ts`                           |
+| 5. Self-correction         | `integration.test.ts` (bad args fed back), `tools.test.ts` (dispatch)             |
+| 6. Tool failure (no abort) | `integration.test.ts` (tool failure), `tools.test.ts` (dispatch)                  |
+| 7. Server-down abort       | `integration.test.ts` (server-down)                                               |
+| 8. Compaction              | `compaction.test.ts` (trigger, boundary pairing, truncation)                      |
+| 9. Command timeout         | `commands.test.ts` (foreground timeout)                                           |
+| 10. Background commands    | `commands.test.ts` (background + check + killAll)                                 |
+| 11. Parallel tool calls    | `sse.test.ts` (multi tool-call accumulation), `tools.test.ts` (ordering)          |
+| 12. Configuration          | `profiles.test.ts` (loading, `setRuntime`, validation)                            |
+| 13. No persistence         | `cli.test.ts` (in-memory session, no config file created)                         |
 
 ### Hooks acceptance criteria (hooks spec §9)
 
@@ -539,20 +602,43 @@ required.
 | 16. No `profile` param             | `profiles.test.ts` (subagent inherits the parent's profile)      |
 | 17. `maxDepth: 0`                  | `profiles.test.ts` (spawning always refused)                     |
 
+### Providers acceptance criteria (providers spec §9)
+
+| AC                                  | Covered by test                                                              |
+| ----------------------------------- | ---------------------------------------------------------------------------- |
+| P1. Discovery incl. router mode     | `providers.test.ts` (`LlamaProvider` against a mock `/v1/models`)            |
+| P2. `models` whitelist filters      | `providers.test.ts` (string and `[provider, regex]` elements)                |
+| P3. No whitelist → all models       | `providers.test.ts` (first wins, `lastModel` pins another)                   |
+| P4. Subagent inherits parent model  | `providers.test.ts` (exact `baseUrl`/`apiKey`/`temperature`/`maxContext`)    |
+| P5. No provider → fatal             | `cli.test.ts` ("No models available", non-zero exit)                         |
+| P6. Same name, two providers        | `providers.test.ts` (ambiguous bare name, `<provider>/<name>` disambiguates) |
+| P7. Provider interface is general   | `providers.test.ts` (a plain object literal, no concrete class)              |
+| P8. No built-in default model       | `profiles.test.ts` (no provider/model → `config.model` is `null`)            |
+| P9. `reg.createModel()` still works | `profiles.test.ts`, `providers.test.ts` (explicit model via a connection)    |
+| P10. `LLMClient` unchanged          | (structural — the agent loop only ever sees the resolved `Config`)           |
+
 ## Troubleshooting
 
-- **"No model could be resolved"** — Vise could not find a model to use. Either start a
-  llama.cpp server with a model loaded (its name is auto-discovered via `/v1/models`),
-  or declare one in `./.vise/index.ts` with `reg.createModel({ name, baseUrl, apiKey })`
-  and connect it to the active profile.
+- **"No models available"** — no provider is registered, or every registered provider
+  discovered zero models. Register one in `.vise/index.ts` (e.g.
+  `reg.addProvider(new LlamaProvider({ url: "http://localhost:8080" }))`) and make sure
+  its server is running with a model loaded.
 - **"Invalid .vise configuration"** — the config built a graph that cannot run. The
   message lists every problem at once: duplicate names, invalid edges, a profile that
-  enumerates tools without `finish`, an out-of-range `setRuntime` value.
+  enumerates tools without `finish`, an out-of-range `setRuntime` value, an unknown
+  provider in a `models` whitelist.
 - **Server not reachable** — confirm `curl http://localhost:8080/v1/models` works and that
-  `baseUrl` matches.
-- **Model never calls tools** — the model must be served with `--jinja` so its chat
-  template supports tool calling, and it must be a tool-capable model.
+  the provider's `url` matches.
+- **Model never calls tools** — the model must be served with `--jinja` (for llama.cpp) so
+  its chat template supports tool calling, and it must be a tool-capable model.
 - **Tool calls malformed** — some smaller models emit tool-call JSON that does not parse;
   Vise feeds the error back so the model can retry, but a stronger model helps.
 - **A tool the model needs is missing** — check the active profile's Profile→Tool edges
   with `/profile`; a profile that enumerates any tools gets only those.
+- **Every keystroke shows up doubled at the prompt** (`test` renders as `tteesstt`) — seen
+  running under `bun run` on Windows (any shell, including a plain PowerShell console),
+  and also under MSYS2/mintty-based shells (Git Bash) on any runtime. Neither honors
+  Node's raw-mode request, so the console's own echo doubles up with `readline`'s. Vise
+  detects both and disables its own terminal handling there, relying on the console's
+  native echo instead — if you still see it, run `node dist/index.js` (`npm run build &&
+npm start`) instead of `bun run`, or from Windows Terminal/PowerShell/cmd.exe directly.

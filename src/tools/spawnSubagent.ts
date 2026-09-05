@@ -1,6 +1,15 @@
 import type { Tool } from "../types.js";
 import type { SubagentPolicy } from "../profiles/types.js";
 
+/** The parent agent's active model, for subagent inheritance (providers spec §3.7). */
+export interface ParentModel {
+  baseUrl: string;
+  model: string | null;
+  apiKey: string;
+  temperature: number;
+  maxContext: number;
+}
+
 /**
  * The options a `spawn_subagent` call hands to the runner. The runner is
  * implemented in the application layer (`agent/subagent.ts`); the tool layer
@@ -17,6 +26,12 @@ export interface SubagentRunOptions {
   depth: number;
   /** The profile the subagent runs under (profiles spec §3.12). */
   profile: string;
+  /**
+   * The parent's active model (providers spec §3.7): inherited by the
+   * subagent when its profile declares no `models` whitelist, or falls back
+   * to it when the whitelist matches nothing (E-P8).
+   */
+  parentModel: ParentModel;
 }
 
 /**
@@ -42,6 +57,8 @@ export interface SpawnSubagentOptions {
   subagentMaxIterations: number;
   /** Every profile name a subagent could name. Empty when none are defined. */
   knownProfiles: readonly string[];
+  /** The owning agent's active model, passed through for subagent inheritance. */
+  parentModel: ParentModel;
 }
 
 /**
@@ -66,6 +83,7 @@ export function makeSpawnSubagentTool(options: SpawnSubagentOptions): Tool {
     fallbackMaxDepth,
     subagentMaxIterations,
     knownProfiles,
+    parentModel,
   } = options;
 
   // A policy's own maxDepth wins; otherwise the global backstop applies
@@ -160,6 +178,7 @@ export function makeSpawnSubagentTool(options: SpawnSubagentOptions): Tool {
         maxIterations,
         depth: depth + 1,
         profile: requestedProfile ?? parentProfile,
+        parentModel,
       });
     },
   };

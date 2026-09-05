@@ -11,11 +11,11 @@ export class LLMError extends Error {
   }
 }
 
-/** E3: llama.cpp server unreachable / connection refused. */
+/** E3: LLM server unreachable / connection refused (provider-agnostic). */
 export class ServerUnreachableError extends LLMError {
   constructor(baseUrl: string, cause?: unknown) {
     super(
-      `Cannot reach llama.cpp server at ${baseUrl}. Is it running?` +
+      `Cannot reach LLM server at ${baseUrl}. Is it running?` +
         (cause ? ` (${(cause as Error).message})` : ""),
     );
   }

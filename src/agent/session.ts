@@ -2,19 +2,22 @@ import type { Session } from "../types.js";
 import type { ToolRegistry, BackgroundCommandManager } from "../tools/index.js";
 import type { LLMClient } from "../llm/client.js";
 import {
+  AmbiguousModelError,
+  allModelEntries,
   defaultGraph,
   defaultProfileName,
-  findModel,
-  modelEntries,
+  findModelsByRef,
+  ModelNotAvailableError,
   ProfileHasNoModelError,
   profileEntries,
   profileNames,
   resolveProfile,
   UnknownModelError,
   UnknownProfileError,
-  type ModelEntry,
+  type ModelListEntry,
   type ProfileEntry,
   type ResourceGraph,
+  type ResourceId,
 } from "../profiles/index.js";
 import { DEFAULT_CONFIG } from "../config/defaults.js";
 import {
@@ -26,9 +29,10 @@ import {
 /** Optional dependencies for a session. All have working defaults. */
 export interface SessionOptions {
   /**
-   * The resource graph built from `.vise/index.ts` (profiles spec §3.10).
-   * Omitted → the built-in defaults: one implicit profile, every built-in
-   * tool, no hooks, the default model.
+   * The resource graph built from `.vise/index.ts` (profiles spec §3.10),
+   * including every model discovered from its providers at startup
+   * (providers spec §3.6). Omitted → the built-in defaults: one implicit
+   * profile, every built-in tool, no hooks, no providers.
    */
   graph?: ResourceGraph;
   /**
@@ -37,6 +41,13 @@ export interface SessionOptions {
    * other specific one) must resolve it and pass it explicitly.
    */
   profile?: string;
+  /**
+   * The model name saved in the state file at the previous exit (providers
+   * spec §3.4, §3.9). Pins the active model whenever a profile is (re)selected
+   * — at session start and on every `/profile` switch — as long as that model
+   * is still in the profile's available set. Ignored by subagent spawn.
+   */
+  lastModel?: string | null;
   /** The LLM client used by the session and any subagents it spawns. */
   client?: LLMClient;
   /** Renders subagent live output (spec §3.8.6); omitted → silent. */
@@ -71,7 +82,7 @@ export interface SessionHandle {
   profileEntries(): ProfileEntry[];
   /**
    * Switch to `name`, re-resolving prompt, tools, hooks, and model
-   * (profiles spec §3.6).
+   * (profiles spec §3.6; providers spec §3.4).
    *
    * @throws UnknownProfileError when no such profile exists.
    * @throws ProfileHasNoModelError when the profile resolves to no model.
@@ -79,19 +90,25 @@ export interface SessionHandle {
    */
   switchProfile(name: string): void;
   /**
-   * Every model declared in the config, in creation order (for `/model`).
-   * The built-in default model is not listed.
+   * Every model in the graph — config-declared or provider-discovered — for
+   * `/model` listing (providers spec §3.8).
    */
-  modelEntries(): ModelEntry[];
+  modelEntries(): ModelListEntry[];
+  /** The `ResourceId` of the currently active model, or `null`. */
+  activeModelId(): ResourceId | null;
   /**
-   * Switch the active model to the config model named `name`, adopting its
-   * whole resource — `baseUrl`, `apiKey`, `temperature`, and `maxContext` —
-   * into the session's config. The conversation and system prompt are kept.
+   * Switch the active model to the one named by `ref` — a bare model name, or
+   * `<provider>/<name>` to disambiguate (providers spec §3.8) — adopting its
+   * whole resource (`baseUrl`, `apiKey`, `temperature`, `maxContext`) into the
+   * session's config. The conversation and system prompt are kept.
    *
-   * @throws UnknownModelError when no config model has that name. The session
-   *   is left untouched.
+   * @throws UnknownModelError when no model matches `ref`.
+   * @throws AmbiguousModelError when `ref` matches more than one provider.
+   * @throws ModelNotAvailableError when the match is outside the active
+   *   profile's `models` whitelist.
+   *   In every case the session is left untouched.
    */
-  switchModel(name: string): void;
+  switchModel(ref: string): void;
   /** Whether hooks are enabled session-wide (`/hooks on|off`). */
   hooksEnabled(): boolean;
   /** Enable or disable every hook, now and for profiles switched to later. */
@@ -112,6 +129,7 @@ export interface SessionHandle {
 export function createSession(options: SessionOptions = {}): SessionHandle {
   const graph = options.graph ?? defaultGraph();
   const startingProfile = options.profile ?? defaultProfileName(graph);
+  const lastModel = options.lastModel ?? null;
 
   // One mutable flag, read by every hook manager the session ever builds, so
   // `/hooks off` keeps holding after a profile switch and inside subagents.
@@ -126,11 +144,10 @@ export function createSession(options: SessionOptions = {}): SessionHandle {
     ...(options.log !== undefined ? { log: options.log } : {}),
   };
 
-  const initial = materializeProfile(
-    resolveProfile(graph, startingProfile),
-    ctx,
-    0,
-  );
+  const startingResolved = resolveProfile(graph, startingProfile, {
+    modelNameHint: lastModel,
+  });
+  const initial = materializeProfile(startingResolved, ctx, 0);
 
   const session: Session = {
     messages: [{ role: "system", content: initial.systemPrompt }],
@@ -140,6 +157,12 @@ export function createSession(options: SessionOptions = {}): SessionHandle {
     depth: 0,
     profile: startingProfile,
   };
+
+  // Tracks the profile currently active's model state, for `/model` listing
+  // and for enforcing its `models` whitelist on `switchModel` (providers spec
+  // §3.4, §3.8). Updated on every `switchProfile`.
+  let activeModelId: ResourceId | null = startingResolved.modelId;
+  let currentAvailable: ResourceId[] = startingResolved.availableModelIds;
 
   const handle = {
     session,
@@ -156,7 +179,8 @@ export function createSession(options: SessionOptions = {}): SessionHandle {
     switchProfile(name: string) {
       // Resolve *before* touching anything, so an unknown or unusable profile
       // leaves the session exactly as it was (spec §4).
-      const next = materializeProfile(resolveProfile(graph, name), ctx, 0);
+      const resolved = resolveProfile(graph, name, { modelNameHint: lastModel });
+      const next = materializeProfile(resolved, ctx, 0);
       if (next.config.model === null) throw new ProfileHasNoModelError(name);
 
       // The outgoing profile's background commands belong to the profile, not
@@ -174,26 +198,47 @@ export function createSession(options: SessionOptions = {}): SessionHandle {
       handle.registry = next.registry;
       handle.manager = next.manager;
       handle.profile = name;
+      activeModelId = resolved.modelId;
+      currentAvailable = resolved.availableModelIds;
     },
-    modelEntries: () => modelEntries(graph),
-    switchModel(name: string) {
-      // Look up *before* touching anything, so an unknown model leaves the
+    modelEntries: () => allModelEntries(graph),
+    activeModelId: () => activeModelId,
+    switchModel(ref: string) {
+      // Look up *before* touching anything, so a failed switch leaves the
       // session exactly as it was.
-      const model = findModel(graph, name);
-      if (model === undefined) {
-        throw new UnknownModelError(
-          name,
-          modelEntries(graph).map((e) => e.name),
+      const matches = findModelsByRef(graph, ref);
+      if (matches.length === 0) {
+        throw new UnknownModelError(ref);
+      }
+      if (matches.length > 1) {
+        throw new AmbiguousModelError(
+          ref,
+          matches.map((m) => m.providerName ?? "(none)"),
         );
       }
+      const match = matches[0];
+      if (!currentAvailable.includes(match.id)) {
+        throw new ModelNotAvailableError(
+          ref,
+          session.profile,
+          currentAvailable
+            .map((id) => modelNameOf(graph, id))
+            .filter((n): n is string => n !== undefined),
+        );
+      }
+      const resource = graph.resources.get(match.id);
+      const def = resource?.kind === "model" ? resource.def : undefined;
+      if (def === undefined) throw new UnknownModelError(ref);
+
       session.config = {
         ...session.config,
-        model: model.name,
-        baseUrl: model.baseUrl,
-        apiKey: model.apiKey,
-        temperature: model.temperature ?? DEFAULT_CONFIG.temperature,
-        maxContext: model.maxContext ?? DEFAULT_CONFIG.maxContext,
+        model: def.name,
+        baseUrl: def.baseUrl,
+        apiKey: def.apiKey,
+        temperature: def.temperature ?? DEFAULT_CONFIG.temperature,
+        maxContext: def.maxContext ?? DEFAULT_CONFIG.maxContext,
       };
+      activeModelId = match.id;
     },
   };
 
@@ -203,6 +248,12 @@ export function createSession(options: SessionOptions = {}): SessionHandle {
   }
 
   return handle;
+}
+
+/** The name of the Model resource behind `id`, or `undefined`. */
+function modelNameOf(graph: ResourceGraph, id: ResourceId): string | undefined {
+  const resource = graph.resources.get(id);
+  return resource?.kind === "model" ? resource.def.name : undefined;
 }
 
 /**
@@ -230,4 +281,10 @@ function applySystemPrompt(
   }
 }
 
-export { ProfileHasNoModelError, UnknownModelError, UnknownProfileError };
+export {
+  AmbiguousModelError,
+  ModelNotAvailableError,
+  ProfileHasNoModelError,
+  UnknownModelError,
+  UnknownProfileError,
+};
