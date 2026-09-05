@@ -60,6 +60,14 @@ export const REPL_COMMANDS: ReplCommand[] = [
     run: (ctx) => contextUsageLine(ctx.handle.session),
   },
   {
+    name: "/clear",
+    summary: "Clear the conversation (keeps the system prompt).",
+    run: (ctx) => {
+      ctx.handle.clearConversation();
+      return "conversation cleared.";
+    },
+  },
+  {
     name: "/profile",
     summary: "List profiles; `/profile <name>` switches to one.",
     run: (ctx, args) => profileCommand(ctx.handle, args),

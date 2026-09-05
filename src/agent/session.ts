@@ -113,6 +113,13 @@ export interface SessionHandle {
   hooksEnabled(): boolean;
   /** Enable or disable every hook, now and for profiles switched to later. */
   setHooksEnabled(enabled: boolean): void;
+  /**
+   * Clear the conversation (`/clear`): drop every user/assistant/tool exchange
+   * while keeping the leading system message(s) — the agent's instructions —
+   * and reset the compaction token counter. Background commands and the active
+   * profile/model are untouched.
+   */
+  clearConversation(): void;
 }
 
 /**
@@ -176,10 +183,26 @@ export function createSession(options: SessionOptions = {}): SessionHandle {
       hooksEnabled = enabled;
       session.hooks.setEnabled(enabled);
     },
+    clearConversation() {
+      // Keep the leading system message(s) — the agent's instructions — and
+      // drop every exchange after them. In `append` switch mode there can be
+      // more than one leading system message; all of them are kept.
+      let i = 0;
+      while (
+        i < session.messages.length &&
+        session.messages[i].role === "system"
+      ) {
+        i++;
+      }
+      session.messages = session.messages.slice(0, i);
+      session.lastPromptTokens = null;
+    },
     switchProfile(name: string) {
       // Resolve *before* touching anything, so an unknown or unusable profile
       // leaves the session exactly as it was (spec §4).
-      const resolved = resolveProfile(graph, name, { modelNameHint: lastModel });
+      const resolved = resolveProfile(graph, name, {
+        modelNameHint: lastModel,
+      });
       const next = materializeProfile(resolved, ctx, 0);
       if (next.config.model === null) throw new ProfileHasNoModelError(name);
 

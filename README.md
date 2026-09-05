@@ -72,6 +72,7 @@ prompt shows it: `vise:refactor> `. Type `/exit` (or `exit` / `quit`) to leave. 
 | ----------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
 | `/help`           | List the commands.                                                                                                                     |
 | `/context`        | Prompt tokens from the last LLM call vs. the context window.                                                                           |
+| `/clear`          | Clear the conversation (drops every exchange, keeps the system prompt).                                                                |
 | `/profile`        | List the profiles (with origin: `builtin`/`global`/`project`), `*` marks the active one.                                               |
 | `/profile <name>` | Switch profiles: prompt, tools, hooks, and model are all re-resolved. `/profile Agent` switches back to the implicit built-in profile. |
 | `/model`          | List the models declared in `.vise/index.ts` (with origin), `*` marks the active one.                                                  |

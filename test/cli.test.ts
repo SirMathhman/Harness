@@ -146,6 +146,7 @@ describe("REPL command registry", () => {
     const names = REPL_COMMANDS.map((c) => c.name);
     expect(names).toContain("/help");
     expect(names).toContain("/context");
+    expect(names).toContain("/clear");
     expect(names).toContain("/profile");
     expect(names).toContain("/model");
     expect(names).toContain("/hooks");
@@ -228,6 +229,36 @@ describe("/context command", () => {
     expect(contextUsageLine(session)).toBe(
       `context: 4096 / ${DEFAULT_CONFIG.maxContext} tokens (50.0%)`,
     );
+  });
+});
+
+describe("/clear command", () => {
+  test("drops the conversation but keeps the leading system message", () => {
+    const handle = createSession({ graph: modelGraph() });
+    const systemMsg = handle.session.messages[0];
+    expect(systemMsg.role).toBe("system");
+
+    // Simulate a few turns of conversation.
+    handle.session.messages.push({ role: "user", content: "hello" });
+    handle.session.messages.push({ role: "assistant", content: "hi there" });
+    handle.session.lastPromptTokens = 1234;
+
+    const cmd = findCommand("/clear");
+    expect(cmd).toBeDefined();
+    const out = cmd!.run({ handle }, []);
+    expect(out).toBe("conversation cleared.");
+
+    // Only the system message remains; the token counter is reset.
+    expect(handle.session.messages).toEqual([systemMsg]);
+    expect(handle.session.lastPromptTokens).toBeNull();
+  });
+
+  test("is a no-op on an empty conversation", () => {
+    const handle = createSession({ graph: modelGraph() });
+    const before = handle.session.messages.length;
+    const cmd = findCommand("/clear");
+    cmd!.run({ handle }, []);
+    expect(handle.session.messages.length).toBe(before);
   });
 });
 
