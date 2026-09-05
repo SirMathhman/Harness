@@ -22,7 +22,7 @@ import {
   DEFAULT_SYSTEM_PROMPT,
 } from "../src/config/defaults.js";
 import { createSession } from "../src/agent/session.js";
-import { makeSubagentRunner } from "../src/agent/subagent.js";
+import { identitySection, makeSubagentRunner } from "../src/agent/subagent.js";
 import {
   findCommand,
   REPL_COMMANDS,
@@ -211,8 +211,17 @@ describe("skill index (skills spec §3.3)", () => {
     const graph = modelGraph("http://localhost:8080", {}, (reg) => {
       reg.createSkill("madge", MADGE_DESC, MADGE_TEXT);
     });
+    const identity = identitySection(
+      {
+        ...DEFAULT_CONFIG,
+        model: "test-model",
+        baseUrl: "http://localhost:8080",
+        maxContext: 8192,
+      },
+      undefined,
+    );
     expect(createSession({ graph }).session.messages[0].content).toBe(
-      `${DEFAULT_SYSTEM_PROMPT}\n\n${SKILL_INDEX_HEADER}\n- madge: ${MADGE_DESC}`,
+      `${DEFAULT_SYSTEM_PROMPT}\n\n${identity}\n\n${SKILL_INDEX_HEADER}\n- madge: ${MADGE_DESC}`,
     );
   });
 
@@ -266,8 +275,17 @@ describe("skill index (skills spec §3.3)", () => {
     });
     const handle = createSession({ graph });
     handle.switchProfile("other");
+    const identity = identitySection(
+      {
+        ...DEFAULT_CONFIG,
+        model: "test-model",
+        baseUrl: "http://localhost:8080",
+        maxContext: 8192,
+      },
+      undefined,
+    );
     expect(handle.session.messages[0].content).toBe(
-      `other\n\n${SKILL_INDEX_HEADER}\n- madge: ${MADGE_DESC}`,
+      `other\n\n${identity}\n\n${SKILL_INDEX_HEADER}\n- madge: ${MADGE_DESC}`,
     );
   });
 });

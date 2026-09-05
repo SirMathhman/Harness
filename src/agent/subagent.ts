@@ -92,6 +92,45 @@ export interface SpawnerContext {
   model?: string;
 }
 
+/** The header the identity paragraph carries in the system prompt. */
+export const IDENTITY_HEADER = "## Identity";
+
+/**
+ * The identity paragraph appended to a system prompt: what the agent is
+ * (Vise), which model it's running, and which provider serves it. Lets the
+ * model answer "what are you running on" from its own prompt instead of
+ * guessing or claiming to be the model it happens to be talking to — the
+ * same reasoning that puts the skill index in the prompt so it can answer
+ * "what can you do".
+ *
+ * `""` when the profile resolved to no model (`config.model === null`) —
+ * there is nothing accurate to report, and the session cannot run a turn in
+ * that state anyway.
+ */
+export function identitySection(
+  config: Config,
+  providerName: string | undefined,
+): string {
+  if (config.model === null) return "";
+  const via = providerName !== undefined ? ` via the "${providerName}" provider` : "";
+  return (
+    `${IDENTITY_HEADER}\n` +
+    `You are Vise, a local coding-agent harness. You are running model ` +
+    `"${config.model}"${via} at ${config.baseUrl}, with a ` +
+    `${config.maxContext}-token context window.`
+  );
+}
+
+/** Append the identity paragraph to a resolved system prompt. */
+export function appendIdentity(
+  systemPrompt: string,
+  config: Config,
+  providerName: string | undefined,
+): string {
+  const section = identitySection(config, providerName);
+  return section === "" ? systemPrompt : `${systemPrompt}\n\n${section}`;
+}
+
 /** One profile turned into the concrete pieces an agent loop needs. */
 export interface MaterializedProfile {
   /** The resolved runtime + model settings. */
@@ -190,11 +229,16 @@ export function materializeProfile(
     registry,
     manager,
     hooks,
-    // The skill index is appended last, after the profile's own prompt (or the
-    // subagent prompt an override supplies), so every agent in the tree sees
-    // the same compact list of what it can load (skills spec §3.3, §3.7).
+    // Identity, then the skill index, appended after the profile's own prompt
+    // (or the subagent prompt an override supplies), so every agent in the
+    // tree knows what it's running on (self-knowledge) and what it can load
+    // (skills spec §3.3, §3.7).
     systemPrompt: appendSkillIndex(
-      overrides.systemPrompt ?? systemPromptOf(resolved),
+      appendIdentity(
+        overrides.systemPrompt ?? systemPromptOf(resolved),
+        config,
+        provider?.name,
+      ),
       ctx.graph.skills,
     ),
   };

@@ -17,8 +17,8 @@ import {
 import { createSession } from "../src/agent/session.js";
 import { profileCommand, profileListing } from "../src/cli/commands.js";
 import { runTurn } from "../src/agent/loop.js";
-import { makeSubagentRunner } from "../src/agent/subagent.js";
-import { DEFAULT_SYSTEM_PROMPT } from "../src/config/defaults.js";
+import { identitySection, makeSubagentRunner } from "../src/agent/subagent.js";
+import { DEFAULT_CONFIG, DEFAULT_SYSTEM_PROMPT } from "../src/config/defaults.js";
 import { BUILTIN_TOOL_NAMES } from "../src/tools/index.js";
 import type { LLMClient } from "../src/llm/client.js";
 import type { LLMResponse, Tool } from "../src/types.js";
@@ -470,10 +470,31 @@ describe("/profile command and switching (profiles §3.6, §3.9)", () => {
     });
   }
 
+  const standardIdentity = identitySection(
+    {
+      ...DEFAULT_CONFIG,
+      model: "standard-model",
+      baseUrl: "http://localhost:8080",
+      maxContext: 8192,
+    },
+    undefined,
+  );
+  const fastIdentity = identitySection(
+    {
+      ...DEFAULT_CONFIG,
+      model: "fast-model",
+      baseUrl: "http://localhost:1",
+      maxContext: 8192,
+    },
+    undefined,
+  );
+
   test("a session starts under whichever profile it is given (AC 1)", () => {
     const handle = createSession({ graph: twoProfiles(), profile: "default" });
     expect(handle.profile).toBe("default");
-    expect(handle.session.messages[0].content).toBe("you implement");
+    expect(handle.session.messages[0].content).toBe(
+      `you implement\n\n${standardIdentity}`,
+    );
   });
 
   test("/profile lists both plus the implicit one, marking the active one (AC 2)", () => {
@@ -494,7 +515,9 @@ describe("/profile command and switching (profiles §3.6, §3.9)", () => {
     expect(profileCommand(handle, ["refactor"])).toContain("refactor");
 
     expect(handle.profile).toBe("refactor");
-    expect(handle.session.messages[0].content).toBe("you refactor");
+    expect(handle.session.messages[0].content).toBe(
+      `you refactor\n\n${fastIdentity}`,
+    );
     expect(handle.registry.get("write_file")).toBeUndefined();
     expect(handle.registry.get("read_file")).toBeDefined();
     expect(handle.session.config.model).toBe("fast-model");
@@ -514,7 +537,9 @@ describe("/profile command and switching (profiles §3.6, §3.9)", () => {
     const handle = createSession({ graph: twoProfiles(), profile: "default" });
     handle.session.messages.push({ role: "user", content: "earlier work" });
     handle.switchProfile("refactor");
-    expect(handle.session.messages[0].content).toBe("you refactor");
+    expect(handle.session.messages[0].content).toBe(
+      `you refactor\n\n${fastIdentity}`,
+    );
     expect(handle.session.messages.map((m) => m.content)).toContain(
       "earlier work",
     );
@@ -534,7 +559,19 @@ describe("/profile command and switching (profiles §3.6, §3.9)", () => {
     const systems = handle.session.messages
       .filter((m) => m.role === "system")
       .map((m) => m.content);
-    expect(systems).toEqual(["first", "second"]);
+    const testModelIdentity = identitySection(
+      {
+        ...DEFAULT_CONFIG,
+        model: "test-model",
+        baseUrl: "http://localhost:8080",
+        maxContext: 8192,
+      },
+      undefined,
+    );
+    expect(systems).toEqual([
+      `first\n\n${testModelIdentity}`,
+      `second\n\n${testModelIdentity}`,
+    ]);
   });
 
   test("/profile nonexistent reports the error and does not switch (AC 10)", () => {
@@ -543,7 +580,9 @@ describe("/profile command and switching (profiles §3.6, §3.9)", () => {
     expect(out).toContain("Unknown profile");
     expect(out).toContain("refactor");
     expect(handle.profile).toBe("default");
-    expect(handle.session.messages[0].content).toBe("you implement");
+    expect(handle.session.messages[0].content).toBe(
+      `you implement\n\n${standardIdentity}`,
+    );
   });
 
   test("/profile with no user-defined profiles still lists the implicit one", () => {

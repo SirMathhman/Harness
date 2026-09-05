@@ -453,7 +453,7 @@ ambiguous across providers.
 
 ## Tools
 
-The agent exposes eleven built-in tools. A profile's Profile→Tool edges decide which
+The agent exposes twelve built-in tools. A profile's Profile→Tool edges decide which
 of them it actually sees — except `list_skills` and `read_skill`, which every profile
 always gets, because skills are global to the session:
 
@@ -466,6 +466,7 @@ always gets, because skills are global to the session:
 | `search`         | no       | `pattern`, `mode` (`text`\|`glob`), `path?`, `includePattern?`, `isRegexp?` | Search file contents (`file:line:content`) or file paths.                     |
 | `run_command`    | yes      | `command`, `timeoutMs?`, `background?`, `cwd?`                              | Run a shell command (foreground by default; `background=true` returns an id). |
 | `check_command`  | no       | `id`                                                                        | Check the status/output of a background command.                              |
+| `fetch_webpage`  | no       | `url`                                                                           | Fetch a URL; returns inline text, a file path, a redirect notice, or an error.  |
 | `finish`         | no       | `answer`                                                                    | Terminal tool: ends the turn with a final answer.                             |
 | `spawn_subagent` | no       | `task`, `maxIterations`, `systemPrompt?`, `profile?`                        | Run an isolated subagent and return only its final answer.                    |
 | `list_skills`    | no       | —                                                                           | List every skill (name + description). Always present.                        |
@@ -602,6 +603,24 @@ advisory messages are joined with newlines into one system message.
   toggle survives a profile switch.
 - **Trust.** Hooks run in-process with Vise's privileges. There is no sandbox.
 
+## Identity
+
+Every system prompt ends with a short paragraph telling the model what it's actually
+running as — Vise, on which model, via which provider, with what context window — so it
+can answer "what are you?" or "what model are you?" from its own prompt instead of
+guessing or claiming to be whichever model it happens to be talking to:
+
+```
+## Identity
+You are Vise, a local coding-agent harness. You are running model "qwen-7b" via the
+"llama" provider at http://localhost:8080, with a 32768-token context window.
+```
+
+It comes right after the profile's own prompt (or the built-in default) and before the
+skill index, so every agent in the tree — main session and every subagent — carries it.
+A model declared directly via `reg.createModel()`, with no provider behind it, drops the
+`via "<name>" provider` clause.
+
 ## Skills
 
 A **skill** is a named body of knowledge the agent loads *on demand* — a library
@@ -680,6 +699,21 @@ required.
 | 11. Parallel tool calls    | `sse.test.ts` (multi tool-call accumulation), `tools.test.ts` (ordering)          |
 | 12. Configuration          | `profiles.test.ts` (loading, `setRuntime`, validation)                            |
 | 13. No persistence         | `cli.test.ts` (in-memory session, no config file created)                         |
+
+### fetch_webpage acceptance criteria (fetch spec §9)
+
+| AC | Covered by test |
+| --- | --- |
+| 1. Inline content + header | `webTools.test.ts` (small text page, exact header format) |
+| 2. Large body to file path | `webTools.test.ts` (70,000-byte body, file round-trip) |
+| 3. PDF to file path | `webTools.test.ts` (application/pdf bytes round-trip) |
+| 4. 301 to redirect notice | `webTools.test.ts` (301 with Location) |
+| 5. 404 to error line | `webTools.test.ts` (exact `[error: HTTP 404: Not Found]`) |
+| 6. Unreachable host to error string | `webTools.test.ts` (connection refused, no throw) |
+| 7. Empty URL to error line | `webTools.test.ts` (exact `[error: empty URL]`) |
+| 8. Redirects never followed | `webTools.test.ts` (server sees exactly one request) |
+| 9. 30-second timeout | `webTools.test.ts` (short-timeout build, slow stream) |
+| 10. TLS verification enforced | `webTools.test.ts` (TLS error classification; no insecure flag in code) |
 
 ### Hooks acceptance criteria (hooks spec §9)
 

@@ -13,6 +13,7 @@ export const BUILTIN_TOOL_NAMES = [
   "search",
   "run_command",
   "check_command",
+  "fetch_webpage",
   "finish",
   "spawn_subagent",
   "list_skills",

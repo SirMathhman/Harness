@@ -16,6 +16,7 @@ import {
   makeSearchToolsTool,
 } from "./metaTools.js";
 import { makeListSkillsTool, makeReadSkillTool, NO_SKILLS } from "./skills.js";
+import { makeFetchWebpageTool } from "./webTools.js";
 
 /** Which tools a session's registry should hold (profiles spec §3.5 rule 2). */
 export interface ToolSelection {
@@ -75,6 +76,7 @@ export function buildToolRegistry(
       config.maxToolOutputChars,
     ),
     makeCheckCommandTool(manager, config.maxToolOutputChars),
+    makeFetchWebpageTool(),
     finishTool,
   ];
   for (const tool of builtins) {
