@@ -28,12 +28,16 @@ export {
 } from "./registry.js";
 export {
   defaultProfileName,
+  findModel,
+  modelEntries,
   ProfileHasNoModelError,
   profileEntries,
   profileNames,
   resolveProfile,
   systemPromptOf,
+  UnknownModelError,
   UnknownProfileError,
+  type ModelEntry,
   type ProfileEntry,
   type ResolvedProfile,
 } from "./resolve.js";

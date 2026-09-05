@@ -68,6 +68,8 @@ prompt shows it: `vise:refactor> `. Type `/exit` (or `exit` / `quit`) to leave. 
 | `/context`        | Prompt tokens from the last LLM call vs. the context window.                                                                           |
 | `/profile`        | List the profiles (with origin: `builtin`/`global`/`project`), `*` marks the active one.                                               |
 | `/profile <name>` | Switch profiles: prompt, tools, hooks, and model are all re-resolved. `/profile Agent` switches back to the implicit built-in profile. |
+| `/model`          | List the models declared in `.vise/index.ts` (with origin), `*` marks the active one.                                                  |
+| `/model <name>`   | Switch the active model, adopting its whole resource (`baseUrl`, `apiKey`, `temperature`, `maxContext`). The conversation is kept.     |
 | `/hooks`          | List the hooks active for the current profile.                                                                                         |
 | `/hooks off\|on`  | Disable or re-enable every hook for the rest of the session.                                                                           |
 | `/init`           | Create a `./.vise/index.ts` stub for this project (never overwrites an existing one).                                                  |

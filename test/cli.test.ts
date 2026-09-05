@@ -15,6 +15,7 @@ import {
   findCommand,
   helpText,
   initCommand,
+  modelCommand,
   promptLabel,
   REPL_COMMANDS,
 } from "../src/cli/repl.js";
@@ -110,6 +111,7 @@ describe("REPL command registry", () => {
     expect(names).toContain("/help");
     expect(names).toContain("/context");
     expect(names).toContain("/profile");
+    expect(names).toContain("/model");
     expect(names).toContain("/hooks");
     expect(names).toContain("/init");
     expect(names).toContain("/init-global");
@@ -189,6 +191,66 @@ describe("/context command", () => {
     session.lastPromptTokens = 4096;
     expect(contextUsageLine(session)).toBe(
       `context: 4096 / ${DEFAULT_CONFIG.maxContext} tokens (50.0%)`,
+    );
+  });
+});
+
+describe("/model command", () => {
+  // A graph whose default profile uses "test-model", plus a second config
+  // model with distinct parameters, so a switch can be verified field-by-field.
+  function twoModelGraph() {
+    return modelGraph("http://localhost:8080", {}, (reg) => {
+      reg.createModel({
+        name: "other-model",
+        baseUrl: "http://other:9999",
+        apiKey: "secret",
+        temperature: 0.9,
+        maxContext: 4096,
+      });
+    });
+  }
+
+  test("lists config models, marking the active one", () => {
+    const handle = createSession({ graph: twoModelGraph() });
+    const text = modelCommand(handle);
+    expect(text).toContain("Models:");
+    expect(text).toContain("* test-model");
+    expect(text).toContain("other-model");
+    expect(text).toContain("(project)");
+  });
+
+  test("switches to a config model, adopting its whole resource", () => {
+    const handle = createSession({ graph: twoModelGraph() });
+    expect(modelCommand(handle, ["other-model"])).toBe(
+      `model: switched to "other-model".`,
+    );
+    const { config } = handle.session;
+    expect(config.model).toBe("other-model");
+    expect(config.baseUrl).toBe("http://other:9999");
+    expect(config.apiKey).toBe("secret");
+    expect(config.temperature).toBe(0.9);
+    expect(config.maxContext).toBe(4096);
+  });
+
+  test("keeps the conversation and system prompt across a switch", () => {
+    const handle = createSession({ graph: twoModelGraph() });
+    const before = handle.session.messages.length;
+    modelCommand(handle, ["other-model"]);
+    expect(handle.session.messages.length).toBe(before);
+  });
+
+  test("refuses an unknown model and leaves the session untouched", () => {
+    const handle = createSession({ graph: twoModelGraph() });
+    const before = handle.session.config;
+    const text = modelCommand(handle, ["nope"]);
+    expect(text).toContain(`Unknown model "nope"`);
+    expect(handle.session.config).toBe(before);
+  });
+
+  test("reports usage when given more than one argument", () => {
+    const handle = createSession({ graph: twoModelGraph() });
+    expect(modelCommand(handle, ["a", "b"])).toBe(
+      "Usage: /model [<name>] (model names cannot contain spaces).",
     );
   });
 });

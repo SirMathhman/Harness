@@ -9,6 +9,7 @@ import { HookManager } from "../hooks/index.js";
 import {
   IMPLICIT_PROFILE_NAME,
   ProfileHasNoModelError,
+  UnknownModelError,
   UnknownProfileError,
   writeConfigStub,
   writeStateFile,
@@ -219,6 +220,12 @@ export const REPL_COMMANDS: ReplCommand[] = [
     takesArgs: true,
   },
   {
+    name: "/model",
+    summary: "List models; `/model <name>` switches the active model.",
+    run: (ctx, args) => modelCommand(ctx.handle, args),
+    takesArgs: true,
+  },
+  {
     name: "/hooks",
     summary: "List active hooks; `/hooks off|on` disables/re-enables them.",
     run: (ctx, args) => hooksCommand(ctx.handle, args),
@@ -327,6 +334,58 @@ export function profileListing(handle: SessionHandle): string {
   const lines = ["Profiles:"];
   for (const { name, origin } of entries) {
     const marker = name === handle.profile ? "*" : " ";
+    lines.push(`  ${marker} ${name.padEnd(width)} (${origin})`);
+  }
+  return lines.join("\n");
+}
+
+/**
+ * The `/model` command.
+ *
+ * With no argument it lists every model declared in the config, marking the
+ * active one with `*`. With a name it switches the session to that model,
+ * adopting its whole resource — `baseUrl`, `apiKey`, `temperature`, and
+ * `maxContext` — while keeping the conversation and system prompt. An unknown
+ * name is reported and nothing changes.
+ */
+export function modelCommand(
+  handle: SessionHandle,
+  args: string[] = [],
+): string {
+  const [name, ...rest] = args;
+  if (name === undefined) return modelListing(handle);
+  if (rest.length > 0) {
+    return `Usage: /model [<name>] (model names cannot contain spaces).`;
+  }
+  try {
+    handle.switchModel(name);
+  } catch (err) {
+    if (err instanceof UnknownModelError) {
+      return err.message;
+    }
+    throw err;
+  }
+  return `model: switched to "${name}".`;
+}
+
+/**
+ * The `/model` listing: every config model in creation order, each marked with
+ * its origin, the active one marked `*`. The active model is whatever the
+ * session's config currently names; it may not appear in the list when the
+ * session is running the built-in default (auto-discovered) model.
+ */
+export function modelListing(handle: SessionHandle): string {
+  const entries = handle.modelEntries();
+  const active = handle.session.config.model;
+  if (entries.length === 0) {
+    return `models: none defined in .vise/index.ts (active: ${
+      active ?? "auto-discovered"
+    }).`;
+  }
+  const width = Math.max(...entries.map((e) => e.name.length));
+  const lines = ["Models:"];
+  for (const { name, origin } of entries) {
+    const marker = name === active ? "*" : " ";
     lines.push(`  ${marker} ${name.padEnd(width)} (${origin})`);
   }
   return lines.join("\n");

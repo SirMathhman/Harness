@@ -4,14 +4,19 @@ import type { LLMClient } from "../llm/client.js";
 import {
   defaultGraph,
   defaultProfileName,
+  findModel,
+  modelEntries,
   ProfileHasNoModelError,
   profileEntries,
   profileNames,
   resolveProfile,
+  UnknownModelError,
   UnknownProfileError,
+  type ModelEntry,
   type ProfileEntry,
   type ResourceGraph,
 } from "../profiles/index.js";
+import { DEFAULT_CONFIG } from "../config/defaults.js";
 import {
   materializeProfile,
   type AgentContext,
@@ -73,6 +78,20 @@ export interface SessionHandle {
    *   Either way the session is left untouched.
    */
   switchProfile(name: string): void;
+  /**
+   * Every model declared in the config, in creation order (for `/model`).
+   * The built-in default model is not listed.
+   */
+  modelEntries(): ModelEntry[];
+  /**
+   * Switch the active model to the config model named `name`, adopting its
+   * whole resource — `baseUrl`, `apiKey`, `temperature`, and `maxContext` —
+   * into the session's config. The conversation and system prompt are kept.
+   *
+   * @throws UnknownModelError when no config model has that name. The session
+   *   is left untouched.
+   */
+  switchModel(name: string): void;
   /** Whether hooks are enabled session-wide (`/hooks on|off`). */
   hooksEnabled(): boolean;
   /** Enable or disable every hook, now and for profiles switched to later. */
@@ -144,13 +163,37 @@ export function createSession(options: SessionOptions = {}): SessionHandle {
       // the conversation, so they die with it (E21).
       handle.manager.killAll();
 
-      applySystemPrompt(session, next.systemPrompt, graph.runtime.profileSwitchMode);
+      applySystemPrompt(
+        session,
+        next.systemPrompt,
+        graph.runtime.profileSwitchMode,
+      );
       session.config = next.config;
       session.hooks = next.hooks;
       session.profile = name;
       handle.registry = next.registry;
       handle.manager = next.manager;
       handle.profile = name;
+    },
+    modelEntries: () => modelEntries(graph),
+    switchModel(name: string) {
+      // Look up *before* touching anything, so an unknown model leaves the
+      // session exactly as it was.
+      const model = findModel(graph, name);
+      if (model === undefined) {
+        throw new UnknownModelError(
+          name,
+          modelEntries(graph).map((e) => e.name),
+        );
+      }
+      session.config = {
+        ...session.config,
+        model: model.name,
+        baseUrl: model.baseUrl,
+        apiKey: model.apiKey,
+        temperature: model.temperature ?? DEFAULT_CONFIG.temperature,
+        maxContext: model.maxContext ?? DEFAULT_CONFIG.maxContext,
+      };
     },
   };
 
@@ -187,4 +230,4 @@ function applySystemPrompt(
   }
 }
 
-export { ProfileHasNoModelError, UnknownProfileError };
+export { ProfileHasNoModelError, UnknownModelError, UnknownProfileError };

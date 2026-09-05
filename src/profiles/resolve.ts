@@ -19,7 +19,10 @@ import {
 
 /** Raised when `/profile <name>` or `spawn_subagent` names an unknown profile. */
 export class UnknownProfileError extends Error {
-  constructor(readonly profileName: string, known: readonly string[]) {
+  constructor(
+    readonly profileName: string,
+    known: readonly string[],
+  ) {
     super(
       known.length === 0
         ? `Unknown profile "${profileName}". No profiles are defined.`
@@ -119,6 +122,70 @@ export function profileEntries(graph: ResourceGraph): ProfileEntry[] {
     }
   }
   return entries;
+}
+
+/**
+ * Raised when `/model <name>` names a model that is not declared in the
+ * config. The known list is the set of config models (see `modelEntries`).
+ */
+export class UnknownModelError extends Error {
+  constructor(
+    readonly modelName: string,
+    known: readonly string[],
+  ) {
+    super(
+      known.length === 0
+        ? `Unknown model "${modelName}". No models are defined in .vise/index.ts.`
+        : `Unknown model "${modelName}". Available: ${known.join(", ")}.`,
+    );
+  }
+}
+
+/** One row of the `/model` listing: a config model's name and its origin. */
+export interface ModelEntry {
+  name: string;
+  origin: ResourceOrigin;
+}
+
+/**
+ * Every model declared in the config, in creation order (for `/model`).
+ *
+ * The built-in default model is excluded — it has no name until auto-discovery
+ * fills it in, and it is not something a user declares. A model created with
+ * an empty name is likewise excluded, for the same reason.
+ */
+export function modelEntries(graph: ResourceGraph): ModelEntry[] {
+  const entries: ModelEntry[] = [];
+  for (const resource of graph.resources.values()) {
+    if (
+      resource.kind === "model" &&
+      !resource.builtin &&
+      resource.def.name !== ""
+    ) {
+      entries.push({ name: resource.def.name, origin: resource.origin });
+    }
+  }
+  return entries;
+}
+
+/**
+ * The `ModelDef` of the config model named `name`, or `undefined` when no
+ * config model has that name. The built-in default is never matched.
+ */
+export function findModel(
+  graph: ResourceGraph,
+  name: string,
+): ModelDef | undefined {
+  for (const resource of graph.resources.values()) {
+    if (
+      resource.kind === "model" &&
+      !resource.builtin &&
+      resource.def.name === name
+    ) {
+      return resource.def;
+    }
+  }
+  return undefined;
 }
 
 /**
@@ -242,10 +309,7 @@ function modelDefOf(graph: ResourceGraph, id: ResourceId): ModelDef {
 }
 
 /** Read a numeric override off a connection's props, if it has one. */
-function numberProp(
-  edge: Connection | null,
-  key: string,
-): number | undefined {
+function numberProp(edge: Connection | null, key: string): number | undefined {
   const value = edge?.props?.[key];
   return typeof value === "number" && !Number.isNaN(value) ? value : undefined;
 }
