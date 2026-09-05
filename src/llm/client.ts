@@ -37,6 +37,33 @@ export const defaultLLMClient: LLMClient = {
 const DEFAULT_TIMEOUT_MS = 300_000;
 
 /**
+ * Convert an internal `Message` to the OpenAI chat-completions wire shape.
+ *
+ * The only difference from the internal form is assistant `tool_calls`: the
+ * wire format requires each entry to be `{ type: "function", id, function:
+ * { name, arguments } }` where `arguments` is a JSON *string* (the internal
+ * `ToolCall.arguments` is a parsed object). All other roles pass through
+ * unchanged.
+ */
+function toWireMessage(message: Message): Record<string, unknown> {
+  if (message.role === "assistant" && message.tool_calls) {
+    return {
+      role: message.role,
+      content: message.content,
+      tool_calls: message.tool_calls.map((tc) => ({
+        type: "function",
+        id: tc.id,
+        function: {
+          name: tc.name,
+          arguments: JSON.stringify(tc.arguments),
+        },
+      })),
+    };
+  }
+  return { ...message };
+}
+
+/**
  * Build the /v1/chat/completions request payload (spec §1.3.1).
  */
 export function buildRequestPayload(
@@ -46,7 +73,7 @@ export function buildRequestPayload(
 ): Record<string, unknown> {
   const payload: Record<string, unknown> = {
     model: config.model,
-    messages,
+    messages: messages.map(toWireMessage),
     stream: true,
     temperature: config.temperature,
     tool_choice: "auto",
