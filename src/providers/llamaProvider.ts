@@ -19,6 +19,18 @@ export interface LlamaProviderOptions {
   apiKey?: string;
 }
 
+/** One entry of llama.cpp's `GET /v1/models` response (wire shape). */
+interface LlamaModelEntry {
+  id: string;
+  /** llama.cpp metadata; `n_ctx` is the runtime context window in tokens. */
+  meta?: { n_ctx?: number };
+}
+
+/** The `GET /v1/models` response body (wire shape). */
+interface LlamaModelsResponse {
+  data?: LlamaModelEntry[];
+}
+
 /**
  * A `Provider` for an OpenAI-compatible llama.cpp server (providers spec
  * §3.2).
@@ -54,11 +66,9 @@ export class LlamaProvider implements Provider {
     }
     if (!response.ok) return [];
 
-    let data: { data?: { id: string; meta?: { n_ctx?: number } }[] };
+    let data: LlamaModelsResponse;
     try {
-      data = (await response.json()) as {
-        data?: { id: string; meta?: { n_ctx?: number } }[];
-      };
+      data = (await response.json()) as LlamaModelsResponse;
     } catch {
       return [];
     }
@@ -66,7 +76,7 @@ export class LlamaProvider implements Provider {
 
     return data.data
       .filter(
-        (entry): entry is { id: string; meta?: { n_ctx?: number } } =>
+        (entry): entry is LlamaModelEntry =>
           typeof entry?.id === "string" && entry.id.length > 0,
       )
       .map((entry) => {
