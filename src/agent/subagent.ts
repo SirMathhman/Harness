@@ -112,7 +112,8 @@ export function identitySection(
   providerName: string | undefined,
 ): string {
   if (config.model === null) return "";
-  const via = providerName !== undefined ? ` via the "${providerName}" provider` : "";
+  const via =
+    providerName !== undefined ? ` via the "${providerName}" provider` : "";
   return (
     `${IDENTITY_HEADER}\n` +
     `You are Vise, a local coding-agent harness. You are running model ` +

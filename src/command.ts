@@ -93,7 +93,9 @@ export async function runForeground(
   const shell = opts.shell ?? "auto";
 
   const { command: shellCmd, args } = resolveShell(shell);
-  const resolvedCwd = path.isAbsolute(cwd) ? cwd : path.resolve(process.cwd(), cwd);
+  const resolvedCwd = path.isAbsolute(cwd)
+    ? cwd
+    : path.resolve(process.cwd(), cwd);
 
   let child: ChildProcess;
   try {
@@ -160,7 +162,13 @@ export async function runForeground(
         spawnError,
       };
     }
-    return { exitCode: code ?? 0, stdout, stderr, timedOut: false, spawnError: null };
+    return {
+      exitCode: code ?? 0,
+      stdout,
+      stderr,
+      timedOut: false,
+      spawnError: null,
+    };
   } finally {
     clearTimeout(timer);
   }

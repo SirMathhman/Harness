@@ -124,7 +124,13 @@ function validateResources(graph: ResourceGraph, problems: string[]): void {
           );
           break;
         }
-        recordNameConflict(problems, "profile", name, resource.origin, profileNames);
+        recordNameConflict(
+          problems,
+          "profile",
+          name,
+          resource.origin,
+          profileNames,
+        );
         if (typeof resource.def.systemPrompt !== "string") {
           problems.push(
             `Profile "${name}" must have a string systemPrompt ` +
@@ -200,7 +206,13 @@ function validateResources(graph: ResourceGraph, problems: string[]): void {
               `to auto-discover it from the server).`,
           );
         } else if (name !== "") {
-          recordNameConflict(problems, "model", name, resource.origin, modelNames);
+          recordNameConflict(
+            problems,
+            "model",
+            name,
+            resource.origin,
+            modelNames,
+          );
         }
         if (typeof baseUrl !== "string" || baseUrl === "") {
           problems.push(
@@ -317,7 +329,10 @@ function validateSubagentPolicies(
  *   (any non-empty whitelist, since whitelist elements are provider
  *   references).
  */
-function validateModelWhitelists(graph: ResourceGraph, problems: string[]): void {
+function validateModelWhitelists(
+  graph: ResourceGraph,
+  problems: string[],
+): void {
   for (const resource of graph.resources.values()) {
     if (resource.kind !== "profile") continue;
     const selection = resource.def.models;
@@ -333,7 +348,10 @@ function validateModelWhitelists(graph: ResourceGraph, problems: string[]): void
 
     for (const element of selection) {
       const providerName = typeof element === "string" ? element : element?.[0];
-      if (typeof providerName !== "string" || !graph.providerNames.has(providerName)) {
+      if (
+        typeof providerName !== "string" ||
+        !graph.providerNames.has(providerName)
+      ) {
         const known = [...graph.providerNames.keys()];
         problems.push(
           `${where} references unknown provider ${JSON.stringify(providerName)} ` +
@@ -365,7 +383,8 @@ function firstModelEdgeTarget(
 ): { id: Resource["id"]; name: string } | null {
   for (const edge of graph.edgesFrom.get(profileId) ?? []) {
     const target = graph.resources.get(edge.to);
-    if (target?.kind === "model") return { id: target.id, name: target.def.name };
+    if (target?.kind === "model")
+      return { id: target.id, name: target.def.name };
   }
   return null;
 }

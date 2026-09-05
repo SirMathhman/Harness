@@ -61,9 +61,7 @@ describe("runCommand (v0.6.0 spec §2.1, §3.2)", () => {
   test("A5: display() formats a run that writes to stderr", async () => {
     // `Write-Error` (PowerShell) / `echo ... >&2` (sh) both land on stderr.
     const cmd =
-      process.platform === "win32"
-        ? "Write-Error boom"
-        : "echo boom >&2";
+      process.platform === "win32" ? "Write-Error boom" : "echo boom >&2";
     const out = await runCommand(cmd);
     const d = out.display();
     expect(d.startsWith(`Command: ${cmd}\n`)).toBe(true);
