@@ -56,11 +56,22 @@ export async function loadViseConfig(
   const globalEntry = findConfigEntry(globalRoot);
   if (globalEntry !== null) {
     registry.setOrigin("global");
-    runConfigFn(
-      await importConfig(globalEntry, "~/.vise/index.ts"),
-      registry,
-      "~/.vise/index.ts",
-    );
+    // The global config is loaded with CWD set to its own directory so that
+    // relative paths in the config (e.g. `fs.readdirSync("./agents")`) resolve
+    // against the global config directory, not the project directory. The
+    // original CWD is restored before the project config is loaded.
+    const globalDir = path.dirname(globalEntry);
+    const prevCwd = process.cwd();
+    process.chdir(globalDir);
+    try {
+      runConfigFn(
+        await importConfig(globalEntry, "~/.vise/index.ts"),
+        registry,
+        "~/.vise/index.ts",
+      );
+    } finally {
+      process.chdir(prevCwd);
+    }
   }
 
   const projectEntry = findConfigEntry(root);
