@@ -210,7 +210,8 @@ export class LlamaProvider implements Provider {
     // A stale entry would let a failed save be followed by a restore of the
     // previous run's file, so clear it before trying.
     this.savedDepths.delete(depth);
-    if (await this.slotAction("save", depth, model)) this.savedDepths.add(depth);
+    if (await this.slotAction("save", depth, model))
+      this.savedDepths.add(depth);
   }
 
   /**

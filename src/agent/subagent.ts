@@ -216,7 +216,8 @@ export function makeSubagentRunner(
   const client = ctx.client ?? defaultLLMClient;
 
   return async (opts: SubagentRunOptions): Promise<string> => {
-    const emit = (event: SubagentRenderEvent) => ctx.render?.(opts.depth, event);
+    const emit = (event: SubagentRenderEvent) =>
+      ctx.render?.(opts.depth, event);
 
     // Model selection for a subagent (providers spec §3.7): a non-empty
     // `models` whitelist on its profile picks the first match; otherwise (or

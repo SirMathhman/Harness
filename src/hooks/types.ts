@@ -57,9 +57,7 @@ export const BLOCKING_HOOK_EVENTS: readonly HookEvent[] = [
 
 /** Type guard for a raw value being a valid `HookEvent` literal. */
 export function isHookEvent(value: unknown): value is HookEvent {
-  return (
-    typeof value === "string" && HOOK_EVENTS.includes(value as HookEvent)
-  );
+  return typeof value === "string" && HOOK_EVENTS.includes(value as HookEvent);
 }
 
 /** Whether a block returned on `event` actually blocks (hooks spec §3.1). */
@@ -97,10 +95,7 @@ export interface HookContext {
  * - `string` — block, with the string as the reason.
  * - `{ message, block? }` — block when `block === true`, else advisory.
  */
-export type HookResult =
-  | void
-  | string
-  | { message: string; block?: boolean };
+export type HookResult = void | string | { message: string; block?: boolean };
 
 /**
  * A hook handler. Synchronous for every event except `subagent:before` and
