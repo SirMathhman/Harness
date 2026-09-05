@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import path from "node:path";
 import type { BackgroundCommand, Tool } from "../types.js";
+import { runForeground } from "../command.js";
 import { newId, resolveShell, truncate } from "../utils.js";
 
 /**
@@ -67,7 +68,10 @@ export class BackgroundCommandManager {
 
   /**
    * Run a command in the foreground with a timeout. The child is tracked so
-   * `killAll()` can terminate it on interruption.
+   * `killAll()` can terminate it on interruption. Delegates to the shared
+   * `runForeground` primitive (src/command.ts), which resolves on whichever of
+   * the child's `error`/`close` events settles first — so a spawn failure is
+   * surfaced immediately rather than hanging until the timeout.
    */
   async runForeground(
     command: string,
@@ -80,33 +84,27 @@ export class BackgroundCommandManager {
     stderr: string;
     timedOut: boolean;
   }> {
-    const { command: shellCmd, args } = resolveShell(shell);
-    const child = spawn(shellCmd, [...args, command], {
-      cwd: cwd ? resolveCwd(cwd) : process.cwd(),
-      env: process.env,
+    let tracked: ChildProcess | null = null;
+    const result = await runForeground(command, {
+      cwd,
+      timeoutMs,
+      shell,
+      onChild: (child) => {
+        tracked = child;
+        this.foregroundChild = child;
+      },
     });
-    this.foregroundChild = child;
-
-    let stdout = "";
-    let stderr = "";
-    let timedOut = false;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      child.kill("SIGKILL");
-    }, timeoutMs);
-
-    try {
-      child.stdout?.on("data", (d: Buffer) => (stdout += d.toString("utf8")));
-      child.stderr?.on("data", (d: Buffer) => (stderr += d.toString("utf8")));
-      child.on("error", (err) => (stderr += `\n${err.message}`));
-      const code = await new Promise<number>((resolve) => {
-        child.on("close", (c) => resolve(c ?? 0));
-      });
-      return { exitCode: code, stdout, stderr, timedOut };
-    } finally {
-      clearTimeout(timer);
-      if (this.foregroundChild === child) this.foregroundChild = null;
+    // The child has settled; clear the tracked reference, but only if a newer
+    // foreground command hasn't already replaced it.
+    if (tracked !== null && this.foregroundChild === tracked) {
+      this.foregroundChild = null;
     }
+    return {
+      exitCode: result.exitCode,
+      stdout: result.stdout,
+      stderr: result.stderr,
+      timedOut: result.timedOut,
+    };
   }
 }
 

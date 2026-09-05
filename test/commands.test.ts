@@ -26,6 +26,25 @@ describe("command tools (AC 9, 10)", () => {
     expect(out).toContain("timed out");
   });
 
+  test("run_command foreground spawn failure is surfaced, not a timeout", async () => {
+    // A non-existent *shell*: the child emits `error` and never `close`. The
+    // shared primitive must resolve on the spawn error, not hang until the
+    // timeout and misreport it as `timedOut`. (A non-existent binary inside a
+    // real shell exits non-zero via `close`, which was never the bug.)
+    const missingShell = isWin
+      ? "definitely-not-a-real-shell.exe"
+      : "/nonexistent/definitely-not-a-real-shell";
+    const manager = new BackgroundCommandManager();
+    const tool = makeRunCommandTool(manager, 5000, missingShell, 10000);
+    const out = await tool.handler({ command: "echo hi", timeoutMs: 2000 });
+    // Not reported as a timeout.
+    expect(out).not.toContain("timed out");
+    const parsed = JSON.parse(out) as { exitCode: number; stderr: string };
+    expect(parsed.exitCode).toBe(-1);
+    // The spawn error is surfaced in stderr.
+    expect(parsed.stderr.length).toBeGreaterThan(0);
+  });
+
   test("run_command background returns id; check_command reports it (AC 10)", async () => {
     const manager = new BackgroundCommandManager();
     const run = makeRunCommandTool(manager, 5000, "auto", 10000);
