@@ -158,9 +158,10 @@ export class LlamaProvider implements Provider {
       )
       .map((entry) => {
         // llama.cpp reports the runtime context window as `meta.n_ctx` on each
-        // /v1/models entry. Surface it as the model's `maxContext` so the
-        // session stops defaulting to 8192; omit it when absent/invalid so a
-        // non-llama backend (or an older server) falls back to the default.
+        // /v1/models entry. Surface it as the model's `maxContext`; omit it
+        // when absent/invalid, which leaves the model with no context size —
+        // a fatal MissingMaxContextError when it's actually resolved, rather
+        // than a silent guess (providers spec §3.11).
         const nCtx = entry.meta?.n_ctx;
         return {
           name: entry.id,

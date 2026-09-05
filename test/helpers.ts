@@ -26,7 +26,12 @@ export function modelGraph(
     reg.setRuntime(runtime);
     reg.createConnection(
       reg.builtins.defaultProfile,
-      reg.createModel({ name: "test-model", baseUrl, apiKey: "" }),
+      reg.createModel({
+        name: "test-model",
+        baseUrl,
+        apiKey: "",
+        maxContext: 8192,
+      }),
     );
     extra(reg);
   });
@@ -51,6 +56,7 @@ export function profileGraph(
       name: "test-model",
       baseUrl: "http://localhost:8080",
       apiKey: "",
+      maxContext: 8192,
     });
     const profile = (name: string, def: Partial<ProfileDef> = {}) => {
       const id = reg.createProfile({ name, systemPrompt: "", ...def });

@@ -46,6 +46,28 @@ export class ProfileHasNoModelError extends Error {
 }
 
 /**
+ * Raised when a resolved model reports no context-window size: no connection
+ * prop, no `maxContext` on the model definition, and (for a provider-
+ * discovered model) no usable value from discovery. There is no built-in
+ * default to fall back to (providers spec §3.11) — compaction has no
+ * threshold to compare prompt-token counts against without a real number, so
+ * this is fatal rather than a silent guess.
+ */
+export class MissingMaxContextError extends Error {
+  constructor(
+    readonly modelName: string,
+    readonly baseUrl: string,
+  ) {
+    super(
+      `Model "${modelName}" (${baseUrl}) has no context-window size. Set ` +
+        `"maxContext" on it — via reg.createModel({ ..., maxContext: N }) or a ` +
+        `Profile→Model connection prop — or use a provider that reports one ` +
+        `(a llama.cpp server exposes it as meta.n_ctx on GET /v1/models).`,
+    );
+  }
+}
+
+/**
  * Everything a session needs to run under one profile (profiles spec §3.5).
  * Produced purely from a `ResourceGraph` plus a profile name (and, for model
  * selection, the options below) — no I/O, no side effects — so switching
@@ -389,6 +411,14 @@ export function resolveProfile(
   const systemPrompt =
     profile.def.systemPrompt === "" ? null : profile.def.systemPrompt;
 
+  // Connection props override the model's own parameters (spec §3.5); there
+  // is no further fallback for maxContext — a resolved model that still has
+  // none is a fatal MissingMaxContextError (providers spec §3.11).
+  const maxContext = numberProp(propsEdge, "maxContext") ?? model.maxContext;
+  if (modelId !== null && maxContext === undefined) {
+    throw new MissingMaxContextError(model.name, model.baseUrl);
+  }
+
   return {
     name,
     modelId,
@@ -398,16 +428,14 @@ export function resolveProfile(
       baseUrl: model.baseUrl,
       model: model.name === "" ? null : model.name,
       apiKey: model.apiKey,
-      // Connection props override the model's own parameters (spec §3.5),
-      // which in turn override the built-in defaults.
       temperature:
         numberProp(propsEdge, "temperature") ??
         model.temperature ??
         DEFAULT_CONFIG.temperature,
-      maxContext:
-        numberProp(propsEdge, "maxContext") ??
-        model.maxContext ??
-        DEFAULT_CONFIG.maxContext,
+      // No model resolved (modelId === null): the caller must already treat
+      // this as fatal (ProfileHasNoModelError) before running a turn, so 0 is
+      // an inert placeholder, never an assumed context size.
+      maxContext: maxContext ?? 0,
       systemPrompt,
     },
     builtinTools: hasToolEdge ? builtinTools : null,

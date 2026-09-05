@@ -198,7 +198,12 @@ describe("subagent runner (§3.8.2, §3.8.5)", () => {
   });
 
   test("typed turn outcome distinguishes cap from plain text (E10 vs E11)", async () => {
-    const cfg = { ...DEFAULT_CONFIG, model: "test-model", maxIterations: 2 };
+    const cfg = {
+      ...DEFAULT_CONFIG,
+      model: "test-model",
+      maxIterations: 2,
+      maxContext: 8192,
+    };
     const { registry } = buildToolRegistry(cfg);
     const mkSession = (): Session => ({
       messages: [{ role: "system", content: "sys" }],

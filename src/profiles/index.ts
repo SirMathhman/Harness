@@ -34,6 +34,7 @@ export {
   availableModelIds,
   defaultProfileName,
   findModelsByRef,
+  MissingMaxContextError,
   ModelNotAvailableError,
   ProfileHasNoModelError,
   profileEntries,

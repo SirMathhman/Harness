@@ -19,7 +19,6 @@ import {
   modelCommand,
   REPL_COMMANDS,
 } from "../src/cli/commands.js";
-import { DEFAULT_CONFIG } from "../src/config/defaults.js";
 import { CONFIG_STUB, writeConfigStub } from "../src/profiles/index.js";
 import { modelGraph } from "./helpers.js";
 
@@ -113,7 +112,7 @@ describe("profile persistence end-to-end (config spec §3.8, AC 9, AC 13, C17)",
         "  reg.addProvider({",
         '    name: "stub",',
         "    async discoverModels() {",
-        '      return [{ name: "stub-model", baseUrl: "http://127.0.0.1:1", apiKey: "" }];',
+        '      return [{ name: "stub-model", baseUrl: "http://127.0.0.1:1", apiKey: "", maxContext: 8192 }];',
         "    },",
         "  });",
         "};",
@@ -219,7 +218,7 @@ describe("/context command", () => {
   test("reports no LLM call yet when lastPromptTokens is null", () => {
     const { session } = createSession({ graph: modelGraph() });
     expect(contextUsageLine(session)).toBe(
-      `context: no LLM call yet (window ${DEFAULT_CONFIG.maxContext} tokens)`,
+      "context: no LLM call yet (window 8192 tokens)",
     );
   });
 
@@ -227,7 +226,7 @@ describe("/context command", () => {
     const { session } = createSession({ graph: modelGraph() });
     session.lastPromptTokens = 4096;
     expect(contextUsageLine(session)).toBe(
-      `context: 4096 / ${DEFAULT_CONFIG.maxContext} tokens (50.0%)`,
+      "context: 4096 / 8192 tokens (50.0%)",
     );
   });
 });

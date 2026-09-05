@@ -7,6 +7,7 @@ import {
   defaultGraph,
   defaultProfileName,
   findModelsByRef,
+  MissingMaxContextError,
   ModelNotAvailableError,
   ProfileHasNoModelError,
   profileEntries,
@@ -91,6 +92,8 @@ export interface SessionHandle {
    *
    * @throws UnknownProfileError when no such profile exists.
    * @throws ProfileHasNoModelError when the profile resolves to no model.
+   * @throws MissingMaxContextError when the resolved model reports no
+   *   context-window size.
    *   Either way the session is left untouched.
    */
   switchProfile(name: string): void;
@@ -111,6 +114,8 @@ export interface SessionHandle {
    * @throws AmbiguousModelError when `ref` matches more than one provider.
    * @throws ModelNotAvailableError when the match is outside the active
    *   profile's `models` whitelist.
+   * @throws MissingMaxContextError when the matched model reports no
+   *   context-window size.
    *   In every case the session is left untouched.
    */
   switchModel(ref: string): void;
@@ -258,6 +263,9 @@ export function createSession(options: SessionOptions = {}): SessionHandle {
       const resource = graph.resources.get(match.id);
       const def = resource?.kind === "model" ? resource.def : undefined;
       if (def === undefined) throw new UnknownModelError(ref);
+      if (def.maxContext === undefined) {
+        throw new MissingMaxContextError(def.name, def.baseUrl);
+      }
 
       session.config = {
         ...session.config,
@@ -265,7 +273,7 @@ export function createSession(options: SessionOptions = {}): SessionHandle {
         baseUrl: def.baseUrl,
         apiKey: def.apiKey,
         temperature: def.temperature ?? DEFAULT_CONFIG.temperature,
-        maxContext: def.maxContext ?? DEFAULT_CONFIG.maxContext,
+        maxContext: def.maxContext,
       };
       activeModelId = match.id;
     },

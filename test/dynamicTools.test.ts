@@ -59,13 +59,17 @@ describe("searchCatalog (spec §3.3.1)", () => {
 
 describe("dynamic tool surface (spec §3.3.1)", () => {
   test("default mode advertises every tool", () => {
-    const { registry } = buildToolRegistry({ ...DEFAULT_CONFIG });
+    const { registry } = buildToolRegistry({
+      ...DEFAULT_CONFIG,
+      maxContext: 8192,
+    });
     expect(registry.advertised().length).toBe(registry.all().length);
   });
 
   test("dynamic mode advertises only the constant surface", () => {
     const { registry } = buildToolRegistry({
       ...DEFAULT_CONFIG,
+      maxContext: 8192,
       dynamicTools: true,
     });
     const advertised = registry.advertised().map((t) => t.name);
@@ -78,6 +82,7 @@ describe("dynamic tool surface (spec §3.3.1)", () => {
   test("search_tools returns matching definitions as JSON", async () => {
     const { registry } = buildToolRegistry({
       ...DEFAULT_CONFIG,
+      maxContext: 8192,
       dynamicTools: true,
     });
     const tool = makeSearchToolsTool(registry);
@@ -89,6 +94,7 @@ describe("dynamic tool surface (spec §3.3.1)", () => {
   test("search_tools with no match reports none", async () => {
     const { registry } = buildToolRegistry({
       ...DEFAULT_CONFIG,
+      maxContext: 8192,
       dynamicTools: true,
     });
     const tool = makeSearchToolsTool(registry);
@@ -99,6 +105,7 @@ describe("dynamic tool surface (spec §3.3.1)", () => {
   test("call_tool dispatches to a real tool", async () => {
     const { registry } = buildToolRegistry({
       ...DEFAULT_CONFIG,
+      maxContext: 8192,
       dynamicTools: true,
     });
     const tool = makeCallToolTool(registry, DEFAULT_CONFIG.maxToolOutputChars);
@@ -113,6 +120,7 @@ describe("dynamic tool surface (spec §3.3.1)", () => {
   test("call_tool with an unknown tool returns an error string", async () => {
     const { registry } = buildToolRegistry({
       ...DEFAULT_CONFIG,
+      maxContext: 8192,
       dynamicTools: true,
     });
     const tool = makeCallToolTool(registry, DEFAULT_CONFIG.maxToolOutputChars);
@@ -123,6 +131,7 @@ describe("dynamic tool surface (spec §3.3.1)", () => {
   test("read_file is still directly callable in dynamic mode", async () => {
     const { registry } = buildToolRegistry({
       ...DEFAULT_CONFIG,
+      maxContext: 8192,
       dynamicTools: true,
     });
     expect(registry.get("read_file")).toBe(readFileTool);

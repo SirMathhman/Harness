@@ -80,7 +80,7 @@ function twoTierProject(files: {
 /** The tool named `name` from a registry built over `graph`'s skills. */
 function toolFrom(graph: ResourceGraph, name: string): Tool {
   const { registry } = buildToolRegistry(
-    { ...DEFAULT_CONFIG },
+    { ...DEFAULT_CONFIG, maxContext: 8192 },
     { skills: storeOf(graph) },
   );
   const tool = registry.get(name);
@@ -257,6 +257,7 @@ describe("skill index (skills spec §3.3)", () => {
         name: "test-model",
         baseUrl: "http://localhost:8080",
         apiKey: "",
+        maxContext: 8192,
       });
       const other = reg.createProfile({ name: "other", systemPrompt: "other" });
       reg.createConnection(other, model);
@@ -282,6 +283,7 @@ describe("list_skills (skills spec §3.4)", () => {
         name: "test-model",
         baseUrl: "http://localhost:8080",
         apiKey: "",
+        maxContext: 8192,
       });
       // A profile that enumerates its tools still gets the skill tools.
       const narrow = reg.createProfile({ name: "narrow", systemPrompt: "n" });
@@ -318,7 +320,7 @@ describe("list_skills (skills spec §3.4)", () => {
 
   test("is on the constant advertised surface in dynamic mode (AC-12)", () => {
     const { registry } = buildToolRegistry(
-      { ...DEFAULT_CONFIG, dynamicTools: true },
+      { ...DEFAULT_CONFIG, maxContext: 8192, dynamicTools: true },
       { skills: storeOf(skillGraph()) },
     );
     const advertised = registry.advertised().map((t) => t.name);
@@ -334,7 +336,10 @@ describe("list_skills (skills spec §3.4)", () => {
 describe("read_skill (skills spec §3.5)", () => {
   test("is present in every profile's registry (AC-13)", () => {
     // Covered together with AC-8 above; asserted here on the bare registry.
-    const { registry } = buildToolRegistry({ ...DEFAULT_CONFIG });
+    const { registry } = buildToolRegistry({
+      ...DEFAULT_CONFIG,
+      maxContext: 8192,
+    });
     expect(registry.get("read_skill")).toBeDefined();
   });
 
@@ -349,7 +354,7 @@ describe("read_skill (skills spec §3.5)", () => {
       reg.createSkill("big", "a large skill", body);
     });
     const { registry } = buildToolRegistry(
-      { ...DEFAULT_CONFIG, maxToolOutputChars: 100 },
+      { ...DEFAULT_CONFIG, maxContext: 8192, maxToolOutputChars: 100 },
       { skills: storeOf(graph) },
     );
     const result = await dispatch(
@@ -363,7 +368,10 @@ describe("read_skill (skills spec §3.5)", () => {
   });
 
   test("an ordinary tool is still truncated (§8.2)", async () => {
-    const { registry } = buildToolRegistry({ ...DEFAULT_CONFIG });
+    const { registry } = buildToolRegistry({
+      ...DEFAULT_CONFIG,
+      maxContext: 8192,
+    });
     registry.register({
       name: "loud",
       mutating: false,
@@ -415,7 +423,7 @@ describe("read_skill (skills spec §3.5)", () => {
 
   test("is on the constant advertised surface in dynamic mode (AC-19)", () => {
     const { registry } = buildToolRegistry(
-      { ...DEFAULT_CONFIG, dynamicTools: true },
+      { ...DEFAULT_CONFIG, maxContext: 8192, dynamicTools: true },
       { skills: storeOf(skillGraph()) },
     );
     expect(registry.advertised().map((t) => t.name)).toContain("read_skill");

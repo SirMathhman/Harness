@@ -261,7 +261,12 @@ describe("profile resolution (profiles §3.5)", () => {
 
   test("a profile with no model edge and no whitelist picks up any declared model (providers spec §3.4)", () => {
     const graph = graphFrom((reg) => {
-      reg.createModel({ name: "solo", baseUrl: "http://localhost:9", apiKey: "" });
+      reg.createModel({
+        name: "solo",
+        baseUrl: "http://localhost:9",
+        apiKey: "",
+        maxContext: 8192,
+      });
       reg.createProfile({ name: "plain", systemPrompt: "p" });
     });
     expect(resolveProfile(graph, "plain").config.baseUrl).toBe(
@@ -435,11 +440,13 @@ describe("/profile command and switching (profiles §3.6, §3.9)", () => {
         name: "standard-model",
         baseUrl: "http://localhost:8080",
         apiKey: "",
+        maxContext: 8192,
       });
       const fast = reg.createModel({
         name: "fast-model",
         baseUrl: "http://localhost:1",
         apiKey: "",
+        maxContext: 8192,
       });
       const def = reg.createProfile({
         name: "default",
@@ -560,6 +567,7 @@ describe("/profile command and switching (profiles §3.6, §3.9)", () => {
         name: "m",
         baseUrl: "http://localhost:8080",
         apiKey: "",
+        maxContext: 8192,
       });
       const ok = reg.createProfile({ name: "default", systemPrompt: "ok" });
       reg.createConnection(ok, model);

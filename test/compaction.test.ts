@@ -15,7 +15,7 @@ import type { LLMClient } from "../src/llm/client.js";
 import { graphFrom } from "./helpers.js";
 import type { Config, Message } from "../src/types.js";
 
-const cfg: Config = { ...DEFAULT_CONFIG, model: "m" };
+const cfg: Config = { ...DEFAULT_CONFIG, model: "m", maxContext: 8192 };
 
 describe("compaction (AC 8)", () => {
   test("shouldCompact is false below threshold", () => {

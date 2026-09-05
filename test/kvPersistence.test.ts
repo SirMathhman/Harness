@@ -187,7 +187,7 @@ function providerGraph(provider: LlamaProvider, baseUrl: string): ResourceGraph 
   return addDiscoveredModels(graph, [
     {
       providerId,
-      models: [{ name: "test-model", baseUrl, apiKey: "" }],
+      models: [{ name: "test-model", baseUrl, apiKey: "", maxContext: 8192 }],
     },
   ]);
 }

@@ -4,6 +4,7 @@ import { c } from "./cli/color.js";
 import { startRepl } from "./cli/repl.js";
 import {
   addDiscoveredModels,
+  MissingMaxContextError,
   resolveProfile,
   resolveStartingProfile,
   stateFilePath,
@@ -55,11 +56,16 @@ async function main(): Promise<void> {
   graph = addDiscoveredModels(graph, results);
   const statePath = stateFilePath();
   const starting = resolveStartingProfile(graph, statePath);
-  if (
-    resolveProfile(graph, starting.profile, {
+  let startingResolved;
+  try {
+    startingResolved = resolveProfile(graph, starting.profile, {
       modelNameHint: starting.lastModel,
-    }).config.model === null
-  ) {
+    });
+  } catch (err) {
+    if (err instanceof MissingMaxContextError) return fail(err.message);
+    throw err;
+  }
+  if (startingResolved.config.model === null) {
     return fail(
       `Profile '${starting.profile}' has no available models.\n` +
         "Connect a Model resource to it in ./.vise/index.ts, or make sure a " +

@@ -53,17 +53,23 @@ export const DEFAULT_RUNTIME: RuntimeSettings = {
 };
 
 /**
- * A fully defaulted `Config`: the runtime settings plus the default model's
- * parameters. `model` is intentionally null — when unset, Vise auto-discovers
- * the first model from the running server's `/v1/models` (spec §3.10).
+ * A fully defaulted `Config`, minus `maxContext`: the runtime settings plus
+ * the default model's parameters. `model` is intentionally null — when unset,
+ * Vise auto-discovers the first model from the running server's `/v1/models`
+ * (spec §3.10).
+ *
+ * There is no default context-window size (providers spec §3.11): a resolved
+ * model that reports none — no connection prop, no `maxContext` on its
+ * definition, no usable value from provider discovery — is a fatal
+ * `MissingMaxContextError` rather than a silent guess, since compaction has
+ * no threshold to compare against without it.
  */
-export const DEFAULT_CONFIG: Config = {
+export const DEFAULT_CONFIG: Omit<Config, "maxContext"> = {
   ...DEFAULT_RUNTIME,
   baseUrl: "http://localhost:8080",
   model: null,
   apiKey: "",
   temperature: 0.2,
-  maxContext: 8192,
   systemPrompt: null,
 };
 

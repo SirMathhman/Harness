@@ -270,8 +270,8 @@ describe("profile model-selection whitelist (providers spec §3.4)", () => {
       },
       {
         llama: [
-          { name: "a", baseUrl: "http://x", apiKey: "" },
-          { name: "b", baseUrl: "http://x", apiKey: "" },
+          { name: "a", baseUrl: "http://x", apiKey: "", maxContext: 8192 },
+          { name: "b", baseUrl: "http://x", apiKey: "", maxContext: 8192 },
         ],
       },
     );
@@ -292,8 +292,8 @@ describe("profile model-selection whitelist (providers spec §3.4)", () => {
       },
       {
         llama: [
-          { name: "a", baseUrl: "http://x", apiKey: "" },
-          { name: "b", baseUrl: "http://x", apiKey: "" },
+          { name: "a", baseUrl: "http://x", apiKey: "", maxContext: 8192 },
+          { name: "b", baseUrl: "http://x", apiKey: "", maxContext: 8192 },
         ],
       },
     );
@@ -327,10 +327,12 @@ describe("profile model-selection whitelist (providers spec §3.4)", () => {
       },
       {
         llama: [
-          { name: "a", baseUrl: "http://x", apiKey: "" },
-          { name: "b", baseUrl: "http://x", apiKey: "" },
+          { name: "a", baseUrl: "http://x", apiKey: "", maxContext: 8192 },
+          { name: "b", baseUrl: "http://x", apiKey: "", maxContext: 8192 },
         ],
-        openrouter: [{ name: "c", baseUrl: "http://y", apiKey: "" }],
+        openrouter: [
+          { name: "c", baseUrl: "http://y", apiKey: "", maxContext: 8192 },
+        ],
       },
     );
     const resolved = resolveProfile(graph, "p");
@@ -355,8 +357,8 @@ describe("profile model-selection whitelist (providers spec §3.4)", () => {
       },
       {
         llama: [
-          { name: "qwen-7b", baseUrl: "http://x", apiKey: "" },
-          { name: "llama-3", baseUrl: "http://x", apiKey: "" },
+          { name: "qwen-7b", baseUrl: "http://x", apiKey: "", maxContext: 8192 },
+          { name: "llama-3", baseUrl: "http://x", apiKey: "", maxContext: 8192 },
         ],
       },
     );
@@ -377,7 +379,11 @@ describe("profile model-selection whitelist (providers spec §3.4)", () => {
         reg.createModel({ name: "manual", baseUrl: "http://z", apiKey: "" });
         reg.createProfile({ name: "p", systemPrompt: "", models: ["llama"] });
       },
-      { llama: [{ name: "a", baseUrl: "http://x", apiKey: "" }] },
+      {
+        llama: [
+          { name: "a", baseUrl: "http://x", apiKey: "", maxContext: 8192 },
+        ],
+      },
     );
     const resolved = resolveProfile(graph, "p");
     expect(resolved.availableModelIds).toHaveLength(1);
@@ -437,8 +443,12 @@ describe("/model across providers (providers spec §3.8)", () => {
         });
       },
       {
-        llama_a: [{ name: "shared", baseUrl: "http://a", apiKey: "" }],
-        llama_b: [{ name: "shared", baseUrl: "http://b", apiKey: "" }],
+        llama_a: [
+          { name: "shared", baseUrl: "http://a", apiKey: "", maxContext: 8192 },
+        ],
+        llama_b: [
+          { name: "shared", baseUrl: "http://b", apiKey: "", maxContext: 8192 },
+        ],
       },
     );
     const handle = createSession({ graph });
@@ -463,6 +473,7 @@ describe("/model across providers (providers spec §3.8)", () => {
             name: "peculiar-ragdoll/Dirk-Qwen3.8-27B-GGUF:Q4_K_XL",
             baseUrl: "http://x",
             apiKey: "",
+            maxContext: 8192,
           },
         ],
       },
@@ -492,8 +503,8 @@ describe("/model across providers (providers spec §3.8)", () => {
       },
       {
         llama: [
-          { name: "a", baseUrl: "http://x", apiKey: "" },
-          { name: "b", baseUrl: "http://x", apiKey: "" },
+          { name: "a", baseUrl: "http://x", apiKey: "", maxContext: 8192 },
+          { name: "b", baseUrl: "http://x", apiKey: "", maxContext: 8192 },
         ],
       },
     );
@@ -569,7 +580,11 @@ describe("subagent model inheritance (providers spec §3.7)", () => {
           models: ["other"],
         });
       },
-      { llama: [{ name: "a", baseUrl: "http://a", apiKey: "" }] },
+      {
+        llama: [
+          { name: "a", baseUrl: "http://a", apiKey: "", maxContext: 8192 },
+        ],
+      },
     );
     const logs: string[] = [];
     const client: LLMClient = {
@@ -605,8 +620,8 @@ describe("subagent model inheritance (providers spec §3.7)", () => {
       },
       {
         llama: [
-          { name: "a", baseUrl: "http://a", apiKey: "" },
-          { name: "b", baseUrl: "http://b", apiKey: "" },
+          { name: "a", baseUrl: "http://a", apiKey: "", maxContext: 8192 },
+          { name: "b", baseUrl: "http://b", apiKey: "", maxContext: 8192 },
         ],
       },
     );

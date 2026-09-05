@@ -18,6 +18,7 @@ import { HookManager, type RegisteredHook } from "../hooks/index.js";
 import type { Provider } from "../providers/index.js";
 import {
   availableModelIds,
+  MissingMaxContextError,
   profileNames,
   resolveProfile,
   systemPromptOf,
@@ -259,9 +260,14 @@ export function makeSubagentRunner(
         modelId: inheritParent ? null : modelId,
       });
     } catch (err) {
-      // The tool validates the name first, so this is only reachable if the
-      // graph changed underneath us. Still data, never control.
-      if (err instanceof UnknownProfileError) {
+      // The tool validates the name first, so an unknown profile is only
+      // reachable if the graph changed underneath us; a missing context size
+      // is a real, reachable condition when the whitelist picks a model that
+      // reports none. Either way it's data, never control (E18-E20).
+      if (
+        err instanceof UnknownProfileError ||
+        err instanceof MissingMaxContextError
+      ) {
         emit({ kind: "end", ok: false, label: "failed" });
         return `subagent failed: ${err.message}`;
       }

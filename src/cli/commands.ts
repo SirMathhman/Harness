@@ -4,6 +4,7 @@ import type { SessionHandle } from "../agent/session.js";
 import { HookManager } from "../hooks/index.js";
 import {
   AmbiguousModelError,
+  MissingMaxContextError,
   ModelNotAvailableError,
   ProfileHasNoModelError,
   UnknownModelError,
@@ -172,7 +173,8 @@ export function profileCommand(
   } catch (err) {
     if (
       err instanceof UnknownProfileError ||
-      err instanceof ProfileHasNoModelError
+      err instanceof ProfileHasNoModelError ||
+      err instanceof MissingMaxContextError
     ) {
       return err.message;
     }
@@ -224,7 +226,8 @@ export function modelCommand(
     if (
       err instanceof UnknownModelError ||
       err instanceof AmbiguousModelError ||
-      err instanceof ModelNotAvailableError
+      err instanceof ModelNotAvailableError ||
+      err instanceof MissingMaxContextError
     ) {
       return err.message;
     }
