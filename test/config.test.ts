@@ -22,7 +22,7 @@ import {
   type Registry,
 } from "../src/profiles/index.js";
 import { createSession } from "../src/agent/session.js";
-import { profileCommand, profileListing } from "../src/cli/repl.js";
+import { profileCommand, profileListing } from "../src/cli/commands.js";
 import { graphFrom, modelGraph } from "./helpers.js";
 
 /** Two isolated temp directories standing in for `~/.vise` and `./.vise`. */

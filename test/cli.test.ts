@@ -10,15 +10,15 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createSession } from "../src/agent/session.js";
+import { promptLabel } from "../src/cli/repl.js";
 import {
   contextUsageLine,
   findCommand,
   helpText,
   initCommand,
   modelCommand,
-  promptLabel,
   REPL_COMMANDS,
-} from "../src/cli/repl.js";
+} from "../src/cli/commands.js";
 import { DEFAULT_CONFIG } from "../src/config/defaults.js";
 import { CONFIG_STUB, writeConfigStub } from "../src/profiles/index.js";
 import { modelGraph } from "./helpers.js";

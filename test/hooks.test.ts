@@ -17,7 +17,7 @@ import {
   hooksCommand,
   hooksListing,
   REPL_COMMANDS,
-} from "../src/cli/repl.js";
+} from "../src/cli/commands.js";
 import {
   IMPLICIT_PROFILE_NAME,
   ViseConfigError,

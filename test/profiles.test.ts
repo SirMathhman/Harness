@@ -15,7 +15,7 @@ import {
   type ResourceGraph,
 } from "../src/profiles/index.js";
 import { createSession } from "../src/agent/session.js";
-import { profileCommand, profileListing } from "../src/cli/repl.js";
+import { profileCommand, profileListing } from "../src/cli/commands.js";
 import { runTurn } from "../src/agent/loop.js";
 import { makeSubagentRunner } from "../src/agent/subagent.js";
 import { DEFAULT_SYSTEM_PROMPT } from "../src/config/defaults.js";
