@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import { CliError, helpText, parseCliArgs } from "./cli/args.js";
+import { c } from "./cli/color.js";
 import { startRepl } from "./cli/repl.js";
 import {
   addDiscoveredModels,
@@ -88,8 +89,10 @@ async function discoverAllModels(
       models = await provider.discoverModels();
     } catch (err) {
       console.error(
-        `Provider "${provider.name}" threw during discovery: ` +
-          `${(err as Error).message}`,
+        c.yellow(
+          `Provider "${provider.name}" threw during discovery: ` +
+            `${(err as Error).message}`,
+        ),
       );
       models = [];
     }
@@ -100,7 +103,9 @@ async function discoverAllModels(
           ? `'${provider.name}' (${url})`
           : `'${provider.name}'`;
       console.error(
-        `Provider ${label} returned no models. Is the server running?`,
+        c.yellow(
+          `Provider ${label} returned no models. Is the server running?`,
+        ),
       );
     }
     results.push({ providerId, models });
@@ -111,13 +116,13 @@ async function discoverAllModels(
 }
 
 function fail(message: string): void {
-  console.error(message);
+  console.error(c.red(message));
   process.exitCode = 1;
 }
 
 if (import.meta.main) {
   main().catch((err) => {
-    console.error(`Fatal: ${(err as Error).message}`);
+    console.error(c.red(`Fatal: ${(err as Error).message}`));
     process.exitCode = 1;
   });
 }
