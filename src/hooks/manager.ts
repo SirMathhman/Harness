@@ -4,6 +4,7 @@ import {
   type Hook,
   type HookContext,
   type HookEvent,
+  type SubagentOutcome,
 } from "./types.js";
 
 /** A loaded hook plus where it came from (shown by `/hooks`). */
@@ -51,9 +52,15 @@ export interface HookDispatchOptions {
   };
   /**
    * The active model name of the agent whose event this is, for
-   * `subagent:before` / `subagent:after` (KV spec §3.6).
+   * `subagent:before` / `subagent:after` (KV spec §3.6) and
+   * `subagent:turn:start` / `subagent:turn:end` (v0.6.0 spec §3.3, §3.4).
    */
   model?: string;
+  /**
+   * The terminal outcome of the subagent run, for `subagent:turn:end`
+   * (v0.6.0 spec §2.4, §3.4). Ignored on every other event.
+   */
+  outcome?: SubagentOutcome;
 }
 
 export interface HookManagerOptions {
@@ -146,16 +153,19 @@ export class HookManager {
   }
 
   /**
-   * Fire `event` and *await* every matching handler (KV spec §3.3, §8.1).
+   * Fire `event` and *await* every matching handler (KV spec §3.3, §8.1;
+   * v0.6.0 spec §2.3).
    *
-   * Only `subagent:before` and `subagent:after` are dispatched this way: they
-   * are the two events whose handlers may be async, because a provider's KV
-   * save/restore is an HTTP round trip. Every other event keeps the
-   * synchronous guarantee and is delegated to `dispatch`.
+   * Only the four subagent events (`subagent:before`, `subagent:after`,
+   * `subagent:turn:start`, `subagent:turn:end`) are dispatched this way: they
+   * are the events whose handlers may be async, because a provider's KV
+   * save/restore is an HTTP round trip and a subagent-side hook may run a
+   * command. Every other event keeps the synchronous guarantee and is
+   * delegated to `dispatch`.
    *
    * Handlers still run sequentially in registration order, and one that throws
-   * (or rejects) does not stop the ones after it. Neither event can block, so
-   * the outcome only ever carries advisories.
+   * (or rejects) does not stop the ones after it. None of the four events can
+   * block, so the outcome only ever carries advisories.
    */
   async dispatchAsync(
     event: HookEvent,
@@ -207,6 +217,7 @@ export class HookManager {
         depth,
         ...(options.tool ? { tool: options.tool } : {}),
         ...(options.model !== undefined ? { model: options.model } : {}),
+        ...(options.outcome !== undefined ? { outcome: options.outcome } : {}),
       },
       blocking: canBlock(event),
       blocks: [],

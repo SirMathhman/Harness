@@ -1,5 +1,9 @@
 import { BUILTIN_TOOL_NAMES, FINISH_TOOL_NAME } from "../tools/names.js";
-import { HOOK_EVENTS, isHookEvent } from "../hooks/types.js";
+import {
+  HOOK_EVENTS,
+  isHookEvent,
+  isSubagentSideEvent,
+} from "../hooks/types.js";
 import { RUNTIME_KEYS } from "../config/defaults.js";
 import { IMPLICIT_PROFILE_NAME, type ResourceGraph } from "./registry.js";
 import { availableModelIds } from "./resolve.js";
@@ -145,7 +149,7 @@ function validateResources(graph: ResourceGraph, problems: string[]): void {
         break;
       }
       case "hook": {
-        const { events, handler } = resource.def;
+        const { events, handler, includeSubagents } = resource.def;
         if (!Array.isArray(events) || events.length === 0) {
           problems.push(
             `Hook ${idString(resource.id)} must have a non-empty "events" ` +
@@ -166,6 +170,22 @@ function validateResources(graph: ResourceGraph, problems: string[]): void {
           problems.push(
             `Hook ${idString(resource.id)} must have a handler function.`,
           );
+        }
+        // v0.6.0 spec §3.6: a subagent-side event only ever fires at subagent
+        // depth (≥ 1), so a hook that listens to one without
+        // `includeSubagents: true` could never fire — a config bug, not a valid
+        // configuration.
+        if (Array.isArray(events)) {
+          for (const event of events) {
+            if (isSubagentSideEvent(event) && includeSubagents !== true) {
+              problems.push(
+                `Config error: hook ${idString(resource.id)} listens to ` +
+                  `${event} but does not set includeSubagents: true. This ` +
+                  `event only fires at subagent depth; the hook would never ` +
+                  `fire.`,
+              );
+            }
+          }
         }
         break;
       }

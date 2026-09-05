@@ -368,6 +368,11 @@ export function makeSubagentRunner(
       onCompacting: () => emit({ kind: "compacting" }),
     };
 
+    // v0.6.0 spec §3.4: the terminal outcome reported on `subagent:turn:end`.
+    // Defaults to "failed" so a thrown error before any branch runs still
+    // reports a sensible outcome; each branch overwrites it.
+    let outcome: "done" | "cap" | "failed" = "failed";
+
     try {
       // KV spec §3.6: the spawning agent's KV cache is saved before the nested
       // run starts, on its own hook manager at its own depth.
@@ -375,6 +380,20 @@ export function makeSubagentRunner(
         await spawner.hooks.dispatchAsync("subagent:before", {
           depth: spawner.depth,
           ...(spawner.model !== undefined ? { model: spawner.model } : {}),
+        });
+      }
+
+      // v0.6.0 spec §3.3: the subagent's own `turn:start` fires on its own hook
+      // manager at its own depth, before the first LLM call. Any advisory is
+      // injected as a system message right after the system prompt.
+      const startOutcome = await hooks.dispatchAsync("subagent:turn:start", {
+        depth: opts.depth,
+        ...(config.model !== null ? { model: config.model } : {}),
+      });
+      if (startOutcome.advisory !== null && startOutcome.advisory !== "") {
+        session.messages.splice(1, 0, {
+          role: "system",
+          content: startOutcome.advisory,
         });
       }
 
@@ -389,12 +408,14 @@ export function makeSubagentRunner(
 
       // DONE: the subagent called finish — return its answer verbatim.
       if (result.kind === "finished") {
+        outcome = "done";
         emit({ kind: "end", ok: true, label: "done" });
         return result.answer;
       }
 
       // CAP_REACHED: the loop hit the iteration cap without finish (E10).
       if (result.kind === "cap") {
+        outcome = "cap";
         const lastText = lastAssistantText(session.messages);
         emit({ kind: "end", ok: true, label: "cap reached" });
         return lastText ?? "iteration cap reached";
@@ -402,16 +423,26 @@ export function makeSubagentRunner(
 
       // E11: the model emitted plain text with no tool calls — treat it as the
       // subagent's final answer.
+      outcome = "done";
       emit({ kind: "end", ok: true, label: "done" });
       return result.answer;
     } catch (err) {
       // FAILED: an LLM/server error (E3–E5) or any other failure is returned as
       // a descriptive string; the parent turn continues.
+      outcome = "failed";
       const message =
         err instanceof LLMError ? err.message : (err as Error).message;
       emit({ kind: "end", ok: false, label: "failed" });
       return `subagent failed: ${message}`;
     } finally {
+      // v0.6.0 spec §3.4, §3.5: the subagent's own `turn:end` fires in
+      // `finally` — on every outcome — on its own hook manager, before the
+      // spawner's `subagent:after`.
+      await hooks.dispatchAsync("subagent:turn:end", {
+        depth: opts.depth,
+        ...(config.model !== null ? { model: config.model } : {}),
+        outcome,
+      });
       // KV spec §3.6: restore in `finally`, so the spawner's cache comes back
       // on every outcome — DONE, CAP_REACHED, FAILED, or a thrown error.
       if (spawner !== undefined) {

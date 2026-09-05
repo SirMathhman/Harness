@@ -292,6 +292,54 @@ describe("setRuntime merge across files (config spec §3.5)", () => {
   });
 });
 
+describe("subagent-side hook validation (v0.6.0 spec §3.6)", () => {
+  test("A7: a turn:start hook without includeSubagents is fatal", () => {
+    expect(() =>
+      graphFrom((reg) => {
+        reg.createConnection(
+          reg.builtins.defaultProfile,
+          reg.createHook({
+            events: ["subagent:turn:start"],
+            handler: () => "lint",
+          }),
+        );
+      }),
+    ).toThrow(
+      /listens to subagent:turn:start but does not set includeSubagents: true/,
+    );
+  });
+
+  test("A7: a turn:end hook without includeSubagents is fatal", () => {
+    expect(() =>
+      graphFrom((reg) => {
+        reg.createConnection(
+          reg.builtins.defaultProfile,
+          reg.createHook({
+            events: ["subagent:turn:end"],
+            handler: () => undefined,
+          }),
+        );
+      }),
+    ).toThrow(
+      /listens to subagent:turn:end but does not set includeSubagents: true/,
+    );
+  });
+
+  test("a subagent-side hook with includeSubagents is accepted", () => {
+    const graph = graphFrom((reg) => {
+      reg.createConnection(
+        reg.builtins.defaultProfile,
+        reg.createHook({
+          events: ["subagent:turn:start", "subagent:turn:end"],
+          handler: () => undefined,
+          includeSubagents: true,
+        }),
+      );
+    });
+    expect(graph.resources.size).toBeGreaterThan(0);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // §3.7 — the implicit "Agent" profile
 // ---------------------------------------------------------------------------

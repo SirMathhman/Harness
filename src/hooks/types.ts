@@ -16,7 +16,9 @@ export type HookEvent =
   | "session:end"
   | "on:compaction"
   | "subagent:before"
-  | "subagent:after";
+  | "subagent:after"
+  | "subagent:turn:start"
+  | "subagent:turn:end";
 
 /** Every valid `HookEvent`, in spec order. Used for validation and messages. */
 export const HOOK_EVENTS: readonly HookEvent[] = [
@@ -29,17 +31,44 @@ export const HOOK_EVENTS: readonly HookEvent[] = [
   "on:compaction",
   "subagent:before",
   "subagent:after",
+  "subagent:turn:start",
+  "subagent:turn:end",
 ];
 
 /**
- * The two events whose handlers may return a Promise, which the dispatcher
- * awaits (KV spec §3.3, §8.1). Every other event stays synchronous-only: a
- * Promise returned there is an unsupported result, exactly as before.
+ * The events whose handlers may return a Promise, which the dispatcher awaits
+ * (KV spec §3.3, §8.1; v0.6.0 spec §2.3). Every other event stays
+ * synchronous-only: a Promise returned there is an unsupported result, exactly
+ * as before.
  */
 export const ASYNC_HOOK_EVENTS: readonly HookEvent[] = [
   "subagent:before",
   "subagent:after",
+  "subagent:turn:start",
+  "subagent:turn:end",
 ];
+
+/**
+ * The subagent-side events that only ever fire at subagent depth (≥ 1), on the
+ * subagent's own hook manager (v0.6.0 spec §2.2, §3.3, §3.4). A hook that
+ * listens to one of these must set `includeSubagents: true`, or the config is
+ * rejected at startup (v0.6.0 spec §3.6).
+ */
+export const SUBAGENT_SIDE_EVENTS: readonly HookEvent[] = [
+  "subagent:turn:start",
+  "subagent:turn:end",
+];
+
+/** Whether `event` is a subagent-side event requiring `includeSubagents`. */
+export function isSubagentSideEvent(event: HookEvent): boolean {
+  return SUBAGENT_SIDE_EVENTS.includes(event);
+}
+
+/**
+ * The terminal outcome of a subagent run, reported on `subagent:turn:end`
+ * (v0.6.0 spec §2.4, §3.4).
+ */
+export type SubagentOutcome = "done" | "cap" | "failed";
 
 /** Whether `event` is one of the two events that permit an async handler. */
 export function isAsyncHookEvent(event: HookEvent): boolean {
@@ -84,9 +113,15 @@ export interface HookContext {
    * The active model name of the agent whose event this is. Present for
    * `subagent:before` / `subagent:after` (the spawner's model, KV spec §3.6);
    * a provider's KV save/restore sends it to a llama.cpp router, which needs
-   * it to know which model's slot to act on.
+   * it to know which model's slot to act on. Also present on
+   * `subagent:turn:start` / `subagent:turn:end` (the subagent's own model).
    */
   model?: string;
+  /**
+   * The terminal outcome of the subagent run (v0.6.0 spec §2.4, §3.4). Present
+   * only on `subagent:turn:end`; absent on every other event.
+   */
+  outcome?: SubagentOutcome;
 }
 
 /**
@@ -98,10 +133,12 @@ export interface HookContext {
 export type HookResult = void | string | { message: string; block?: boolean };
 
 /**
- * A hook handler. Synchronous for every event except `subagent:before` and
- * `subagent:after`, whose handlers may return a Promise that the dispatcher
- * awaits (hooks spec §8; KV spec §8.1). A Promise returned on any other event
- * is an unsupported result: it is warned about and ignored.
+ * A hook handler. Synchronous for every event except the four subagent events
+ * (`subagent:before`, `subagent:after`, `subagent:turn:start`,
+ * `subagent:turn:end`), whose handlers may return a Promise that the
+ * dispatcher awaits (hooks spec §8; KV spec §8.1; v0.6.0 spec §2.3). A Promise
+ * returned on any other event is an unsupported result: it is warned about and
+ * ignored.
  */
 export type HookHandler = (
   ctx: HookContext,

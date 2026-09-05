@@ -27,7 +27,16 @@ export type {
   HookEvent,
   HookHandler,
   HookResult,
+  SubagentOutcome,
 } from "./hooks/index.js";
+
+/**
+ * The `runCommand` hook helper (v0.6.0 spec §2.1, §3.2): a standalone
+ * foreground command runner for hook handlers. `runCommand` is a value export;
+ * `CommandOutput` and `RunCommandOptions` are type exports.
+ */
+export { runCommand } from "./command.js";
+export type { CommandOutput, RunCommandOptions } from "./command.js";
 
 /** The tool API, for custom tools created with `reg.createTool()`. */
 export type { JsonSchema, JsonSchemaProperty, Tool } from "./types.js";
