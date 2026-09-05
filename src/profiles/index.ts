@@ -42,8 +42,10 @@ export {
   buildGraphFrom,
   CONFIG_DIR,
   CONFIG_ENTRIES,
+  CONFIG_STUB,
   findConfigEntry,
   loadViseConfig,
+  writeConfigStub,
 } from "./load.js";
 export {
   resolveStartingProfile,

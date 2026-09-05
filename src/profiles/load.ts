@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -123,9 +123,9 @@ async function importConfig(
   try {
     // A cache-busting query keeps repeated loads (tests, future reloads) from
     // returning a stale module for the same path.
-    module = (await import(
-      `${pathToFileURL(entry).href}?t=${Date.now()}`
-    )) as { default?: unknown };
+    module = (await import(`${pathToFileURL(entry).href}?t=${Date.now()}`)) as {
+      default?: unknown;
+    };
   } catch (err) {
     throw new ViseConfigError(
       `Failed to load ${displayName}: ${(err as Error).message}`,
@@ -154,4 +154,36 @@ function describe(value: unknown): string {
   if (Array.isArray(value)) return "an array";
   const kind = typeof value;
   return `${kind === "object" ? "an" : "a"} ${kind}`;
+}
+
+/**
+ * The stub written by `/init` and `/init-global`: a minimal, valid config
+ * module that default-exports the required `(reg: Registry) => void` function.
+ * It is intentionally empty of resources so the user starts from a known-good
+ * baseline and adds models, profiles, hooks, and tools as needed.
+ */
+export const CONFIG_STUB = `import type { Registry } from "vise";
+
+export default (reg: Registry) => {
+  // Add your configuration here. See the README for the Registry API.
+};
+`;
+
+/**
+ * Write a config stub to `root/.vise/index.ts` (config spec §3.1).
+ *
+ * Creates the `.vise/` directory if it is missing and writes the stub. If a
+ * config entry already exists under `root` (any of `CONFIG_ENTRIES`), the file
+ * is left untouched and `false` is returned so the caller can report that
+ * nothing was written. Returns `true` when the stub was written.
+ *
+ * `root` is the directory the config is created under: the project root for
+ * `/init`, or the home directory for `/init-global`.
+ */
+export function writeConfigStub(root: string): boolean {
+  if (findConfigEntry(root) !== null) return false;
+  const dir = path.join(root, CONFIG_DIR);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(path.join(dir, "index.ts"), CONFIG_STUB, "utf8");
+  return true;
 }

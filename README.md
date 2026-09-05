@@ -62,14 +62,16 @@ At the `vise> ` prompt, type a task and press Enter. When a named profile is act
 prompt shows it: `vise:refactor> `. Type `/exit` (or `exit` / `quit`) to leave. Press
 `Ctrl-C` during a turn to abort it (any running foreground command is killed).
 
-| Command           | Effect                                                                 |
-| ----------------- | ---------------------------------------------------------------------- |
-| `/help`           | List the commands.                                                     |
-| `/context`        | Prompt tokens from the last LLM call vs. the context window.           |
-| `/profile`        | List the profiles (with origin: `builtin`/`global`/`project`), `*` marks the active one. |
+| Command           | Effect                                                                                                                                 |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `/help`           | List the commands.                                                                                                                     |
+| `/context`        | Prompt tokens from the last LLM call vs. the context window.                                                                           |
+| `/profile`        | List the profiles (with origin: `builtin`/`global`/`project`), `*` marks the active one.                                               |
 | `/profile <name>` | Switch profiles: prompt, tools, hooks, and model are all re-resolved. `/profile Agent` switches back to the implicit built-in profile. |
-| `/hooks`          | List the hooks active for the current profile.                         |
-| `/hooks off\|on`  | Disable or re-enable every hook for the rest of the session.           |
+| `/hooks`          | List the hooks active for the current profile.                                                                                         |
+| `/hooks off\|on`  | Disable or re-enable every hook for the rest of the session.                                                                           |
+| `/init`           | Create a `./.vise/index.ts` stub for this project (never overwrites an existing one).                                                  |
+| `/init-global`    | Create a `~/.vise/index.ts` stub shared across every project (never overwrites an existing one).                                       |
 
 ## Scripts
 
@@ -150,16 +152,16 @@ export default (reg: Registry) => {
 Resources are **nodes**; connections are directed **edges**. Resolving a profile means
 following its outgoing edges.
 
-| Edge              | Meaning                                                    | Props                         |
-| ----------------- | ---------------------------------------------------------- | ----------------------------- |
-| Profile → Hook    | The hook is active for this profile.                       | —                             |
-| Profile → Tool    | The tool is available to this profile.                     | —                             |
-| Profile → Model   | The profile uses this model.                               | `temperature?`, `maxContext?` |
-| Hook → Tool       | The hook only fires for these tools.                       | —                             |
+| Edge            | Meaning                                | Props                         |
+| --------------- | -------------------------------------- | ----------------------------- |
+| Profile → Hook  | The hook is active for this profile.   | —                             |
+| Profile → Tool  | The tool is available to this profile. | —                             |
+| Profile → Model | The profile uses this model.           | `temperature?`, `maxContext?` |
+| Hook → Tool     | The hook only fires for these tools.   | —                             |
 
 Any other pairing (Tool → Profile, Profile → Profile, …) is a fatal config error.
 
-Two defaults follow from *absence* of edges:
+Two defaults follow from _absence_ of edges:
 
 - A profile with **no tool edges** gets **every** built-in tool. One with tool edges
   gets exactly those (plus any custom tools it is connected to). Because the agent ends
@@ -171,20 +173,20 @@ Two defaults follow from *absence* of edges:
 
 ### Registry API
 
-| Method                                     | Returns      | Description                                                  |
-| ------------------------------------------ | ------------ | ------------------------------------------------------------ |
-| `createProfile({ name, systemPrompt, subagent? })` | `ResourceId` | A named configuration. `systemPrompt: ""` means the built-in one. |
-| `createHook({ events, handler, includeSubagents? })` | `ResourceId` | A lifecycle handler (see [Hooks](#hooks)).                   |
-| `createTool({ name, description, parameters, mutating, handler })` | `ResourceId` | A custom tool.                       |
-| `createModel({ name, baseUrl, apiKey, temperature?, maxContext? })` | `ResourceId` | An LLM endpoint. `name: ""` auto-discovers it. |
-| `createConnection(from, to, props?)`       | `void`       | A directed edge.                                             |
-| `setRuntime(settings)`                     | `void`       | The settings that are not resources (below), including `profileSwitchMode`. |
-| `getProfile(name)`                         | `ResourceId \| undefined` | Look up a profile (either file, or built-in) by name.  |
-| `getModel(name)`                           | `ResourceId \| undefined` | Look up a model by name. A `name: ""` (auto-discover) model never matches. |
-| `getTool(name)`                            | `ResourceId \| undefined` | Look up a tool, built-in or custom, by name.            |
-| `builtins.tools`                           | `Record<string, ResourceId>` | Every built-in tool, keyed by name.           |
-| `builtins.defaultModel`                    | `ResourceId` | The model used when a profile has no model edge.             |
-| `builtins.defaultProfile`                  | `ResourceId` | The implicit `"Agent"` profile used when a profile has no explicit one. |
+| Method                                                              | Returns                      | Description                                                                 |
+| ------------------------------------------------------------------- | ---------------------------- | --------------------------------------------------------------------------- |
+| `createProfile({ name, systemPrompt, subagent? })`                  | `ResourceId`                 | A named configuration. `systemPrompt: ""` means the built-in one.           |
+| `createHook({ events, handler, includeSubagents? })`                | `ResourceId`                 | A lifecycle handler (see [Hooks](#hooks)).                                  |
+| `createTool({ name, description, parameters, mutating, handler })`  | `ResourceId`                 | A custom tool.                                                              |
+| `createModel({ name, baseUrl, apiKey, temperature?, maxContext? })` | `ResourceId`                 | An LLM endpoint. `name: ""` auto-discovers it.                              |
+| `createConnection(from, to, props?)`                                | `void`                       | A directed edge.                                                            |
+| `setRuntime(settings)`                                              | `void`                       | The settings that are not resources (below), including `profileSwitchMode`. |
+| `getProfile(name)`                                                  | `ResourceId \| undefined`    | Look up a profile (either file, or built-in) by name.                       |
+| `getModel(name)`                                                    | `ResourceId \| undefined`    | Look up a model by name. A `name: ""` (auto-discover) model never matches.  |
+| `getTool(name)`                                                     | `ResourceId \| undefined`    | Look up a tool, built-in or custom, by name.                                |
+| `builtins.tools`                                                    | `Record<string, ResourceId>` | Every built-in tool, keyed by name.                                         |
+| `builtins.defaultModel`                                             | `ResourceId`                 | The model used when a profile has no model edge.                            |
+| `builtins.defaultProfile`                                           | `ResourceId`                 | The implicit `"Agent"` profile used when a profile has no explicit one.     |
 
 `ResourceId` is opaque: an id can only come from a `create*` call, a `get*` lookup, or
 from `reg.builtins`, so a connection can never point at something that does not exist.
@@ -193,13 +195,17 @@ without checking is rejected with a descriptive error rather than silently misbe
 
 #### Cross-file references
 
-The project file runs *after* the global file, against the same `Registry`, so it can
+The project file runs _after_ the global file, against the same `Registry`, so it can
 look resources up by name instead of importing paths:
 
 ```ts
 // ~/.vise/index.ts (global)
 export default (reg: Registry) => {
-  reg.createModel({ name: "local", baseUrl: "http://localhost:8080", apiKey: "" });
+  reg.createModel({
+    name: "local",
+    baseUrl: "http://localhost:8080",
+    apiKey: "",
+  });
 };
 
 // ./.vise/index.ts (project)
@@ -213,8 +219,8 @@ export default (reg: Registry) => {
 ```
 
 There is no `getHook` — hooks have no name, so a project profile cannot connect to a
-global hook. A hook defined in the global file is only active for the profiles *that
-file itself* connects it to.
+global hook. A hook defined in the global file is only active for the profiles _that
+file itself_ connects it to.
 
 The config is **composable** — any module that takes a `Registry` can contribute to the
 same graph:
@@ -241,19 +247,19 @@ fails to resolve there. (If you compile your config ahead of time and ship
 These are session-wide rather than per-profile, because they configure the agent loop
 rather than the agent's capabilities.
 
-| Setting                 | Type           | Default | Description                                                        |
-| ----------------------- | -------------- | ------- | ------------------------------------------------------------------ |
-| `compactThreshold`      | number (0, 1]  | `0.8`   | Fraction of the context window that triggers compaction.           |
-| `compactKeepMessages`   | number         | `6`     | Recent messages kept verbatim during compaction.                   |
-| `commandTimeoutMs`      | number         | `60000` | Default foreground command timeout.                                |
-| `maxToolOutputChars`    | number         | `20000` | Truncation limit for tool output.                                  |
-| `parallelToolCalls`     | boolean        | `true`  | Allow the model to batch tool calls.                               |
-| `shell`                 | string         | `"auto"`| `auto`, `powershell`, `bash`, or `sh`.                             |
-| `maxIterations`         | number \| null | `null`  | Cap on tool-call iterations per turn.                              |
-| `dynamicTools`          | boolean        | `false` | Advertise a constant tool surface + `search_tools`/`call_tool`.    |
-| `subagentMaxIterations` | number         | `50`    | Ceiling on a subagent's iteration budget.                          |
-| `maxSubagentDepth`      | number         | `3`     | Depth backstop for profiles that set no `subagent.maxDepth`.       |
-| `profileSwitchMode`     | `"replace"` \| `"append"` | `"replace"` | How `/profile` rewrites the system message.            |
+| Setting                 | Type                      | Default     | Description                                                     |
+| ----------------------- | ------------------------- | ----------- | --------------------------------------------------------------- |
+| `compactThreshold`      | number (0, 1]             | `0.8`       | Fraction of the context window that triggers compaction.        |
+| `compactKeepMessages`   | number                    | `6`         | Recent messages kept verbatim during compaction.                |
+| `commandTimeoutMs`      | number                    | `60000`     | Default foreground command timeout.                             |
+| `maxToolOutputChars`    | number                    | `20000`     | Truncation limit for tool output.                               |
+| `parallelToolCalls`     | boolean                   | `true`      | Allow the model to batch tool calls.                            |
+| `shell`                 | string                    | `"auto"`    | `auto`, `powershell`, `bash`, or `sh`.                          |
+| `maxIterations`         | number \| null            | `null`      | Cap on tool-call iterations per turn.                           |
+| `dynamicTools`          | boolean                   | `false`     | Advertise a constant tool surface + `search_tools`/`call_tool`. |
+| `subagentMaxIterations` | number                    | `50`        | Ceiling on a subagent's iteration budget.                       |
+| `maxSubagentDepth`      | number                    | `3`         | Depth backstop for profiles that set no `subagent.maxDepth`.    |
+| `profileSwitchMode`     | `"replace"` \| `"append"` | `"replace"` | How `/profile` rewrites the system message.                     |
 
 If both files call `setRuntime`, settings are merged **per key**, with the project
 file's value winning over the global file's (which wins over the built-in default).
@@ -285,10 +291,10 @@ aborts the turn instead of exiting, so it never triggers a save.
 
 The state file's location depends on whether a project config exists:
 
-| Condition                    | State file            |
-| ----------------------------- | ---------------------- |
-| `./.vise/index.ts` exists     | `./.vise/state.json`   |
-| `./.vise/index.ts` is absent  | `~/.vise/state.json`   |
+| Condition                    | State file           |
+| ---------------------------- | -------------------- |
+| `./.vise/index.ts` exists    | `./.vise/state.json` |
+| `./.vise/index.ts` is absent | `~/.vise/state.json` |
 
 It is per-user session state, not configuration — add it to your project's
 `.gitignore`:
@@ -313,7 +319,7 @@ reg.createProfile({
   systemPrompt: "…",
   subagent: {
     profiles: ["worker", "researcher"], // spawn_subagent may only name these
-    maxDepth: 2,                        // reject a spawn when depth + 1 > 2
+    maxDepth: 2, // reject a spawn when depth + 1 > 2
   },
 });
 ```
@@ -321,7 +327,7 @@ reg.createProfile({
 `spawn_subagent` takes an optional `profile` parameter. With it, the subagent runs under
 that profile — its own prompt, tools, hooks, and model. Without it, the subagent
 inherits the parent's profile. A disallowed name or a depth breach comes back as an
-error *string* the model can react to, never as a thrown exception.
+error _string_ the model can react to, never as a thrown exception.
 
 Each profile's `maxDepth` governs the subagents **it** spawns, so a subagent running
 under a profile with `maxDepth: 0` can spawn nothing. Omitting `maxDepth` falls back to
@@ -341,17 +347,17 @@ rejected with a pointer to `./.vise/index.ts`.
 The agent exposes nine built-in tools. A profile's Profile→Tool edges decide which
 of them it actually sees:
 
-| Tool            | Mutating | Parameters                                                                  | Description                                                                   |
-| --------------- | -------- | --------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
-| `read_file`     | no       | `path`, `startLine?`, `endLine?`                                            | Read a file, optionally a 1-based line range.                                 |
-| `write_file`    | yes      | `path`, `content`                                                           | Write a file, creating parent directories.                                    |
-| `edit_file`     | yes      | `path`, `oldString`, `newString`, `replaceAll?`                             | Replace an exact string; errors on 0 or >1 matches unless `replaceAll`.       |
-| `list_dir`      | no       | `path`, `recursive?`                                                        | List directory entries with file/dir markers.                                 |
-| `search`        | no       | `pattern`, `mode` (`text`\|`glob`), `path?`, `includePattern?`, `isRegexp?` | Search file contents (`file:line:content`) or file paths.                     |
-| `run_command`   | yes      | `command`, `timeoutMs?`, `background?`, `cwd?`                              | Run a shell command (foreground by default; `background=true` returns an id). |
-| `check_command` | no       | `id`                                                                        | Check the status/output of a background command.                              |
-| `finish`        | no       | `answer`                                                                    | Terminal tool: ends the turn with a final answer.                             |
-| `spawn_subagent`| no       | `task`, `maxIterations`, `systemPrompt?`, `profile?`                        | Run an isolated subagent and return only its final answer.                    |
+| Tool             | Mutating | Parameters                                                                  | Description                                                                   |
+| ---------------- | -------- | --------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| `read_file`      | no       | `path`, `startLine?`, `endLine?`                                            | Read a file, optionally a 1-based line range.                                 |
+| `write_file`     | yes      | `path`, `content`                                                           | Write a file, creating parent directories.                                    |
+| `edit_file`      | yes      | `path`, `oldString`, `newString`, `replaceAll?`                             | Replace an exact string; errors on 0 or >1 matches unless `replaceAll`.       |
+| `list_dir`       | no       | `path`, `recursive?`                                                        | List directory entries with file/dir markers.                                 |
+| `search`         | no       | `pattern`, `mode` (`text`\|`glob`), `path?`, `includePattern?`, `isRegexp?` | Search file contents (`file:line:content`) or file paths.                     |
+| `run_command`    | yes      | `command`, `timeoutMs?`, `background?`, `cwd?`                              | Run a shell command (foreground by default; `background=true` returns an id). |
+| `check_command`  | no       | `id`                                                                        | Check the status/output of a background command.                              |
+| `finish`         | no       | `answer`                                                                    | Terminal tool: ends the turn with a final answer.                             |
+| `spawn_subagent` | no       | `task`, `maxIterations`, `systemPrompt?`, `profile?`                        | Run an isolated subagent and return only its final answer.                    |
 
 Custom tools created with `reg.createTool()` are available only to the profiles they are
 connected to.
@@ -395,7 +401,8 @@ const hooks: Hook[] = [
     handler: (ctx) => {
       if (ctx.tool?.name !== "write_file") return;
       const warnings = lint(String(ctx.tool.args.path));
-      if (warnings.length > 0) return { message: warnings.join("\n"), block: false };
+      if (warnings.length > 0)
+        return { message: warnings.join("\n"), block: false };
     },
     includeSubagents: true, // also fires inside subagents
   },
@@ -412,9 +419,12 @@ export const setup = (reg: Registry, profile: ResourceId) => {
 **Scoping a hook to particular tools.** A Hook→Tool edge restricts when the hook fires:
 
 ```ts
-const guard = reg.createHook({ events: ["tool:before"], handler: refuseMinified });
-reg.createConnection(implement, guard);                       // active for `implement`
-reg.createConnection(guard, reg.builtins.tools.write_file);   // …but only on write_file
+const guard = reg.createHook({
+  events: ["tool:before"],
+  handler: refuseMinified,
+});
+reg.createConnection(implement, guard); // active for `implement`
+reg.createConnection(guard, reg.builtins.tools.write_file); // …but only on write_file
 ```
 
 For `tool:before` / `tool:after` the hook fires only for the connected tools. Events
@@ -437,12 +447,12 @@ A block returned on a non-blocking event is downgraded to an advisory message.
 
 ### Return values
 
-| Return                      | Meaning                                                              |
-| --------------------------- | -------------------------------------------------------------------- |
-| nothing (`void`)            | Allow. No message.                                                   |
-| `"reason"`                  | Block, with the string as the reason.                                |
-| `{ message, block: true }`  | Block, with `message` as the reason.                                 |
-| `{ message }`               | Advisory: `message` is injected as a system message; nothing blocks. |
+| Return                     | Meaning                                                              |
+| -------------------------- | -------------------------------------------------------------------- |
+| nothing (`void`)           | Allow. No message.                                                   |
+| `"reason"`                 | Block, with the string as the reason.                                |
+| `{ message, block: true }` | Block, with `message` as the reason.                                 |
+| `{ message }`              | Advisory: `message` is injected as a system message; nothing blocks. |
 
 When several hooks block the same event, the reasons are joined with `"; "`;
 advisory messages are joined with newlines into one system message.
@@ -489,43 +499,43 @@ required.
 | 9. Command timeout         | `commands.test.ts` (foreground timeout)                                               |
 | 10. Background commands    | `commands.test.ts` (background + check + killAll)                                     |
 | 11. Parallel tool calls    | `sse.test.ts` (multi tool-call accumulation), `tools.test.ts` (ordering)              |
-| 12. Configuration          | `profiles.test.ts` (loading, `setRuntime`, validation)                               |
+| 12. Configuration          | `profiles.test.ts` (loading, `setRuntime`, validation)                                |
 | 13. No persistence         | `cli.test.ts` (in-memory session, no config file created)                             |
 
 ### Hooks acceptance criteria (hooks spec §9)
 
-| AC                         | Covered by test                                                          |
-| -------------------------- | ------------------------------------------------------------------------ |
-| 1. Blocking `turn:end`     | `hooks.test.ts` (finish rejected, agent retries; `maxIterations` honored) |
-| 2. Blocking `tool:before`  | `hooks.test.ts` (a `*.min.js` write is never executed)                    |
-| 3. Advisory `tool:after`   | `hooks.test.ts` (warning follows the tool result; the write stands)       |
-| 4. Handler throws          | `hooks.test.ts` (blocks, is logged, other hooks still run)                |
-| 5. `/hooks` on/off         | `hooks.test.ts` (listing, toggle, dispatch suppressed while off)          |
-| 6. `includeSubagents`      | `hooks.test.ts` (depth filtering; subagent finish blocked then allowed)   |
-| 7. Zero overhead unhooked  | `hooks.test.ts` (inert manager, no file loading, loop unchanged)          |
-| 8. Malformed hook          | `hooks.test.ts` (fatal config error for bad events/handlers)              |
+| AC                        | Covered by test                                                           |
+| ------------------------- | ------------------------------------------------------------------------- |
+| 1. Blocking `turn:end`    | `hooks.test.ts` (finish rejected, agent retries; `maxIterations` honored) |
+| 2. Blocking `tool:before` | `hooks.test.ts` (a `*.min.js` write is never executed)                    |
+| 3. Advisory `tool:after`  | `hooks.test.ts` (warning follows the tool result; the write stands)       |
+| 4. Handler throws         | `hooks.test.ts` (blocks, is logged, other hooks still run)                |
+| 5. `/hooks` on/off        | `hooks.test.ts` (listing, toggle, dispatch suppressed while off)          |
+| 6. `includeSubagents`     | `hooks.test.ts` (depth filtering; subagent finish blocked then allowed)   |
+| 7. Zero overhead unhooked | `hooks.test.ts` (inert manager, no file loading, loop unchanged)          |
+| 8. Malformed hook         | `hooks.test.ts` (fatal config error for bad events/handlers)              |
 
 ### Profiles acceptance criteria (profiles spec §9)
 
-| AC                                 | Covered by test                                                      |
-| ---------------------------------- | -------------------------------------------------------------------- |
-| 1. Two profiles, starts on default | `profiles.test.ts` (session starts under `default`)                  |
-| 2. `/profile` lists both           | `profiles.test.ts` (active marked with `*`)                          |
-| 3. `/profile <name>` switches      | `profiles.test.ts` (prompt, tool set, and model all change)          |
-| 4. Hook scoped to one profile      | `profiles.test.ts` (fires under `default`, not under `refactor`)     |
-| 5. Hook→Tool filtering             | `profiles.test.ts` (fires for `write_file`, not `read_file`)         |
-| 6. No tool edges → all tools       | `profiles.test.ts` (every built-in tool)                             |
-| 7. Tool edges → only those         | `profiles.test.ts` (`read_file` + `search` + `finish`)               |
-| 8. No config → built-in defaults   | `profiles.test.ts` (empty project resolves to the defaults)          |
-| 9. Config throws → fatal           | `profiles.test.ts` (`ViseConfigError` carrying the message)          |
-| 10. `/profile nonexistent`         | `profiles.test.ts` (error text, no switch)                           |
-| 11. Composable config              | `profiles.test.ts` (`.vise/index.ts` importing `.vise/hooks/…`)      |
-| 12. Connection prop override       | `profiles.test.ts` (per-profile `temperature`)                       |
-| 13. Subagent under a profile       | `profiles.test.ts` (subagent runs with the researcher prompt)        |
-| 14. Forbidden profile              | `profiles.test.ts` (error listing the allowed profiles)              |
-| 15. Depth limit                    | `profiles.test.ts` (depth 1 succeeds, depth 2 refused)               |
-| 16. No `profile` param             | `profiles.test.ts` (subagent inherits the parent's profile)          |
-| 17. `maxDepth: 0`                  | `profiles.test.ts` (spawning always refused)                         |
+| AC                                 | Covered by test                                                  |
+| ---------------------------------- | ---------------------------------------------------------------- |
+| 1. Two profiles, starts on default | `profiles.test.ts` (session starts under `default`)              |
+| 2. `/profile` lists both           | `profiles.test.ts` (active marked with `*`)                      |
+| 3. `/profile <name>` switches      | `profiles.test.ts` (prompt, tool set, and model all change)      |
+| 4. Hook scoped to one profile      | `profiles.test.ts` (fires under `default`, not under `refactor`) |
+| 5. Hook→Tool filtering             | `profiles.test.ts` (fires for `write_file`, not `read_file`)     |
+| 6. No tool edges → all tools       | `profiles.test.ts` (every built-in tool)                         |
+| 7. Tool edges → only those         | `profiles.test.ts` (`read_file` + `search` + `finish`)           |
+| 8. No config → built-in defaults   | `profiles.test.ts` (empty project resolves to the defaults)      |
+| 9. Config throws → fatal           | `profiles.test.ts` (`ViseConfigError` carrying the message)      |
+| 10. `/profile nonexistent`         | `profiles.test.ts` (error text, no switch)                       |
+| 11. Composable config              | `profiles.test.ts` (`.vise/index.ts` importing `.vise/hooks/…`)  |
+| 12. Connection prop override       | `profiles.test.ts` (per-profile `temperature`)                   |
+| 13. Subagent under a profile       | `profiles.test.ts` (subagent runs with the researcher prompt)    |
+| 14. Forbidden profile              | `profiles.test.ts` (error listing the allowed profiles)          |
+| 15. Depth limit                    | `profiles.test.ts` (depth 1 succeeds, depth 2 refused)           |
+| 16. No `profile` param             | `profiles.test.ts` (subagent inherits the parent's profile)      |
+| 17. `maxDepth: 0`                  | `profiles.test.ts` (spawning always refused)                     |
 
 ## Troubleshooting
 

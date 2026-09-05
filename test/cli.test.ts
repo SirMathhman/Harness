@@ -14,10 +14,12 @@ import {
   contextUsageLine,
   findCommand,
   helpText,
+  initCommand,
   promptLabel,
   REPL_COMMANDS,
 } from "../src/cli/repl.js";
 import { DEFAULT_CONFIG } from "../src/config/defaults.js";
+import { CONFIG_STUB, writeConfigStub } from "../src/profiles/index.js";
 import { modelGraph } from "./helpers.js";
 
 describe("CLI startup (AC 1)", () => {
@@ -109,6 +111,8 @@ describe("REPL command registry", () => {
     expect(names).toContain("/context");
     expect(names).toContain("/profile");
     expect(names).toContain("/hooks");
+    expect(names).toContain("/init");
+    expect(names).toContain("/init-global");
     expect(names).toContain("/exit");
   });
 
@@ -127,6 +131,47 @@ describe("REPL command registry", () => {
     const text = helpText();
     for (const cmd of REPL_COMMANDS) {
       expect(text).toContain(cmd.name);
+    }
+  });
+});
+
+describe("/init and /init-global", () => {
+  test("writeConfigStub creates .vise/index.ts with the stub", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "vise-init-"));
+    try {
+      expect(writeConfigStub(dir)).toBe(true);
+      const file = path.join(dir, ".vise", "index.ts");
+      expect(existsSync(file)).toBe(true);
+      expect(readFileSync(file, "utf8")).toBe(CONFIG_STUB);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("writeConfigStub never overwrites an existing config", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "vise-init-exists-"));
+    try {
+      mkdirSync(path.join(dir, ".vise"));
+      const file = path.join(dir, ".vise", "index.ts");
+      writeFileSync(file, "existing\n", "utf8");
+      expect(writeConfigStub(dir)).toBe(false);
+      expect(readFileSync(file, "utf8")).toBe("existing\n");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("initCommand reports creation and refusal", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "vise-init-cmd-"));
+    try {
+      expect(initCommand(dir, "./.vise/index.ts")).toBe(
+        "created ./.vise/index.ts.",
+      );
+      expect(initCommand(dir, "./.vise/index.ts")).toBe(
+        "./.vise/index.ts already exists — edit it by hand.",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });

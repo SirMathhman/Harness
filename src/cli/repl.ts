@@ -1,4 +1,5 @@
 import { createInterface, type Interface } from "node:readline";
+import { homedir } from "node:os";
 import type { Session } from "../types.js";
 import { runTurn, type AgentCallbacks } from "../agent/loop.js";
 import { createSession, type SessionHandle } from "../agent/session.js";
@@ -9,6 +10,7 @@ import {
   IMPLICIT_PROFILE_NAME,
   ProfileHasNoModelError,
   UnknownProfileError,
+  writeConfigStub,
   writeStateFile,
   type ResourceGraph,
 } from "../profiles/index.js";
@@ -223,6 +225,16 @@ export const REPL_COMMANDS: ReplCommand[] = [
     takesArgs: true,
   },
   {
+    name: "/init",
+    summary: "Create a ./.vise/index.ts stub for this project.",
+    run: () => initCommand(process.cwd(), "./.vise/index.ts"),
+  },
+  {
+    name: "/init-global",
+    summary: "Create a ~/.vise/index.ts stub shared across projects.",
+    run: () => initCommand(homedir(), "~/.vise/index.ts"),
+  },
+  {
     name: "/exit",
     summary: "End the session (also: exit, quit, Ctrl-D).",
     run: () => undefined,
@@ -352,10 +364,22 @@ export function hooksListing(hooks: HookManager): string {
   const lines = [`hooks: ${registered.length} active (${state})`];
   for (const { hook, source, tools } of registered) {
     const flag = hook.includeSubagents ? " [subagents]" : "";
-    const filter = tools && tools.length > 0 ? ` [tools: ${tools.join(", ")}]` : "";
+    const filter =
+      tools && tools.length > 0 ? ` [tools: ${tools.join(", ")}]` : "";
     lines.push(`  ${hook.events.join(", ")}${flag}${filter} — ${source}`);
   }
   return lines.join("\n");
+}
+
+/**
+ * The `/init` and `/init-global` commands: write a config stub under `root`
+ * (the project root or the home directory). An existing config is never
+ * overwritten — the user is told to edit it by hand instead.
+ */
+export function initCommand(root: string, displayName: string): string {
+  return writeConfigStub(root)
+    ? `created ${displayName}.`
+    : `${displayName} already exists — edit it by hand.`;
 }
 
 /**
