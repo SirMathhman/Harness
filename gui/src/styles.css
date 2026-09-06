@@ -135,13 +135,31 @@ body {
   min-height: 0;
 }
 
+/* The virtual conversation viewport (GUI spec §3.9, §5).
+   Not a flex column: the rows are absolutely positioned inside a spacer of the
+   full measured height, so a flex parent would fight the measurements. Native
+   scroll anchoring is off — the virtualizer does the anchoring, and two
+   mechanisms correcting the same scrollTop cancel each other out. */
 .conversation {
   flex: 1;
   overflow-y: auto;
+  overflow-anchor: none;
   padding: 1rem 1.25rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.6rem;
+}
+
+.conversation-spacer {
+  position: relative;
+  width: 100%;
+}
+
+/* One measured render item. The bottom padding replaces the old flex `gap`
+   so the spacing is part of what the ResizeObserver measures. */
+.vitem {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  padding-bottom: 0.6rem;
 }
 
 .sidebar {
@@ -219,19 +237,38 @@ body {
   letter-spacing: 0.04em;
 }
 
-.subagent {
+/* A subagent run: a header row plus its child rows, flattened as siblings in
+   the virtual viewport. The rail and indentation carry the association that a
+   `<details>` wrapper used to provide structurally. */
+.subagent-head {
+  padding-top: 0.2rem;
+}
+
+.subagent-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  background: none;
   border: 1px solid var(--border);
   border-left: 2px solid var(--accent);
   border-radius: 8px;
-  padding: 0.4rem 0.6rem;
-}
-.subagent summary {
-  cursor: pointer;
+  padding: 0.2rem 0.6rem;
+  font: inherit;
   font-size: 0.8rem;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--fg-muted);
+  cursor: pointer;
   user-select: none;
+}
+
+.subagent-caret {
+  font-size: 0.7em;
+}
+
+.row-in-group {
+  border-left: 2px solid var(--accent);
+  padding-left: 0.6rem;
 }
 
 .empty {

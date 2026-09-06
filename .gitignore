@@ -4,3 +4,8 @@ coverage/
 *.log
 .DS_Store
 harness.config.json
+
+# Playwright (GUI browser tests)
+gui/test-results/
+gui/playwright-report/
+gui/e2e/report/

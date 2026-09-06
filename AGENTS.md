@@ -28,14 +28,26 @@ tools, lifecycle hooks, models — is described by TypeScript config files as a 
 | `bun run gui`       | Start the agent-server and open the GUI            |
 | `bun run serve`     | Start the headless agent-server (prints URL)       |
 | `bun run gui:dev`   | Run the agent-server + Vite dev server in parallel |
-| `bun test`          | Run the full suite (unit + integration)            |
+| `bun run test`      | Run the full suite (unit + integration)            |
 | `bun run lint`      | Lint with ESLint                                   |
 | `bun run lint:fix`  | Lint and auto-fix                                  |
 | `bun run typecheck` | Type-check without emitting (`tsc --noEmit`)       |
 
-Run `bun run typecheck` and `bun test` after making changes. Integration tests drive the
-real agent loop against a mock OpenAI-compatible SSE server, so no llama.cpp instance is
-required.
+Run `bun run typecheck` and `bun run test` after making changes. Integration tests drive
+the real agent loop against a mock OpenAI-compatible SSE server, so no llama.cpp instance
+is required.
+
+**Use `bun run test`, not bare `bun test`.** The script passes
+`--conditions=browser`, which makes `solid-js` resolve to the same build the GUI ships;
+under Bun's default `node` condition it resolves to the non-reactive SSR build and the
+GUI tests assert against a reactivity graph that never updates. `bunfig.toml` separately
+confines test discovery to `test/`, keeping the GUI's Playwright specs (which use
+`*.spec.ts`, a pattern Bun 1.3 *does* collect) out of the Bun suite.
+
+The GUI has its own checks, run from `gui/`: `bunx tsc --noEmit -p tsconfig.json`,
+`bun run build`, and `bun run test:browser` (Playwright; `bun run test:browser:install`
+once to fetch Chromium). The root typecheck does not cover `gui/` — its tsconfig only
+includes `src/**/*.ts`.
 
 ## TypeScript / lint conventions
 
@@ -69,7 +81,10 @@ src/
   config/           # defaults.ts (built-in prompt/runtime/config defaults)
   server/           # agent-server: protocol, server, translate, transport, entry
   cli/              # args, repl, commands, render, color
-gui/                # SolidJS + Vite browser client (src/, vite.config.ts)
+gui/                # SolidJS + Vite browser client
+  src/              # App.tsx, store.ts, Markdown.tsx, client.ts, types.ts
+    conversation/   # ConversationViewport.tsx, viewModel.ts, eventQueue.ts
+  e2e/              # Playwright browser specs + the mock-WebSocket fixture
 test/               # *.test.ts (unit + integration), helpers.ts
 specs/              # v0.1.0/ … v0.6.0/ + gui/ — the specification documents
 .vise/              # project-level config (index.ts) + state.json (gitignored)
@@ -153,6 +168,34 @@ exposes it over a WebSocket, mirroring the REPL. It reuses the same session mach
   subagent per depth (holds because `spawn_subagent` is serialized per depth).
 - **Static UI serving:** the server serves `gui/dist` (SPA fallback to `index.html`; 503
   if not built). In dev, Vite (port 5173) proxies `/ws` to the agent-server (port 8787).
+- **`gui/AGENTS.md` is required reading before changing the browser client.** It
+  documents the five invariants of the bounded-rendering design, the traps that have
+  already cost real debugging time (Solid's `<template>` breaking the virtualizer's
+  observers, Bun resolving solid-js's non-reactive SSR build, Bun collecting
+  `*.spec.ts`), a browser debugging harness, and a failure-signature table.
+- **Bounded conversation rendering (v0.7.0).** The client renders the conversation
+  through a virtual viewport, so work is bounded by the window and by the rows that
+  changed — never by the length of the history, which is kept in full. Three rules hold
+  it together, and breaking any one of them silently restores O(history) rendering:
+  - `gui/src/store.ts` keeps rows in a **`solid-js/store`** and appends text with a path
+    write (`setDoc("rows", i, "item", "text", …)`). It must never copy the rows array or
+    replace a row object: doing so changes every row's identity and remounts the history.
+    The block sequence is maintained *incrementally* beside the rows, so a text delta
+    cannot invalidate it.
+  - `gui/src/conversation/viewModel.ts` flattens blocks into a linear list of render
+    items and reads **structure only** — never a row's text. It also owns expand/collapse
+    state, keyed by row/run id: virtualized rows unmount, so state stored inside a row
+    component would be lost on scroll.
+  - `gui/src/conversation/ConversationViewport.tsx` publishes its scroll element from
+    `onMount`, **not** from the `ref` callback. Solid builds its DOM inside a
+    `<template>`, whose content document has a null `defaultView`; the virtualizer reads
+    that to find its target window and silently installs no observers when it is null,
+    leaving the list permanently unmeasured and empty.
+- **Event scheduling:** `gui/src/conversation/eventQueue.ts` applies incoming events on
+  an animation frame. It merges only *adjacent* stream events of the same scope and kind,
+  flushes pending work before any non-stream event, and treats `snapshot`/`cleared` as
+  reset barriers that discard superseded pending events. `createStore.applyEvent` stays
+  synchronous for direct consumers and tests.
 - **`src/startup.ts` `prepareSession()` is the single startup seam** both `src/cli.ts`
   `main()` and `src/server/entry.ts` `runServer()` call. It owns every fatal condition
   (no provider, no models, unresolvable profile). A new presentation surface calls it,
@@ -195,6 +238,8 @@ exposes it over a WebSocket, mirroring the REPL. It reuses the same session mach
 
 - `README.md` — full user-facing docs: config reference, Registry API, providers, tools,
   hooks, profiles, troubleshooting.
+- `gui/AGENTS.md` — the browser client: rendering invariants, known traps, debugging
+  recipes, test map, and change recipes. Read it before editing anything in `gui/`.
 - `specs/v0.1.0/` … `specs/v0.6.0/` — the specification documents (the
   source of truth for behavior and acceptance criteria). `specs/gui/` is the GUI spec.
 - `WBS.md` — work breakdown structure and acceptance-criteria traceability (v0.1.0-era;

@@ -21,7 +21,7 @@
     "serve": "bun run src/cli.ts serve",
     "gui:dev": "bun run --parallel serve gui:vite",
     "gui:vite": "cd gui && bun run dev",
-    "test": "bun test",
+    "test": "bun test --conditions=browser",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "typecheck": "tsc -p tsconfig.json --noEmit"

@@ -320,13 +320,44 @@ The UI **must** render the `Conversation` as a scrollable, structured view:
   distinct from the answer (e.g. dimmed / labeled "thinking").
 - **Tool calls** render as `→ name(args)`; **tool results** as `✓/✗ name:
 summary`.
-- **Subagent** output renders as a nested block under its parent
-  `spawn_subagent` tool call, indented by `depth`.
+- **Subagent** output renders as a collapsible group: a disclosure header
+  followed by the run's rows, indented by `depth`. A run is open while it is
+  running and collapses when it completes; the end of the main turn must not
+  reopen a run that already completed. A user's own expand/collapse choice
+  stands until the run's lifecycle actually changes.
 - **Compaction** renders as a notice line.
 - **Errors / interrupts** render as a distinct system notice.
 - During an active turn, the view follows the newest output, including streamed
   reasoning, even if the user scrolls up. When idle, the view follows only while
   the user is at the bottom; it must not yank the view if the user scrolls up.
+  With auto-scroll off, nothing may move the reader.
+
+**Bounded rendering (v0.7.0).** The conversation is rendered through a virtual
+viewport: only the rows inside the viewport (plus a small overscan, and the row
+holding keyboard focus) are mounted in the DOM. The client keeps the **complete**
+history it has received — nothing is discarded, no last-N limit is imposed, and
+no row is hidden with CSS; a row that is not mounted is simply not in the current
+window. The requirements this places on the client are:
+
+- Applying a streamed delta **must not** remount, replace or mutate any other
+  row. A token appended to the live row must leave every historical DOM node
+  untouched, and must not re-parse historical Markdown.
+- A collapsed reasoning block and a collapsed subagent run **must not** mount
+  their bodies at all. Expanding a run with thousands of rows must stay inside
+  the same mounted budget as any other scroll position.
+- Expand/collapse state is keyed by row/run identity and lives outside the row
+  components, so a choice the user made survives the row scrolling out of the
+  window and back. It resets on a new authoritative snapshot or a clear.
+- When content above the reader changes — a run expands or collapses, a
+  measurement corrects — the reader's position is anchored to the first visible
+  row and its pixel offset.
+- A subagent group's rows are siblings of its header in the render sequence, not
+  its DOM descendants, so the disclosure control is a keyboard-operable button
+  carrying `aria-expanded` and a label naming the run's state and row count.
+
+**Known limitation.** The browser's own find-in-page and select-all can only see
+mounted content, so they cover the visible window rather than the whole
+conversation. Full-history search and export are out of scope for this version.
 
 ### 3.10 Client: controls (dedicated UI)
 
@@ -438,8 +469,29 @@ The UI **must** persist `UIPreferences` (theme, layout, panel visibility) in
   perceived latency (no per-token full re-render jank). The UI must batch/coalesce
   high-frequency token events so that a fast stream does not cause layout
   thrash. Target: smooth rendering at typical LLM token rates on a modern laptop.
+  Incoming events are applied on an animation-frame schedule: only *adjacent*
+  stream events of the same scope and kind are merged, every token is preserved,
+  ordering is exact, and non-stream events (tool calls, state, turn boundaries)
+  flush what is pending before they apply. A hidden tab stops firing animation
+  frames, so a queue-size and latency fallback bounds how long work can sit.
+  This bounds how *often* a row's Markdown is re-parsed, not the cost of parsing
+  one enormous message.
+- **Performance (rendering):** rendering work must be bounded by the viewport and
+  by the rows that changed, not by the length of the conversation. Concretely, on
+  a 900px-tall viewport with render items of at least 24px and an overscan of 8
+  each side, at most **64** render items may be mounted — at 100, 1,000 or 10,000
+  rows of history alike, and including a re-expanded subagent run with thousands
+  of rows. This is a budget on *render items*: one enormous Markdown message is
+  still one render item, with as many descendants as its content needs.
 - **Performance (reconnect):** a reconnect + snapshot render must complete quickly
-  for a conversation of at least a few hundred messages.
+  for a conversation of at least a few hundred messages. Ingesting a snapshot is
+  O(history) by design — it is the one place the whole conversation is walked —
+  and retained history stays O(history) in memory. Steady-state streaming is not.
+- **Performance (measurement):** timing targets (p95 streamed visual-update work
+  inside one 60Hz frame, input response under 100ms, no steady-state task over
+  50ms attributable to history-wide remount or layout) are recorded as a
+  benchmark report for a named reference environment rather than asserted as
+  cross-machine CI thresholds. The mounted-item budget above is the hard gate.
 - **Security:** the server binds to `127.0.0.1` only and uses **no
   authentication**. This is acceptable because the port is not reachable
   off-machine. The spec **must** document this as a known limitation (any local
@@ -452,6 +504,9 @@ The UI **must** persist `UIPreferences` (theme, layout, panel visibility) in
 - **Accessibility:** the UI should meet **WCAG 2.1 AA** for the core flows
   (keyboard-operable controls, sufficient color contrast, focus management on the
   conversation and controls). This is a target, not a hard gate, for v0.1.0.
+  Virtualized rendering must not break keyboard use: the render item holding
+  focus stays mounted even when it scrolls out of view, and collapsing a group
+  that contains the focused element moves focus to that group's header first.
 - **Core purity:** the agent-server and the existing public API must preserve the
   invariant that importing `src/index.ts` has **no side effects** and never starts
   a session. The GUI must not add a runtime dependency to the Bun core; the UI's
@@ -545,6 +600,10 @@ types (§4.11).
   development).
 - **A Markdown renderer** — for rendering answers and reasoning (client-side
   only; a small, standard library).
+- **A list virtualizer** — `@tanstack/solid-virtual`, for the bounded
+  conversation viewport (client-side only).
+- **Playwright** — a development-only dependency of the GUI, for the browser
+  tests that verify the mounted-item budget and the scroll/anchor behaviour.
 
 None of the client-side dependencies are runtime dependencies of the Bun core.
 

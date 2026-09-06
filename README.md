@@ -107,6 +107,51 @@ The server prints its URL (e.g. `Vise GUI: http://localhost:8787`) and keeps run
 after the browser disconnects. The GUI and the REPL share the same session state
 (active profile + model).
 
+### Conversation rendering
+
+The conversation is drawn through a **virtual viewport**: only the rows in view
+(plus a small overscan, and whatever row holds keyboard focus) exist in the DOM.
+Rendering work is therefore bounded by the window and by the rows that actually
+changed, not by how long the conversation is — a streamed token updates one row
+and leaves every other DOM node untouched.
+
+The browser keeps the **whole** history it has received. Nothing is dropped,
+there is no "last N messages" limit, and offscreen rows are not merely hidden
+with CSS — they are simply not rendered until you scroll to them. Memory for the
+retained history, and the cost of ingesting a reconnect snapshot, are still
+proportional to the conversation's length; steady-state streaming is not.
+
+Subagent output renders as a collapsible group. A run is open while it is
+running and collapses when it finishes; expanding or collapsing one by hand
+sticks until that run's state actually changes, and survives scrolling the group
+out of view and back. Reasoning blocks behave the same way, and a collapsed
+block does not render or parse its body at all.
+
+> **Known limitation:** the browser's own find-in-page (`Ctrl`/`Cmd`+`F`) and
+> select-all only see what is currently rendered, so they cover the visible part
+> of the conversation rather than all of it. Full-history search and export are
+> not part of this version.
+
+### GUI development
+
+```bash
+# Agent-server + Vite dev server, in parallel:
+bun run gui:dev
+
+# From gui/ — type-check, build, and the browser tests:
+bunx tsc --noEmit -p tsconfig.json
+bun run build
+bun run test:browser:install   # once: downloads Chromium for Playwright
+bun run test:browser
+```
+
+The browser tests (`gui/e2e/*.spec.ts`) drive the real Vite app with a mock
+WebSocket, and assert the rendering budget and the scroll/anchor/focus
+behaviour. They are a separate runner from `bun test`: `bunfig.toml` confines
+Bun's test discovery to `test/`, because Bun would otherwise collect
+`*.spec.ts` too. A run writes a timing report to
+`gui/e2e/report/conversation-perf.json`.
+
 ## Scripts
 
 | Script              | Description                              |
@@ -115,7 +160,7 @@ after the browser disconnects. The GUI and the REPL share the same session state
 | `bun run start`     | Run the agent from source (`src/cli.ts`) |
 | `bun run gui`       | Start the GUI and open it in the browser |
 | `bun run serve`     | Start the headless agent-server          |
-| `bun test`          | Run the test suite (unit + integration)  |
+| `bun run test`      | Run the test suite (unit + integration)  |
 | `bun run lint`      | Lint with ESLint                         |
 | `bun run lint:fix`  | Lint and auto-fix                        |
 | `bun run typecheck` | Type-check without emitting              |

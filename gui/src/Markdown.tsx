@@ -1,12 +1,7 @@
 // A small Markdown renderer (GUI spec §3.9). Uses `marked` to produce HTML.
 import { marked } from "marked";
-import {
-  createMemo,
-  createEffect,
-  createSignal,
-  For,
-  type JSX,
-} from "solid-js";
+import { createMemo, Match, Show, Switch, type JSX } from "solid-js";
+import type { ConversationItem } from "./types";
 
 marked.setOptions({ breaks: true, gfm: true });
 
@@ -16,20 +11,33 @@ export function Markdown(props: { text: string }) {
   return <div class="markdown" innerHTML={html()} />;
 }
 
-/** A collapsible reasoning block (GUI spec §3.9). */
-export function ReasoningBlock(props: { text: string; active?: boolean }) {
-  const [el, setEl] = createSignal<HTMLDetailsElement>();
-  // Open when reasoning starts, collapse when it ends. Reacting only to the
-  // `active` transition (not binding `open` continuously) lets the user
-  // toggle the block freely while it is streaming.
-  createEffect(() => {
-    const node = el();
-    if (node) node.open = props.active ?? false;
-  });
+/**
+ * A collapsible reasoning block (GUI spec §3.9).
+ *
+ * `open` is controlled by the conversation view model rather than by the
+ * element, so a block the user opened by hand keeps that state when the row
+ * scrolls out of the virtual viewport and back. While closed, the body is not
+ * mounted and its Markdown is never parsed.
+ */
+export function ReasoningBlock(props: {
+  text: string;
+  open: boolean;
+  onToggle: () => void;
+}) {
   return (
-    <details class="reasoning" ref={setEl}>
+    <details
+      class="reasoning"
+      open={props.open}
+      onToggle={(e) => {
+        // Native disclosure keeps keyboard support; the toggle is reported up
+        // so the view model stays the single source of truth.
+        if (e.currentTarget.open !== props.open) props.onToggle();
+      }}
+    >
       <summary>reasoning</summary>
-      <Markdown text={props.text} />
+      <Show when={props.open}>
+        <Markdown text={props.text} />
+      </Show>
     </details>
   );
 }
@@ -44,85 +52,131 @@ export function formatArgs(args: Record<string, unknown>): string {
   }
 }
 
-/** Render the inner content of a conversation item. */
+/** Narrow a conversation item to one variant, for use as a `Match` condition. */
+function ofKind<K extends ConversationItem["kind"]>(
+  item: ConversationItem,
+  kind: K,
+): Extract<ConversationItem, { kind: K }> | undefined {
+  return item.kind === kind
+    ? (item as Extract<ConversationItem, { kind: K }>)
+    : undefined;
+}
+
+/**
+ * Render the inner content of a conversation item.
+ *
+ * Every read of the item goes through `props`, so replacing or mutating the
+ * item updates the mounted component instead of forcing a remount. (The old
+ * version captured `props.item` in a local and switched once, which only
+ * worked because every update remounted the row.)
+ */
 function ItemContent(props: {
-  item: import("./types").ConversationItem;
-  active?: boolean;
+  item: ConversationItem;
+  reasoningOpen: boolean;
+  onToggleReasoning: () => void;
 }) {
-  const item = props.item;
-  switch (item.kind) {
-    case "userMessage":
-      return <div class="user-bubble">{item.text}</div>;
-    case "assistantMessage":
-      return <Markdown text={item.text} />;
-    case "reasoningBlock":
-      return <ReasoningBlock text={item.text} active={props.active} />;
-    case "toolCall":
-      return (
-        <span class="tool-call">
-          → {item.name}({formatArgs(item.args)})
-        </span>
-      );
-    case "toolResult":
-      return (
-        <span class={`tool-result ${item.ok ? "ok" : "err"}`}>
-          {item.ok ? "✓" : "✗"} {item.name}: {item.summary}
-        </span>
-      );
-    case "compactionNotice":
-      return <span class="compacting">compacting…</span>;
-    case "systemNotice":
-      return <span class="notice">{item.text}</span>;
-  }
+  return (
+    <Switch>
+      <Match when={ofKind(props.item, "userMessage")}>
+        {(it) => <div class="user-bubble">{it().text}</div>}
+      </Match>
+      <Match when={ofKind(props.item, "assistantMessage")}>
+        {(it) => <Markdown text={it().text} />}
+      </Match>
+      <Match when={ofKind(props.item, "reasoningBlock")}>
+        {(it) => (
+          <ReasoningBlock
+            text={it().text}
+            open={props.reasoningOpen}
+            onToggle={props.onToggleReasoning}
+          />
+        )}
+      </Match>
+      <Match when={ofKind(props.item, "toolCall")}>
+        {(it) => (
+          <span class="tool-call">
+            → {it().name}({formatArgs(it().args)})
+          </span>
+        )}
+      </Match>
+      <Match when={ofKind(props.item, "toolResult")}>
+        {(it) => (
+          <span class={`tool-result ${it().ok ? "ok" : "err"}`}>
+            {it().ok ? "✓" : "✗"} {it().name}: {it().summary}
+          </span>
+        )}
+      </Match>
+      <Match when={ofKind(props.item, "compactionNotice")}>
+        <span class="compacting">compacting…</span>
+      </Match>
+      <Match when={ofKind(props.item, "systemNotice")}>
+        {(it) => <span class="notice">{it().text}</span>}
+      </Match>
+    </Switch>
+  );
 }
 
 /** A single conversation row (GUI spec §3.9). */
 export function Row(props: {
   depth: number;
-  item: import("./types").ConversationItem;
-  active?: boolean;
+  item: ConversationItem;
+  /** True when the row is a child of an expanded subagent run. */
+  inGroup?: boolean;
+  reasoningOpen: boolean;
+  onToggleReasoning: () => void;
 }) {
   return (
     <div
-      class={`row row-${props.item.kind}`}
+      class={`row row-${props.item.kind}${props.inGroup ? " row-in-group" : ""}`}
       style={{ "margin-left": `${props.depth * 1.25}rem` }}
     >
-      <ItemContent item={props.item} active={props.active} />
+      <ItemContent
+        item={props.item}
+        reasoningOpen={props.reasoningOpen}
+        onToggleReasoning={props.onToggleReasoning}
+      />
     </div>
   );
 }
 
 /**
- * A collapsible subagent block: wraps the rows of one subagent scope in a
- * `<details>` that is open while the subagent runs and collapses when it
- * completes (GUI spec §3.9). The subagent rows retain their own indentation.
+ * The disclosure control for one subagent run (GUI spec §3.9).
+ *
+ * A run's rows are flattened into the virtual viewport as sibling render items,
+ * so the group cannot be a `<details>` — its children are not its DOM
+ * descendants. A native `<button>` with `aria-expanded` gives the same keyboard
+ * behaviour without claiming to control an element that may not be mounted;
+ * the visual rail and indentation carry the association.
  */
-export function SubagentBlock(props: {
+export function SubagentHeader(props: {
   depth: number;
   done: boolean;
-  items: { index: number; row: import("./store").Row }[];
-  isActive: (idx: number) => boolean;
-}) {
-  const [el, setEl] = createSignal<HTMLDetailsElement>();
-  // Open while the subagent is running; collapse it when it completes. Reacting
-  // only to the `done` transition (rather than also on each child row) lets the
-  // user toggle the block freely while it streams, and a `subagentEnd` closes it.
-  createEffect(() => {
-    const node = el();
-    if (node) node.open = !props.done;
-  });
+  count: number;
+  open: boolean;
+  onToggle: () => void;
+  ref?: (el: HTMLButtonElement) => void;
+}): JSX.Element {
+  const label = (): string =>
+    `subagent ${props.done ? "done" : "running"}, ${props.count} ${
+      props.count === 1 ? "row" : "rows"
+    }`;
   return (
-    <details class="subagent" ref={setEl}>
-      <summary>subagent {props.done ? "done" : "..."}</summary>
-      <For each={props.items}>
-        {(b) => (
-          <Row
-            depth={props.depth}
-            item={b.row.item}
-            active={props.isActive(b.index)}
-          />
-        )}
-      </For>
-    </details>
+    <div
+      class="subagent-head"
+      style={{ "margin-left": `${Math.max(props.depth - 1, 0) * 1.25}rem` }}
+    >
+      <button
+        type="button"
+        class="subagent-toggle"
+        aria-expanded={props.open}
+        ref={props.ref}
+        onClick={() => props.onToggle()}
+      >
+        <span class="subagent-caret" aria-hidden="true">
+          {props.open ? "▾" : "▸"}
+        </span>
+        {label()}
+      </button>
+    </div>
   );
 }

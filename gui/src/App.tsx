@@ -1,5 +1,6 @@
 // The main application component (GUI spec §3.9–§3.11).
 import {
+  batch,
   createEffect,
   createSignal,
   For,
@@ -9,7 +10,11 @@ import {
 } from "solid-js";
 import { Client } from "./client";
 import { createStore } from "./store";
-import { Row, SubagentBlock } from "./Markdown";
+import { ConversationViewport } from "./conversation/ConversationViewport";
+import {
+  createEventQueue,
+  documentVisibility,
+} from "./conversation/eventQueue";
 import type { UIState } from "./types";
 
 // UI preferences live in localStorage (GUI spec §3.11, §6.3).
@@ -36,8 +41,20 @@ export function App() {
   const store = createStore();
   onCleanup(() => client.dispose());
 
-  // Apply every server event to the store.
-  client.subscribe((event) => store.applyEvent(event));
+  // Apply every server event to the store, through the frame scheduler: at
+  // token rates the network delivers far more deltas than the display can use,
+  // and applying each one separately means one reactive update and one Markdown
+  // parse per delta. Ordering and content are unchanged (GUI spec §5).
+  const queue = createEventQueue({
+    apply: (event) => store.applyEvent(event),
+    batch,
+    onVisibilityChange: documentVisibility,
+  });
+  const unsubscribe = client.subscribe((event) => queue.push(event));
+  onCleanup(() => {
+    unsubscribe();
+    queue.dispose();
+  });
 
   // Preferences.
   const [prefs, setPrefs] = createSignal<Prefs>(loadPrefs());
@@ -60,49 +77,20 @@ export function App() {
   const submit = () => {
     const text = task().trim();
     if (!text) return;
-    store.pushUserMessage(text);
+    // Through the queue, so the optimistic user message lands after any output
+    // still pending rather than jumping ahead of it.
+    queue.pushAction(() => store.pushUserMessage(text));
     client.send({ type: "task", text });
     setTask("");
   };
 
-  // Follow live output during a turn; when idle, follow only at the bottom.
-  const scrollRef = { current: null as HTMLElement | null };
-  const [atBottom, setAtBottom] = createSignal(true);
   // User-facing auto-scroll toggle (default on): when on, the view follows the
   // newest output while a turn streams; when off, the user scrolls freely.
+  // Scrolling itself lives in the virtual viewport, which owns the measurements
+  // the decision depends on.
   const [follow, setFollow] = createSignal(true);
   const state = () => store.state();
   const turnActive = () => state()?.turnActive ?? false;
-
-  // Auto-scroll (GUI spec §3.9). While a turn is streaming and follow is
-  // enabled, pin the view to the bottom so live output is always visible.
-  // When idle, follow only while the user is already at the bottom. Depends
-  // on `rows` so it re-runs as content streams in.
-  let wasActive = false;
-  let scrollFrame: number | undefined;
-  onCleanup(() => {
-    if (scrollFrame !== undefined) cancelAnimationFrame(scrollFrame);
-  });
-  createEffect(() => {
-    const active = turnActive();
-    const following = follow();
-    // Track the conversation so the effect re-runs as rows stream in.
-    store.rows();
-    if (following && scrollFrame === undefined) {
-      // Row replacement mounts a closed <details>; its own effect opens it.
-      // Measure after those effects, and coalesce token updates per frame.
-      scrollFrame = requestAnimationFrame(() => {
-        scrollFrame = undefined;
-        const el = scrollRef.current;
-        if (el && (turnActive() || atBottom())) el.scrollTop = el.scrollHeight;
-      });
-    }
-    // The view is pinned to the bottom throughout a turn, so restore the
-    // at-bottom state when the turn ends (the scroll handler may have set it
-    // false from the programmatic scroll mid-stream).
-    if (wasActive && !active) setAtBottom(true);
-    wasActive = active;
-  });
 
   return (
     <div class="app">
@@ -174,16 +162,9 @@ export function App() {
               ? "Auto-scroll is on: the view follows live output. Click to scroll freely."
               : "Auto-scroll is off: you can scroll freely. Click to follow live output."
           }
-          onClick={() => {
-            setFollow((f) => {
-              // Enabling should immediately jump to the newest output.
-              if (!f) {
-                const el = scrollRef.current;
-                if (el) el.scrollTop = el.scrollHeight;
-              }
-              return !f;
-            });
-          }}
+          // Enabling immediately jumps to the newest output; the viewport
+          // watches this signal and does the measured scroll.
+          onClick={() => setFollow((f) => !f)}
         >
           {follow() ? "follow: on" : "follow: off"}
         </button>
@@ -217,42 +198,11 @@ export function App() {
       </header>
 
       <main class="layout">
-        <section
-          class="conversation"
-          ref={(el) => (scrollRef.current = el)}
-          onScroll={(e) => {
-            const el = e.currentTarget;
-            setAtBottom(el.scrollHeight - el.scrollTop - el.clientHeight < 40);
-          }}
-        >
-          <Show
-            when={store.rows().length === 0}
-            fallback={
-              <For each={store.blocks()}>
-                {(block) =>
-                  block.kind === "subagent" ? (
-                    <SubagentBlock
-                      depth={block.depth}
-                      done={block.done}
-                      items={block.items}
-                      isActive={store.isActive}
-                    />
-                  ) : (
-                    <Row
-                      depth={block.row.depth}
-                      item={block.row.item}
-                      active={store.isActive(block.index)}
-                    />
-                  )
-                }
-              </For>
-            }
-          >
-            <div class="empty">
-              <p>Connected to Vise. Send a task to begin.</p>
-            </div>
-          </Show>
-        </section>
+        <ConversationViewport
+          store={store}
+          follow={follow}
+          turnActive={turnActive}
+        />
 
         <aside class="sidebar">
           <Panel title={`skills (${state()?.skills.length ?? 0})`}>

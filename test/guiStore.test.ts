@@ -247,6 +247,147 @@ describe("gui store (GUI spec §3.8, §4.11)", () => {
     ]);
   });
 
+  test("a streamed delta does not replace the rows array or any row", () => {
+    const store = createStore();
+    store.applyEvent(snapshot([{ kind: "userMessage", text: "hi" }], basicState()));
+    store.applyEvent({ type: "token", scope: { kind: "main" }, text: "a" });
+    const rowsBefore = store.rows();
+    const rowBefore = rowsBefore[1];
+    const blocksBefore = store.blocks();
+    const idsBefore = rowsBefore.map((r) => r.id);
+
+    // The hot path: 1,000 deltas must be path writes into one row's text.
+    for (let i = 0; i < 1000; i++) {
+      store.applyEvent({ type: "token", scope: { kind: "main" }, text: "x" });
+    }
+    expect(store.rows()).toBe(rowsBefore);
+    expect(store.rows()[1]).toBe(rowBefore);
+    expect(store.blocks()).toBe(blocksBefore);
+    expect(store.rows().map((r) => r.id)).toEqual(idsBefore);
+    expect(store.rows()[1].item).toEqual({
+      kind: "assistantMessage",
+      text: "a" + "x".repeat(1000),
+    });
+  });
+
+  test("row ids are stable, ordered and unique within a generation", () => {
+    const store = createStore();
+    store.applyEvent(snapshot([], basicState()));
+    store.applyEvent({ type: "token", scope: { kind: "main" }, text: "a" });
+    store.applyEvent({ type: "toolCall", scope: { kind: "main" }, name: "t", args: {} });
+    const ids = store.rows().map((r) => r.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(store.rows().map((r) => r.index)).toEqual([0, 1]);
+  });
+
+  test("a snapshot or clear starts a new generation with fresh ids", () => {
+    const store = createStore();
+    const first = store.generation();
+    store.applyEvent(snapshot([{ kind: "userMessage", text: "one" }], basicState()));
+    const second = store.generation();
+    expect(second).toBeGreaterThan(first);
+    const idsBefore = store.rows().map((r) => r.id);
+
+    store.applyEvent({ type: "cleared" });
+    expect(store.generation()).toBeGreaterThan(second);
+    expect(store.rows()).toHaveLength(0);
+    expect(store.blocks()).toHaveLength(0);
+
+    store.applyEvent(snapshot([{ kind: "userMessage", text: "two" }], basicState()));
+    const idsAfter = store.rows().map((r) => r.id);
+    // Ids carry their generation, so an id can never be reused for a
+    // different row after an authoritative reset.
+    expect(idsAfter.some((id) => idsBefore.includes(id))).toBe(false);
+  });
+
+  test("each adjacent run of a scope gets its own block id", () => {
+    const store = createStore();
+    const s1 = { kind: "sub" as const, id: "s1", depth: 1 };
+    store.applyEvent({ type: "token", scope: s1, text: "a" });
+    store.applyEvent({ type: "token", scope: { kind: "main" }, text: "main" });
+    store.applyEvent({ type: "toolCall", scope: s1, name: "t", args: {} });
+    const blocks = store.blocks();
+    // Two separate runs of the same scope: one scope, two groups, two ids.
+    const subs = blocks.filter((b) => b.kind === "subagent");
+    expect(subs).toHaveLength(2);
+    expect(subs[0].id).not.toBe(subs[1].id);
+    expect(subs[0].scope).toBe(subs[1].scope);
+  });
+
+  test("subagentEnd marks every run of that scope done", () => {
+    const store = createStore();
+    const s1 = { kind: "sub" as const, id: "s1", depth: 1 };
+    store.applyEvent({ type: "token", scope: s1, text: "a" });
+    store.applyEvent({ type: "token", scope: { kind: "main" }, text: "main" });
+    store.applyEvent({ type: "toolCall", scope: s1, name: "t", args: {} });
+    store.applyEvent({
+      type: "subagentEnd",
+      scope: s1,
+      ok: true,
+      label: "done",
+      depth: 1,
+    });
+    for (const block of store.blocks()) {
+      if (block.kind === "subagent") expect(block.done).toBe(true);
+    }
+  });
+
+  test("the end of the turn does not reopen a completed subagent", () => {
+    const store = createStore();
+    const s1 = { kind: "sub" as const, id: "s1", depth: 1 };
+    store.applyEvent({ type: "token", scope: s1, text: "a" });
+    store.applyEvent({
+      type: "subagentEnd",
+      scope: s1,
+      ok: true,
+      label: "done",
+      depth: 1,
+    });
+    expect(store.blocks()[0]).toMatchObject({ kind: "subagent", done: true });
+    store.applyEvent({
+      type: "turnEnd",
+      answer: "",
+      kind: "text",
+      finished: true,
+    });
+    // `done` is sticky for the generation: finishing the main turn must not
+    // spring every completed group back open.
+    expect(store.blocks()[0]).toMatchObject({ kind: "subagent", done: true });
+    expect(store.isSubagentOpen("sub:s1")).toBe(false);
+  });
+
+  test("turnEnd closes any open reasoning block", () => {
+    const store = createStore();
+    store.applyEvent({ type: "reasoning", scope: { kind: "main" }, text: "hm" });
+    expect(store.isActive(0)).toBe(true);
+    store.applyEvent({
+      type: "turnEnd",
+      answer: "",
+      kind: "text",
+      finished: true,
+    });
+    expect(store.isActive(0)).toBe(false);
+    expect(store.activeReasoning().size).toBe(0);
+  });
+
+  test("a snapshot's in-flight events are replayed once, after the history", () => {
+    const store = createStore();
+    store.applyEvent({
+      type: "snapshot",
+      history: [{ kind: "userMessage", text: "go" }] as never,
+      inflight: [
+        { type: "token", scope: { kind: "main" }, text: "partial " },
+        { type: "token", scope: { kind: "main" }, text: "answer" },
+      ] as never,
+      state: basicState() as never,
+    });
+    expect(store.rows()).toHaveLength(2);
+    expect(store.rows()[1].item).toEqual({
+      kind: "assistantMessage",
+      text: "partial answer",
+    });
+  });
+
   test("main-agent rows are not wrapped in a subagent block", () => {
     const store = createStore();
     store.applyEvent(
