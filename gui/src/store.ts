@@ -8,7 +8,20 @@ import type { ConversationItem, ServerEvent, UIState } from "./types";
 export interface Row {
   depth: number;
   item: ConversationItem;
+  /** The subagent scope key the row belongs to, when it is part of a subagent. */
+  scope?: string;
 }
+
+/** A block for rendering: either a single main-agent row or a subagent group. */
+export type Block =
+  | { kind: "row"; index: number; row: Row }
+  | {
+      kind: "subagent";
+      scope: string;
+      depth: number;
+      done: boolean;
+      items: { index: number; row: Row }[];
+    };
 
 /** The store: conversation rows, UI state, and event application. */
 export function createStore() {
@@ -26,6 +39,11 @@ export function createStore() {
   const [activeReasoning, setActiveReasoning] = createSignal<Set<number>>(
     new Set(),
   );
+  // The set of subagent scope keys that have completed (their `subagentEnd` was
+  // received). Once set, the scope's block stays collapsed regardless of whether
+  // it had other open rows. A scope not in this set is still running (its block
+  // is open).
+  const [doneSubagent, setDoneSubagent] = createSignal<Set<string>>(new Set());
 
   /** Add a row index to the open-reasoning set. */
   const addActive = (idx: number) =>
@@ -49,6 +67,11 @@ export function createStore() {
   /** Clear all open-reasoning rows. */
   const clearActive = () => setActiveReasoning(new Set<number>());
 
+  /** Reset all subagent open/done state. */
+  const clearSubagents = () => {
+    setDoneSubagent(new Set<string>());
+  };
+
   const scopeKey = (scope: {
     kind: string;
     id?: string;
@@ -58,9 +81,24 @@ export function createStore() {
   const depthOf = (scope: { kind: string; depth?: number }): number =>
     scope.kind === "main" ? 0 : (scope.depth ?? 1);
 
+  /** A subagent scope is any scope that is not the main agent. */
+  const isSubagentScope = (scope: { kind: string }): boolean =>
+    scope.kind !== "main";
+
   /** Append a row, returning its index. */
   const push = (depth: number, item: ConversationItem): number => {
-    const next = [...rows(), { depth, item }];
+    const next = [...rows(), { depth, item } as Row];
+    setRows(next);
+    return next.length - 1;
+  };
+
+  /** Append a subagent row tagged with its scope, returning its index. */
+  const pushSubagent = (
+    scopeKeyStr: string,
+    depth: number,
+    item: ConversationItem,
+  ): number => {
+    const next = [...rows(), { depth, item, scope: scopeKeyStr } as Row];
     setRows(next);
     return next.length - 1;
   };
@@ -102,6 +140,7 @@ export function createStore() {
     key: string,
     depth: number,
     kind: "assistantMessage" | "reasoningBlock",
+    subagent?: string,
   ): number => {
     const idx = streamingTarget.get(key);
     const isCurrent =
@@ -110,7 +149,9 @@ export function createStore() {
       rows()[idx].item.kind === kind;
     let target = idx;
     if (!isCurrent || target === undefined) {
-      target = push(depth, { kind, text: "" });
+      target = subagent
+        ? pushSubagent(subagent, depth, { kind, text: "" })
+        : push(depth, { kind, text: "" });
       streamingTarget.set(key, target);
     }
     // Only reasoning blocks track an "active" (open) state; assistant text
@@ -129,6 +170,7 @@ export function createStore() {
         setState(event.state);
         streamingTarget.clear();
         clearActive();
+        clearSubagents();
         // Replay the in-flight events to reconstruct the live turn.
         for (const e of event.inflight) applyEvent(e);
         return;
@@ -139,6 +181,7 @@ export function createStore() {
           key,
           depthOf(event.scope),
           "assistantMessage",
+          isSubagentScope(event.scope) ? key : undefined,
         );
         appendText(idx, event.text);
         return;
@@ -149,6 +192,7 @@ export function createStore() {
           key,
           depthOf(event.scope),
           "reasoningBlock",
+          isSubagentScope(event.scope) ? key : undefined,
         );
         appendText(idx, event.text);
         return;
@@ -157,31 +201,58 @@ export function createStore() {
         const key = scopeKey(event.scope);
         removeActive(streamingTarget.get(key));
         streamingTarget.delete(key);
-        push(depthOf(event.scope), {
-          kind: "toolCall",
-          name: event.name,
-          args: event.args,
-        });
+        if (isSubagentScope(event.scope)) {
+          const saKey = scopeKey(event.scope);
+          pushSubagent(saKey, depthOf(event.scope), {
+            kind: "toolCall",
+            name: event.name,
+            args: event.args,
+          });
+        } else {
+          push(depthOf(event.scope), {
+            kind: "toolCall",
+            name: event.name,
+            args: event.args,
+          });
+        }
         return;
       }
       case "toolResult": {
-        push(depthOf(event.scope), {
-          kind: "toolResult",
-          name: event.name,
-          ok: event.ok,
-          summary: event.summary,
-        });
+        if (isSubagentScope(event.scope)) {
+          const saKey = scopeKey(event.scope);
+          pushSubagent(saKey, depthOf(event.scope), {
+            kind: "toolResult",
+            name: event.name,
+            ok: event.ok,
+            summary: event.summary,
+          });
+        } else {
+          push(depthOf(event.scope), {
+            kind: "toolResult",
+            name: event.name,
+            ok: event.ok,
+            summary: event.summary,
+          });
+        }
         return;
       }
       case "compacting": {
-        push(depthOf(event.scope), { kind: "compactionNotice" });
+        if (isSubagentScope(event.scope)) {
+          pushSubagent(scopeKey(event.scope), depthOf(event.scope), {
+            kind: "compactionNotice",
+          });
+        } else {
+          push(depthOf(event.scope), { kind: "compactionNotice" });
+        }
         return;
       }
       case "subagentEnd": {
         const key = scopeKey(event.scope);
         removeActive(streamingTarget.get(key));
         streamingTarget.delete(key);
-        push(event.depth, {
+        // Mark the scope as done so its block collapses.
+        setDoneSubagent((prev) => new Set(prev).add(key));
+        pushSubagent(key, event.depth, {
           kind: "systemNotice",
           text: `subagent ${event.ok ? "done" : "failed"} (${event.label})`,
         });
@@ -192,6 +263,7 @@ export function createStore() {
         // case, or in the `finish` tool call/result in the finished case.
         streamingTarget.clear();
         clearActive();
+        clearSubagents();
         return;
       }
       case "error": {
@@ -207,6 +279,7 @@ export function createStore() {
         setRows([]);
         streamingTarget.clear();
         clearActive();
+        clearSubagents();
         return;
       }
       case "commandResult": {
@@ -219,12 +292,58 @@ export function createStore() {
     }
   };
 
+  /** True when a subagent scope is still running (its block should stay open). */
+  const isSubagentOpen = (key: string): boolean => !doneSubagent().has(key);
+
+  /**
+   * The blocks to render: main-agent rows (depth 0) pass through unchanged;
+   * adjacent rows of the same subagent scope are grouped into one collapsible
+   * block. Grouping is by maximal run of consecutive same-scope rows, which
+   * mirrors how `subagentEnd` terminates a scope and lets an interleaved
+   * subagent render as a single block once its scope ends.
+   */
+  const blocks = (): Block[] => {
+    const out: Block[] = [];
+    let group: Extract<Block, { kind: "subagent" }> | null = null;
+    const rs = rows();
+    const done = doneSubagent();
+    for (let i = 0; i < rs.length; i++) {
+      const r = rs[i];
+      if (r.scope !== undefined) {
+        // Merge into the current group when it's the same scope; otherwise
+        // start a new group.
+        if (group && group.scope === r.scope) {
+          group.items.push({ index: i, row: r });
+        } else {
+          if (group) out.push(group);
+          group = {
+            kind: "subagent",
+            scope: r.scope,
+            depth: r.depth,
+            done: done.has(r.scope),
+            items: [{ index: i, row: r }],
+          };
+        }
+      } else {
+        if (group) {
+          out.push(group);
+          group = null;
+        }
+        out.push({ kind: "row", index: i, row: r });
+      }
+    }
+    if (group) out.push(group);
+    return out;
+  };
+
   return {
     rows,
     state,
     lastError,
     activeReasoning,
     isActive: (idx: number): boolean => activeReasoning().has(idx),
+    isSubagentOpen,
+    blocks,
     applyEvent,
     pushUserMessage,
   };

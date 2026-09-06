@@ -9,7 +9,7 @@ import {
 } from "solid-js";
 import { Client } from "./client";
 import { createStore } from "./store";
-import { Row } from "./Markdown";
+import { Row, SubagentBlock } from "./Markdown";
 import type { UIState } from "./types";
 
 // UI preferences live in localStorage (GUI spec §3.11, §6.3).
@@ -228,14 +228,23 @@ export function App() {
           <Show
             when={store.rows().length === 0}
             fallback={
-              <For each={store.rows()}>
-                {(row, i) => (
-                  <Row
-                    depth={row.depth}
-                    item={row.item}
-                    active={store.isActive(i())}
-                  />
-                )}
+              <For each={store.blocks()}>
+                {(block) =>
+                  block.kind === "subagent" ? (
+                    <SubagentBlock
+                      depth={block.depth}
+                      done={block.done}
+                      items={block.items}
+                      isActive={store.isActive}
+                    />
+                  ) : (
+                    <Row
+                      depth={block.row.depth}
+                      item={block.row.item}
+                      active={store.isActive(block.index)}
+                    />
+                  )
+                }
               </For>
             }
           >

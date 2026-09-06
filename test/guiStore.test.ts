@@ -139,6 +139,124 @@ describe("gui store (GUI spec §3.8, §4.11)", () => {
       text: "b1 b2 ",
     });
   });
+
+  test("a subagent block is open while running and collapses on completion", () => {
+    const store = createStore();
+    const s1 = { kind: "sub" as const, id: "s1", depth: 1 };
+    store.applyEvent({ type: "token", scope: s1, text: "hi " });
+    // Running: the scope's block is open (not done).
+    expect(store.blocks()).toHaveLength(1);
+    expect(store.blocks()[0]).toMatchObject({ kind: "subagent", done: false });
+    expect(store.isSubagentOpen("sub:s1")).toBe(true);
+    // Stream more tokens while running.
+    store.applyEvent({ type: "token", scope: s1, text: "there" });
+    // Completion: the block flips to done (collapsed).
+    store.applyEvent({
+      type: "subagentEnd",
+      scope: s1,
+      ok: true,
+      label: "done",
+      depth: 1,
+    });
+    const blocks = store.blocks();
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]).toMatchObject({ kind: "subagent", done: true });
+    expect(store.isSubagentOpen("sub:s1")).toBe(false);
+  });
+
+  test("a failed subagent also collapses on completion", () => {
+    const store = createStore();
+    const s1 = { kind: "sub" as const, id: "s1", depth: 1 };
+    store.applyEvent({ type: "token", scope: s1, text: "work" });
+    expect(store.isSubagentOpen("sub:s1")).toBe(true);
+    store.applyEvent({
+      type: "subagentEnd",
+      scope: s1,
+      ok: false,
+      label: "failed",
+      depth: 1,
+    });
+    const blocks = store.blocks();
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]).toMatchObject({ kind: "subagent", done: true });
+    // The final systemNotice row carries the outcome.
+    const rows = store.rows();
+    expect(rows[rows.length - 1].item.kind).toBe("systemNotice");
+  });
+
+  test("sequential subagents at the same depth each render one collapsing block", () => {
+    const store = createStore();
+    const s1 = { kind: "sub" as const, id: "s1", depth: 1 };
+    const s2 = { kind: "sub" as const, id: "s2", depth: 1 };
+    store.applyEvent({ type: "token", scope: s1, text: "a1 " });
+    store.applyEvent({ type: "token", scope: s1, text: "a2 " });
+    // s1 completes; its single block collapses.
+    store.applyEvent({
+      type: "subagentEnd",
+      scope: s1,
+      ok: true,
+      label: "done",
+      depth: 1,
+    });
+    let blocks = store.blocks();
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]).toMatchObject({ kind: "subagent", done: true });
+    // s2 starts after; it is a fresh block that is open (not done).
+    store.applyEvent({ type: "toolCall", scope: s2, name: "t", args: {} });
+    blocks = store.blocks();
+    expect(blocks).toHaveLength(2);
+    expect(blocks[1]).toMatchObject({ kind: "subagent", done: false });
+    expect(store.isSubagentOpen("sub:s1")).toBe(false);
+    expect(store.isSubagentOpen("sub:s2")).toBe(true);
+    store.applyEvent({
+      type: "subagentEnd",
+      scope: s2,
+      ok: true,
+      label: "done",
+      depth: 1,
+    });
+    expect(store.blocks()[1]).toMatchObject({ kind: "subagent", done: true });
+    expect(store.isSubagentOpen("sub:s2")).toBe(false);
+  });
+
+  test("rows of one scope grouping into a single in-order block", () => {
+    const store = createStore();
+    const s1 = { kind: "sub" as const, id: "s1", depth: 1 };
+    // Same scope interleaving across rows still groups consecutive runs (the
+    // block stays grouped when its rows are adjacent; order is preserved).
+    store.applyEvent({ type: "token", scope: s1, text: "a1 " });
+    store.applyEvent({ type: "toolCall", scope: s1, name: "t", args: {} });
+    store.applyEvent({
+      type: "toolResult",
+      scope: s1,
+      name: "t",
+      ok: true,
+      summary: "ok",
+    });
+    store.applyEvent({ type: "token", scope: s1, text: "a2 " });
+    // All rows are s1's: a single adjacent run -> one block.
+    expect(store.blocks()).toHaveLength(1);
+    expect(store.blocks()[0]).toMatchObject({ kind: "subagent", done: false });
+    // All its rows live in the block, in order.
+    const items = store.blocks()[0].items;
+    expect(items.map((b) => b.row.item.kind)).toEqual([
+      "assistantMessage", // a1
+      "toolCall",
+      "toolResult",
+      "assistantMessage", // a2
+    ]);
+  });
+
+  test("main-agent rows are not wrapped in a subagent block", () => {
+    const store = createStore();
+    store.applyEvent(
+      snapshot([{ kind: "userMessage", text: "hi" }], basicState()),
+    );
+    store.applyEvent({ type: "token", scope: { kind: "main" }, text: "ok" });
+    const blocks = store.blocks();
+    // Both rows are plain `row` blocks, not `subagent`.
+    expect(blocks.every((b) => b.kind === "row")).toBe(true);
+  });
 });
 
 function snapshot(history: unknown[], state: unknown): ServerEvent {

@@ -1,6 +1,12 @@
 // A small Markdown renderer (GUI spec §3.9). Uses `marked` to produce HTML.
 import { marked } from "marked";
-import { createMemo, createEffect, createSignal } from "solid-js";
+import {
+  createMemo,
+  createEffect,
+  createSignal,
+  For,
+  type JSX,
+} from "solid-js";
 
 marked.setOptions({ breaks: true, gfm: true });
 
@@ -83,5 +89,40 @@ export function Row(props: {
     >
       <ItemContent item={props.item} active={props.active} />
     </div>
+  );
+}
+
+/**
+ * A collapsible subagent block: wraps the rows of one subagent scope in a
+ * `<details>` that is open while the subagent runs and collapses when it
+ * completes (GUI spec §3.9). The subagent rows retain their own indentation.
+ */
+export function SubagentBlock(props: {
+  depth: number;
+  done: boolean;
+  items: { index: number; row: import("./store").Row }[];
+  isActive: (idx: number) => boolean;
+}) {
+  const [el, setEl] = createSignal<HTMLDetailsElement>();
+  // Open while the subagent is running; collapse it when it completes. Reacting
+  // only to the `done` transition (rather than also on each child row) lets the
+  // user toggle the block freely while it streams, and a `subagentEnd` closes it.
+  createEffect(() => {
+    const node = el();
+    if (node) node.open = !props.done;
+  });
+  return (
+    <details class="subagent" ref={setEl}>
+      <summary>subagent {props.done ? "done" : "..."}</summary>
+      <For each={props.items}>
+        {(b) => (
+          <Row
+            depth={props.depth}
+            item={b.row.item}
+            active={props.isActive(b.index)}
+          />
+        )}
+      </For>
+    </details>
   );
 }
