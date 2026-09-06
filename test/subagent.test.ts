@@ -255,6 +255,28 @@ describe("subagent runner (§3.8.2, §3.8.5)", () => {
     expect(events).toContain("end");
     expect(events[events.length - 1]).toBe("end");
   });
+
+  test("emits a reasoning event when the model streams reasoning (spec §3.8.6)", async () => {
+    const events: string[] = [];
+    const render = (_depth: number, e: { kind: string }) => events.push(e.kind);
+    // A client that streams reasoning tokens before returning its response.
+    const client: LLMClient = {
+      async chat(opts) {
+        opts.onReasoning?.("hmm, let me think");
+        return finish("x");
+      },
+    };
+    const runner = makeSubagentRunner({
+      graph: modelGraph(),
+      client,
+      render,
+    });
+    await runner(runOpts(5));
+    expect(events).toContain("reasoning");
+    // Reasoning streams before the terminal end event.
+    expect(events.indexOf("reasoning")).toBeLessThan(events.indexOf("end"));
+    expect(events[events.length - 1]).toBe("end");
+  });
 });
 
 describe("concurrency: multiple spawn_subagent calls run in parallel (§3.8.3)", () => {

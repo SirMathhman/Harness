@@ -18,9 +18,36 @@ export function createStore() {
 
   // The index of the row currently receiving streamed text, per scope key.
   const streamingTarget = new Map<string, number>();
-  // The index of the row actively streaming reasoning (drives the open/
-  // collapse of a reasoning block). Reactive so the UI updates when it changes.
-  const [activeIdx, setActiveIdx] = createSignal<number | null>(null);
+  // The set of row indices whose reasoning block is currently open (drives the
+  // open/collapse of reasoning blocks). Reactive so the UI updates when it
+  // changes. Per-scope: a token from one scope collapses only that scope's
+  // reasoning block, so a main-agent token never collapses a subagent's block
+  // and concurrent subagents each render open.
+  const [activeReasoning, setActiveReasoning] = createSignal<Set<number>>(
+    new Set(),
+  );
+
+  /** Add a row index to the open-reasoning set. */
+  const addActive = (idx: number) =>
+    setActiveReasoning((prev) => {
+      const s = new Set(prev);
+      s.add(idx);
+      return s;
+    });
+
+  /** Remove a row index from the open-reasoning set (no-op if absent). */
+  const removeActive = (idx: number | undefined) => {
+    if (idx === undefined) return;
+    setActiveReasoning((prev) => {
+      if (!prev.has(idx)) return prev;
+      const s = new Set(prev);
+      s.delete(idx);
+      return s;
+    });
+  };
+
+  /** Clear all open-reasoning rows. */
+  const clearActive = () => setActiveReasoning(new Set<number>());
 
   const scopeKey = (scope: {
     kind: string;
@@ -85,8 +112,10 @@ export function createStore() {
       streamingTarget.set(key, target);
     }
     // Only reasoning blocks track an "active" (open) state; assistant text
-    // does not. A token arriving after reasoning ends collapses it.
-    setActiveIdx(kind === "reasoningBlock" ? target : null);
+    // does not. A token arriving after reasoning ends collapses it: `idx` is
+    // the scope's previously-streamed row (the reasoning row in that case).
+    if (kind === "reasoningBlock") addActive(target);
+    else removeActive(idx);
     return target;
   };
 
@@ -97,7 +126,7 @@ export function createStore() {
         setRows(event.history.map((item) => ({ depth: 0, item })));
         setState(event.state);
         streamingTarget.clear();
-        setActiveIdx(null);
+        clearActive();
         // Replay the in-flight events to reconstruct the live turn.
         for (const e of event.inflight) applyEvent(e);
         return;
@@ -123,8 +152,9 @@ export function createStore() {
         return;
       }
       case "toolCall": {
-        streamingTarget.delete(scopeKey(event.scope));
-        setActiveIdx(null);
+        const key = scopeKey(event.scope);
+        removeActive(streamingTarget.get(key));
+        streamingTarget.delete(key);
         push(depthOf(event.scope), {
           kind: "toolCall",
           name: event.name,
@@ -146,8 +176,9 @@ export function createStore() {
         return;
       }
       case "subagentEnd": {
-        streamingTarget.delete(scopeKey(event.scope));
-        setActiveIdx(null);
+        const key = scopeKey(event.scope);
+        removeActive(streamingTarget.get(key));
+        streamingTarget.delete(key);
         push(event.depth, {
           kind: "systemNotice",
           text: `subagent ${event.ok ? "done" : "failed"} (${event.label})`,
@@ -158,7 +189,7 @@ export function createStore() {
         // The answer is already visible: streamed as tokens in the plain-text
         // case, or in the `finish` tool call/result in the finished case.
         streamingTarget.clear();
-        setActiveIdx(null);
+        clearActive();
         return;
       }
       case "error": {
@@ -173,7 +204,7 @@ export function createStore() {
       case "cleared": {
         setRows([]);
         streamingTarget.clear();
-        setActiveIdx(null);
+        clearActive();
         return;
       }
       case "commandResult": {
@@ -186,7 +217,15 @@ export function createStore() {
     }
   };
 
-  return { rows, state, lastError, activeIdx, applyEvent, pushUserMessage };
+  return {
+    rows,
+    state,
+    lastError,
+    activeReasoning,
+    isActive: (idx: number): boolean => activeReasoning().has(idx),
+    applyEvent,
+    pushUserMessage,
+  };
 }
 
 /** A minimal empty UI state (before the first snapshot). */

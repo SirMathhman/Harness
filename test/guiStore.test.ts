@@ -60,33 +60,61 @@ describe("gui store (GUI spec §3.8, §4.11)", () => {
     expect(store.state()?.activeProfile).toBe("Agent");
   });
 
-  test("activeIdx tracks the open reasoning block (GUI spec §3.9)", () => {
+  test("isActive tracks the open reasoning block (GUI spec §3.9)", () => {
     const store = createStore();
     store.applyEvent({
       type: "reasoning",
       scope: { kind: "main" },
       text: "hmm",
     });
-    expect(store.activeIdx()).toBe(0); // reasoning row is open
+    expect(store.isActive(0)).toBe(true); // reasoning row is open
     store.applyEvent({
       type: "token",
       scope: { kind: "main" },
       text: "answer",
     });
-    expect(store.activeIdx()).toBeNull(); // a token after reasoning collapses it
+    expect(store.isActive(0)).toBe(false); // a token after reasoning collapses it
     store.applyEvent({
       type: "reasoning",
       scope: { kind: "main" },
       text: "more",
     });
-    expect(store.activeIdx()).toBe(2); // new reasoning row (index 2) is open
+    expect(store.isActive(2)).toBe(true); // new reasoning row (index 2) is open
     store.applyEvent({
       type: "toolCall",
       scope: { kind: "main" },
       name: "t",
       args: {},
     });
-    expect(store.activeIdx()).toBeNull(); // toolCall clears it
+    expect(store.isActive(2)).toBe(false); // toolCall clears it
+  });
+
+  test("a main-agent token does not collapse a subagent's open reasoning block", () => {
+    const store = createStore();
+    const sub = { kind: "sub" as const, id: "s1" };
+    store.applyEvent({ type: "reasoning", scope: sub, text: "sub thinks" });
+    const subIdx = store.rows().length - 1;
+    expect(store.isActive(subIdx)).toBe(true);
+    // A main-agent token arrives while the subagent is still reasoning.
+    store.applyEvent({ type: "token", scope: { kind: "main" }, text: "main" });
+    // The subagent's reasoning block stays open; only the main scope is affected.
+    expect(store.isActive(subIdx)).toBe(true);
+  });
+
+  test("two subagent reasoning blocks at different depths are both open", () => {
+    const store = createStore();
+    const s1 = { kind: "sub" as const, id: "s1" };
+    const s2 = { kind: "sub" as const, id: "s2" };
+    store.applyEvent({ type: "reasoning", scope: s1, text: "a" });
+    const idx1 = store.rows().length - 1;
+    store.applyEvent({ type: "reasoning", scope: s2, text: "b" });
+    const idx2 = store.rows().length - 1;
+    expect(store.isActive(idx1)).toBe(true);
+    expect(store.isActive(idx2)).toBe(true);
+    // A token from s1 closes only s1's block, leaving s2's open.
+    store.applyEvent({ type: "token", scope: s1, text: "a-answer" });
+    expect(store.isActive(idx1)).toBe(false);
+    expect(store.isActive(idx2)).toBe(true);
   });
 });
 

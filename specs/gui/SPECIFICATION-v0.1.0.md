@@ -214,21 +214,21 @@ The server **must not** read from or write to `stdin` (it is not a REPL). It
 The server **must** translate the session's live output into protocol events and
 push them to the connected client, in order, on the single WebSocket channel:
 
-| Source (existing)                                               | Protocol event                           | Notes                                                |
-| --------------------------------------------------------------- | ---------------------------------------- | ---------------------------------------------------- |
-| `AgentCallbacks.onToken`                                        | `token`                                  | Main-agent streamed answer token.                    |
-| `AgentCallbacks.onReasoning`                                    | `reasoning`                              | Main-agent reasoning token (display-only).           |
-| `AgentCallbacks.onToolCall`                                     | `toolCall`                               | Main-agent tool call.                                |
-| `AgentCallbacks.onToolResult`                                   | `toolResult`                             | Main-agent tool result.                              |
-| `AgentCallbacks.onCompacting`                                   | `compacting`                             | Main-agent compaction notice.                        |
-| `SubagentRender` (`token`/`toolCall`/`toolResult`/`compacting`) | same-named event with a subagent `scope` | Nested under the parent `spawn_subagent` call.       |
-| `SubagentRender` (`end`)                                        | `subagentEnd`                            | Carries `ok`, `label`, `depth`.                      |
-| `runTurn` result (`TurnResult`)                                 | `turnEnd`                                | Carries `answer`, `kind`, `finished`.                |
-| `LLMError` / other turn error                                   | `error`                                  | Carries `message` and `kind` (`"llm"` \| `"other"`). |
-| Abort (Ctrl-C equivalent)                                       | `turnEnd` with `kind: "aborted"`         | The turn is interrupted; foreground command killed.  |
-| Profile/model switch, context update, hooks on/off              | `state`                                  | Carries the changed `UIState` fields.                |
-| Command that produces a list or a failure                       | `commandResult`                          | e.g. profile/model list, or a switch error.          |
-| (Future) background task / background subagent                  | `serverEvent`                            | Reserved extension point (§3.6).                     |
+| Source (existing)                                                           | Protocol event                           | Notes                                                           |
+| --------------------------------------------------------------------------- | ---------------------------------------- | --------------------------------------------------------------- |
+| `AgentCallbacks.onToken`                                                    | `token`                                  | Main-agent streamed answer token.                               |
+| `AgentCallbacks.onReasoning`                                                | `reasoning`                              | Reasoning token (display-only); main agent and subagents alike. |
+| `AgentCallbacks.onToolCall`                                                 | `toolCall`                               | Main-agent tool call.                                           |
+| `AgentCallbacks.onToolResult`                                               | `toolResult`                             | Main-agent tool result.                                         |
+| `AgentCallbacks.onCompacting`                                               | `compacting`                             | Main-agent compaction notice.                                   |
+| `SubagentRender` (`token`/`reasoning`/`toolCall`/`toolResult`/`compacting`) | same-named event with a subagent `scope` | Nested under the parent `spawn_subagent` call.                  |
+| `SubagentRender` (`end`)                                                    | `subagentEnd`                            | Carries `ok`, `label`, `depth`.                                 |
+| `runTurn` result (`TurnResult`)                                             | `turnEnd`                                | Carries `answer`, `kind`, `finished`.                           |
+| `LLMError` / other turn error                                               | `error`                                  | Carries `message` and `kind` (`"llm"` \| `"other"`).            |
+| Abort (Ctrl-C equivalent)                                                   | `turnEnd` with `kind: "aborted"`         | The turn is interrupted; foreground command killed.             |
+| Profile/model switch, context update, hooks on/off                          | `state`                                  | Carries the changed `UIState` fields.                           |
+| Command that produces a list or a failure                                   | `commandResult`                          | e.g. profile/model list, or a switch error.                     |
+| (Future) background task / background subagent                              | `serverEvent`                            | Reserved extension point (§3.6).                                |
 
 **Scope.** Every streamed event carries a `scope` identifying which agent
 produced it:

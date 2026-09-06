@@ -35,6 +35,7 @@ import {
  */
 export type SubagentRenderEvent =
   | { kind: "token"; text: string }
+  | { kind: "reasoning"; text: string }
   | { kind: "toolCall"; name: string; args: Record<string, unknown> }
   | { kind: "toolResult"; name: string; ok: boolean; summary: string }
   | { kind: "compacting" }
@@ -363,6 +364,7 @@ export function makeSubagentRunner(
 
     const callbacks: AgentCallbacks = {
       onToken: (t) => emit({ kind: "token", text: t }),
+      onReasoning: (t) => emit({ kind: "reasoning", text: t }),
       onToolCall: (name, args) => emit({ kind: "toolCall", name, args }),
       onToolResult: (name, ok, summary) =>
         emit({ kind: "toolResult", name, ok, summary }),

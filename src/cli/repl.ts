@@ -238,11 +238,26 @@ export function promptLabel(handle: SessionHandle): string {
  * The indent scales with the subagent's nesting depth.
  */
 function makeSubagentRender(): SubagentRender {
+  // Per-depth reasoning→content transition, mirroring the main-agent path:
+  // reasoning streams in gray under a `thinking…` header, and the first
+  // content token after reasoning starts on a fresh line.
+  const reasoningActive = new Map<number, boolean>();
   return (depth, event) => {
     const indent = "  ".repeat(depth) + "  ";
     switch (event.kind) {
       case "token":
+        if (reasoningActive.get(depth)) {
+          process.stdout.write("\n");
+          reasoningActive.set(depth, false);
+        }
         process.stdout.write(event.text);
+        break;
+      case "reasoning":
+        if (!reasoningActive.get(depth)) {
+          process.stdout.write(`\n${reasoningHeaderLine(indent)}\n`);
+          reasoningActive.set(depth, true);
+        }
+        process.stdout.write(c.gray(event.text));
         break;
       case "toolCall":
         process.stdout.write(

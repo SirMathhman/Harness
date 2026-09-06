@@ -166,6 +166,9 @@ export class AgentServer {
         case "token":
           this.emit({ type: "token", scope, text: event.text });
           break;
+        case "reasoning":
+          this.emit({ type: "reasoning", scope, text: event.text });
+          break;
         case "toolCall":
           this.emit({
             type: "toolCall",

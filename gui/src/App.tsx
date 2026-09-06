@@ -233,7 +233,7 @@ export function App() {
                   <Row
                     depth={row.depth}
                     item={row.item}
-                    active={store.activeIdx() === i()}
+                    active={store.isActive(i())}
                   />
                 )}
               </For>
