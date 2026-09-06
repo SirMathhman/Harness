@@ -15,7 +15,8 @@ tools, lifecycle hooks, models — is described by TypeScript config files as a 
 - **Runtime: Bun 1.3+.** Both the harness and its config files execute TypeScript
   directly from source. **There is no build step and no Node runtime.**
 - **No runtime dependencies.** Only Node built-ins: `fetch`, `node:child_process`,
-  `node:fs`, `node:path`, `node:util`, `node:readline`, `node:os`.
+  `node:fs`, `node:path`, `node:util`, `node:readline`, `node:os`,
+  `node:url`, `node:dns`.
 - `src/cli.ts` is the executable entry (`bin: vise`). `src/index.ts` is the
   side-effect-free public API that `.vise/index.ts` imports.
 
@@ -76,17 +77,17 @@ src/
                     # names, skills (list_skills/read_skill + the skill index)
   context/          # compaction.ts (token accounting + recap/truncation)
   hooks/            # manager.ts, types.ts, index.ts (lifecycle dispatch)
-  profiles/         # registry, load, resolve, validate, state, defaults, types
+  profiles/         # registry, load, resolve, validate, state, types, index
   providers/        # llamaProvider.ts, types.ts, index.ts
   config/           # defaults.ts (built-in prompt/runtime/config defaults)
   server/           # agent-server: protocol, server, translate, transport, entry
   cli/              # args, repl, commands, render, color
 gui/                # SolidJS + Vite browser client
-  src/              # App.tsx, store.ts, Markdown.tsx, client.ts, types.ts
+  src/              # main.tsx, App.tsx, store.ts, Markdown.tsx, client.ts, types.ts, styles.css
     conversation/   # ConversationViewport.tsx, viewModel.ts, eventQueue.ts
   e2e/              # Playwright browser specs + the mock-WebSocket fixture
 test/               # *.test.ts (unit + integration), helpers.ts
-specs/              # v0.1.0/ … v0.6.0/ + gui/ — the specification documents
+specs/              # v0.1.0/ … v0.7.0/ + gui/ — the specification documents
 .vise/              # project-level config (index.ts) + state.json (gitignored)
 ```
 
@@ -203,7 +204,7 @@ exposes it over a WebSocket, mirroring the REPL. It reuses the same session mach
 
 ## Testing
 
-- `bun test` runs everything. Tests live in `test/*.test.ts` with shared `helpers.ts`.
+- `bun run test` runs everything. Tests live in `test/*.test.ts` with shared `helpers.ts`.
 - Integration tests spin up a **mock OpenAI-compatible SSE server** (fixture responses)
   and drive the full agent loop — no real model needed.
 - The README maps each acceptance criterion (spec §9) to a specific test file. When adding
@@ -240,7 +241,7 @@ exposes it over a WebSocket, mirroring the REPL. It reuses the same session mach
   hooks, profiles, troubleshooting.
 - `gui/AGENTS.md` — the browser client: rendering invariants, known traps, debugging
   recipes, test map, and change recipes. Read it before editing anything in `gui/`.
-- `specs/v0.1.0/` … `specs/v0.6.0/` — the specification documents (the
+- `specs/v0.1.0/` … `specs/v0.7.0/` — the specification documents (the
   source of truth for behavior and acceptance criteria). `specs/gui/` is the GUI spec.
 - `WBS.md` — work breakdown structure and acceptance-criteria traceability (v0.1.0-era;
   it does not yet cover the GUI, `fetch_webpage`, or the v0.6.0 hooks/`runCommand`).
