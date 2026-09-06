@@ -2,6 +2,7 @@
 import {
   createEffect,
   createSignal,
+  For,
   onCleanup,
   Show,
   type JSX,
@@ -103,9 +104,9 @@ export function App() {
             })
           }
         >
-          {(state()?.profiles ?? []).map((p) => (
-            <option value={p.name}>{p.name}</option>
-          ))}
+          <For each={state()?.profiles ?? []}>
+            {(p) => <option value={p.name}>{p.name}</option>}
+          </For>
         </select>
         <select
           class="control"
@@ -118,9 +119,9 @@ export function App() {
             })
           }
         >
-          {(state()?.models ?? []).map((m) => (
-            <option value={m.name}>{m.name}</option>
-          ))}
+          <For each={state()?.models ?? []}>
+            {(m) => <option value={m.name}>{m.name}</option>}
+          </For>
         </select>
         <span class="context" title="context usage">
           {contextLabel(state())}
@@ -191,13 +192,17 @@ export function App() {
         >
           <Show
             when={store.rows().length === 0}
-            fallback={store.rows().map((row, i) => (
-              <Row
-                depth={row.depth}
-                item={row.item}
-                active={store.activeIdx() === i}
-              />
-            ))}
+            fallback={
+              <For each={store.rows()}>
+                {(row, i) => (
+                  <Row
+                    depth={row.depth}
+                    item={row.item}
+                    active={store.activeIdx() === i()}
+                  />
+                )}
+              </For>
+            }
           >
             <div class="empty">
               <p>Connected to Vise. Send a task to begin.</p>
@@ -207,21 +212,25 @@ export function App() {
 
         <aside class="sidebar">
           <Panel title={`skills (${state()?.skills.length ?? 0})`}>
-            {(state()?.skills ?? []).map((s) => (
-              <div class="panel-item" title={s.description}>
-                {s.name}
-              </div>
-            ))}
+            <For each={state()?.skills ?? []}>
+              {(s) => (
+                <div class="panel-item" title={s.description}>
+                  {s.name}
+                </div>
+              )}
+            </For>
           </Panel>
           <Panel title={`hooks (${state()?.hooks.length ?? 0})`}>
-            {(state()?.hooks ?? []).map((h) => (
-              <div class="panel-item" title={h.source}>
-                {h.events.join(", ")}
-                {h.tools && h.tools.length > 0
-                  ? ` [${h.tools.join(", ")}]`
-                  : ""}
-              </div>
-            ))}
+            <For each={state()?.hooks ?? []}>
+              {(h) => (
+                <div class="panel-item" title={h.source}>
+                  {h.events.join(", ")}
+                  {h.tools && h.tools.length > 0
+                    ? ` [${h.tools.join(", ")}]`
+                    : ""}
+                </div>
+              )}
+            </For>
           </Panel>
         </aside>
       </main>
