@@ -324,8 +324,9 @@ summary`.
   `spawn_subagent` tool call, indented by `depth`.
 - **Compaction** renders as a notice line.
 - **Errors / interrupts** render as a distinct system notice.
-- The view auto-scrolls to the newest item while the user is at the bottom; it
-  must not yank the view if the user has scrolled up to read.
+- During an active turn, the view follows the newest output, including streamed
+  reasoning, even if the user scrolls up. When idle, the view follows only while
+  the user is at the bottom; it must not yank the view if the user scrolls up.
 
 ### 3.10 Client: controls (dedicated UI)
 

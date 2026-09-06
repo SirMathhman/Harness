@@ -65,7 +65,7 @@ export function App() {
     setTask("");
   };
 
-  // Auto-scroll only when the user is at the bottom (GUI spec §3.9).
+  // Follow live output during a turn; when idle, follow only at the bottom.
   const scrollRef = { current: null as HTMLElement | null };
   const [atBottom, setAtBottom] = createSignal(true);
   const state = () => store.state();
@@ -76,12 +76,24 @@ export function App() {
   // follow only while the user is already at the bottom. Depends on `rows` so
   // it re-runs as content streams in.
   let wasActive = false;
+  let scrollFrame: number | undefined;
+  onCleanup(() => {
+    if (scrollFrame !== undefined) cancelAnimationFrame(scrollFrame);
+  });
   createEffect(() => {
     const active = turnActive();
     // Track the conversation so the effect re-runs as rows stream in.
     store.rows();
-    const el = scrollRef.current;
-    if (el && (active || atBottom())) el.scrollTop = el.scrollHeight;
+    const follow = active || atBottom();
+    if (follow && scrollFrame === undefined) {
+      // Row replacement mounts a closed <details>; its own effect opens it.
+      // Measure after those effects, and coalesce token updates per frame.
+      scrollFrame = requestAnimationFrame(() => {
+        scrollFrame = undefined;
+        const el = scrollRef.current;
+        if (el && (turnActive() || atBottom())) el.scrollTop = el.scrollHeight;
+      });
+    }
     // The view is pinned to the bottom throughout a turn, so restore the
     // at-bottom state when the turn ends (the scroll handler may have set it
     // false from the programmatic scroll mid-stream).

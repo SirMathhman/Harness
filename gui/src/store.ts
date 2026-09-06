@@ -80,7 +80,7 @@ export function createStore() {
       rows()[idx] === last &&
       last.item.kind === kind;
     let target = idx;
-    if (!isCurrent) {
+    if (!isCurrent || target === undefined) {
       target = push(depth, { kind, text: "" });
       streamingTarget.set(key, target);
     }
