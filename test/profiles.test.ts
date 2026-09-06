@@ -791,7 +791,7 @@ describe("subagent policy (profiles §3.12)", () => {
       profile: "worker",
       client: stubClient([finish("ok")]),
     });
-    expect(await spawn(atZero, { task: "t" })).toBe("ok");
+    expect(await spawn(atZero, { task: "t", profile: "worker" })).toBe("ok");
 
     // …and one producing depth 2 is refused. The tool a depth-1 worker holds
     // is the one its own runner builds, so drive that path end to end.
@@ -804,7 +804,7 @@ describe("subagent policy (profiles §3.12)", () => {
             {
               id: "s1",
               name: "spawn_subagent",
-              arguments: { task: "deeper", maxIterations: 2 },
+              arguments: { task: "deeper", maxIterations: 2, profile: "worker" },
             },
           ],
           usage: null,
@@ -833,11 +833,11 @@ describe("subagent policy (profiles §3.12)", () => {
       graph: policyGraph(),
       profile: "researcher",
     });
-    const out = await spawn(handle, { task: "t" });
+    const out = await spawn(handle, { task: "t", profile: "worker" });
     expect(out).toBe("Error: Subagent depth limit reached (max: 0)");
   });
 
-  test("no profile param means the subagent inherits the parent's (AC 16)", async () => {
+  test("a missing profile param is rejected (AC 16)", async () => {
     const { prompts, client } = promptRecorder();
     const handle = createSession({
       graph: policyGraph(),
@@ -845,9 +845,9 @@ describe("subagent policy (profiles §3.12)", () => {
       client,
     });
 
-    expect(await spawn(handle, { task: "t" })).toBe("sub done");
+    expect(await spawn(handle, { task: "t" })).toContain("'profile' is required");
 
-    expect(prompts).toEqual(["You are a focused worker"]);
+
   });
 
   test("without a policy the global maxSubagentDepth backstop applies", async () => {
@@ -856,7 +856,7 @@ describe("subagent policy (profiles §3.12)", () => {
       reg.createProfile({ name: "loose", systemPrompt: "l" });
     });
     const handle = createSession({ graph });
-    expect(await spawn(handle, { task: "t" })).toContain(
+    expect(await spawn(handle, { task: "t", profile: "loose" })).toContain(
       "Subagent depth limit reached (max: 0)",
     );
   });

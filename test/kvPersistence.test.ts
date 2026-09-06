@@ -223,7 +223,7 @@ const finish = (answer: string, id = "f1"): LLMResponse => ({
 const spawn = (id: string, task = "sub"): LLMResponse => ({
   content: "",
   toolCalls: [
-    { id, name: "spawn_subagent", arguments: { task, maxIterations: 5 } },
+    { id, name: "spawn_subagent", arguments: { task, maxIterations: 5, profile: IMPLICIT_PROFILE_NAME } },
   ],
   usage: null,
 });
@@ -581,10 +581,10 @@ async function spawnOverlap(serializeRuns: boolean): Promise<number> {
     makeSpawnSubagentTool({
       runner,
       depth: 0,
-      parentProfile: "",
+
       fallbackMaxDepth: 3,
       subagentMaxIterations: 50,
-      knownProfiles: [],
+      knownProfiles: [IMPLICIT_PROFILE_NAME],
       serializeRuns,
       parentModel: {
         baseUrl: "http://parent:1",
@@ -599,7 +599,7 @@ async function spawnOverlap(serializeRuns: boolean): Promise<number> {
   const calls: ToolCall[] = ["a", "b"].map((id) => ({
     id,
     name: "spawn_subagent",
-    arguments: { task: id, maxIterations: 5 },
+    arguments: { task: id, maxIterations: 5, profile: IMPLICIT_PROFILE_NAME },
   }));
   await executeToolCalls(registry, calls, 20000);
   return peak;
@@ -711,7 +711,7 @@ describe("integration: main agent → subagent → main agent (AC 12)", () => {
             {
               id: "p1",
               name: "spawn_subagent",
-              arguments: { task: "research", maxIterations: 5 },
+              arguments: { task: "research", maxIterations: 5, profile: IMPLICIT_PROFILE_NAME },
             },
           ],
         },

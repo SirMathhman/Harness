@@ -54,8 +54,6 @@ export interface SpawnSubagentOptions {
   runner: SubagentRunner;
   /** The nesting depth of the agent that owns this tool (0 for the main one). */
   depth: number;
-  /** The profile the owning agent runs under; the default for the subagent. */
-  parentProfile: string;
   /** The owning profile's subagent policy, if it declared one (§3.12). */
   policy?: SubagentPolicy;
   /** Global depth backstop, used when the policy sets no `maxDepth`. */
@@ -94,7 +92,6 @@ export function makeSpawnSubagentTool(options: SpawnSubagentOptions): Tool {
   const {
     runner,
     depth,
-    parentProfile,
     policy,
     fallbackMaxDepth,
     subagentMaxIterations,
@@ -141,10 +138,10 @@ export function makeSpawnSubagentTool(options: SpawnSubagentOptions): Tool {
         profile: {
           type: "string",
           description:
-            "Optional profile the subagent runs under, giving it that profile's prompt, tools, hooks, and model. Defaults to the current profile.",
+            "The profile the subagent runs under, giving it that profile's prompt, tools, hooks, and model.",
         },
       },
-      required: ["task", "maxIterations"],
+      required: ["task", "maxIterations", "profile"],
     },
     async handler(args) {
       const task = String(args.task ?? "");
@@ -155,29 +152,32 @@ export function makeSpawnSubagentTool(options: SpawnSubagentOptions): Tool {
           ? args.systemPrompt
           : undefined;
 
-      // §3.12.1: no `profile` param → the subagent inherits the parent's.
+      // §3.12.1: `profile` is required — the subagent always runs under the
+      // named profile. A missing or empty value is rejected here as a
+      // defense-in-depth guard (schema validation in `dispatch` is the
+      // primary path).
       const requestedProfile =
-        typeof args.profile === "string" && args.profile.length > 0
-          ? args.profile
-          : null;
+        typeof args.profile === "string" ? args.profile : "";
 
-      if (requestedProfile !== null) {
-        // §3.12.2: the name must be one the parent's policy permits…
-        if (allowed !== undefined && !allowed.includes(requestedProfile)) {
-          return (
-            `Error: Profile '${requestedProfile}' is not allowed for ` +
-            `subagents. Allowed: [${allowed.join(", ")}]`
-          );
-        }
-        // …and it must actually exist.
-        if (!knownProfiles.includes(requestedProfile)) {
-          return (
-            `Error: Unknown profile '${requestedProfile}'. ` +
-            (knownProfiles.length > 0
-              ? `Available: [${knownProfiles.join(", ")}]`
-              : "No profiles are defined.")
-          );
-        }
+      if (requestedProfile.length === 0) {
+        return "Error: 'profile' is required for spawn_subagent.";
+      }
+
+      // §3.12.2: the name must be one the parent's policy permits…
+      if (allowed !== undefined && !allowed.includes(requestedProfile)) {
+        return (
+          `Error: Profile '${requestedProfile}' is not allowed for ` +
+          `subagents. Allowed: [${allowed.join(", ")}]`
+        );
+      }
+      // …and it must actually exist.
+      if (!knownProfiles.includes(requestedProfile)) {
+        return (
+          `Error: Unknown profile '${requestedProfile}'. ` +
+          (knownProfiles.length > 0
+            ? `Available: [${knownProfiles.join(", ")}]`
+            : "No profiles are defined.")
+        );
       }
 
       // §3.12.3: a spawn is rejected when it would exceed the depth limit.
@@ -196,7 +196,7 @@ export function makeSpawnSubagentTool(options: SpawnSubagentOptions): Tool {
         systemPrompt,
         maxIterations,
         depth: depth + 1,
-        profile: requestedProfile ?? parentProfile,
+        profile: requestedProfile,
         parentModel,
       });
     },

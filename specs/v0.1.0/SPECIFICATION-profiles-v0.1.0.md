@@ -8,7 +8,8 @@
 
 - Added `subagent` policy field to Profile: restricts which profiles subagents
   can run under (`profiles`) and max nesting depth (`maxDepth`).
-- `spawn_subagent` tool gains a `profile` parameter.
+- `spawn_subagent` tool gains a required `profile` parameter (no fallback to
+  the parent's profile).
 - Added §3.12 (Subagent Policy) and updated acceptance criteria.
 
 ---
@@ -423,16 +424,14 @@ The `spawn_subagent` tool gains a `profile` parameter:
 // spawn_subagent parameters (updated):
 {
   task: string;       // required: the task description
-  profile?: string;   // optional: which profile the subagent runs under
+  profile: string;    // required: which profile the subagent runs under
 }
 ```
 
 **Behavior:**
 
-1. **No `profile` param:** The subagent runs under the **same profile** as the
-   parent agent.
-2. **`profile` param specified:** The subagent runs under the named profile.
-   The name is validated against the parent's subagent policy:
+1. **`profile` param (required):** The subagent runs under the named profile.
+2. **Validation:** The name is validated against the parent's subagent policy:
    - If `subagent.profiles` is set and the name is NOT in the list → tool
      returns an error: `"Profile 'X' is not allowed for subagents. Allowed: [a, b, c]"`.
    - If `subagent.profiles` is not set → any profile name is valid.
@@ -506,7 +505,7 @@ In this example:
 | Config file imports a module that also calls create\*    | Fine. All resources are registered in the same Registry.          |
 | `spawn_subagent` with profile not in `subagent.profiles` | Tool returns error listing allowed profiles.                      |
 | `spawn_subagent` exceeds `maxDepth`                      | Tool returns error with the depth limit.                          |
-| `spawn_subagent` with no `profile` param                 | Subagent uses parent's profile.                                   |
+| `spawn_subagent` with no `profile` param                 | Tool returns error: `'profile' is required`.                      |
 | Subagent's profile has `maxDepth: 0`                     | Subagent cannot spawn further subagents.                          |
 | Subagent policy references a non-existent profile name   | Fatal at load time.                                               |
 
@@ -598,7 +597,9 @@ In this example:
     is NOT in `subagent.profiles` → tool returns error listing allowed profiles.
 15. `spawn_subagent` at depth 1 with active profile `maxDepth: 1` → succeeds.
     At depth 2 → tool returns error "depth limit reached".
-16. `spawn_subagent` with no `profile` param → subagent uses parent's profile.
+16. `spawn_subagent` with no `profile` param → tool returns an error
+    (`'profile' is required`); the subagent never falls back to the parent's
+    profile.
 17. Subagent running under a profile with `maxDepth: 0` → its
     `spawn_subagent` calls always return a depth-limit error.
 

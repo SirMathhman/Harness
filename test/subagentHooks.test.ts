@@ -322,7 +322,7 @@ describe("nested subagents (v0.6.0 spec §3.3, A11)", () => {
     });
     // Outer subagent spawns an inner subagent; both finish.
     const client = capturingClient([
-      toolCall("s1", "spawn_subagent", { task: "inner", maxIterations: 5 }),
+      toolCall("s1", "spawn_subagent", { task: "inner", maxIterations: 5, profile: IMPLICIT_PROFILE_NAME }),
       finish("inner done"),
       finish("outer done"),
     ]);

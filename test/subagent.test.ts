@@ -9,7 +9,7 @@ import {
 import { makeSubagentRunner } from "../src/agent/subagent.js";
 import { createSession } from "../src/agent/session.js";
 import { runTurn } from "../src/agent/loop.js";
-import { buildToolRegistry, executeToolCalls } from "../src/tools/index.js";
+import { buildToolRegistry, dispatch, executeToolCalls } from "../src/tools/index.js";
 import { ServerUnreachableError } from "../src/llm/errors.js";
 import type { LLMClient } from "../src/llm/client.js";
 import { HookManager } from "../src/hooks/index.js";
@@ -62,10 +62,9 @@ function spawnTool(
   return makeSpawnSubagentTool({
     runner,
     depth: 0,
-    parentProfile: "",
     fallbackMaxDepth: 3,
     subagentMaxIterations: 50,
-    knownProfiles: [],
+    knownProfiles: [IMPLICIT_PROFILE_NAME],
     parentModel: stubParentModel,
     ...overrides,
   });
@@ -94,7 +93,7 @@ describe("spawn_subagent tool (§3.3 #9, §3.8)", () => {
       seen.push(opts);
       return "subagent answer";
     });
-    const out = await tool.handler({ task: "do it", maxIterations: 10 });
+    const out = await tool.handler({ task: "do it", maxIterations: 10, profile: IMPLICIT_PROFILE_NAME });
     expect(out).toBe("subagent answer");
     expect(seen[0]).toMatchObject({
       task: "do it",
@@ -112,7 +111,7 @@ describe("spawn_subagent tool (§3.3 #9, §3.8)", () => {
       },
       { subagentMaxIterations: 5 },
     );
-    await tool.handler({ task: "t", maxIterations: 100 });
+    await tool.handler({ task: "t", maxIterations: 100, profile: IMPLICIT_PROFILE_NAME });
     expect(seen[0].maxIterations).toBe(5);
   });
 
@@ -122,7 +121,7 @@ describe("spawn_subagent tool (§3.3 #9, §3.8)", () => {
       seen.push(opts);
       return "ok";
     });
-    await tool.handler({ task: "t", maxIterations: 0 });
+    await tool.handler({ task: "t", maxIterations: 0, profile: IMPLICIT_PROFILE_NAME });
     expect(seen[0].maxIterations).toBe(1);
   });
 
@@ -136,6 +135,7 @@ describe("spawn_subagent tool (§3.3 #9, §3.8)", () => {
       task: "t",
       maxIterations: 5,
       systemPrompt: "be terse",
+      profile: IMPLICIT_PROFILE_NAME,
     });
     expect(seen[0].systemPrompt).toBe("be terse");
   });
@@ -149,9 +149,31 @@ describe("spawn_subagent tool (§3.3 #9, §3.8)", () => {
       },
       { depth: 3 },
     );
-    const out = await tool.handler({ task: "t", maxIterations: 5 });
+    const out = await tool.handler({ task: "t", maxIterations: 5, profile: IMPLICIT_PROFILE_NAME });
     expect(called).toBe(false);
     expect(out).toContain("Subagent depth limit reached (max: 3)");
+  });
+
+  test("missing profile returns an error string (required param)", async () => {
+    let called = false;
+    const tool = spawnTool(async () => {
+      called = true;
+      return "should not run";
+    });
+    const out = await tool.handler({ task: "t", maxIterations: 5 });
+    expect(called).toBe(false);
+    expect(out).toContain("'profile' is required");
+  });
+
+  test("missing profile via dispatch is rejected by schema validation", async () => {
+    const { registry } = createSession({ graph: modelGraph() });
+    registry.register(spawnTool(async () => "ok"));
+    const result = await dispatch(
+      registry,
+      { id: "x", name: "spawn_subagent", arguments: { task: "t", maxIterations: 5 } },
+      20000,
+    );
+    expect(result.content).toContain("profile is required");
   });
 });
 
@@ -295,12 +317,12 @@ describe("concurrency: multiple spawn_subagent calls run in parallel (§3.8.3)",
       {
         id: "a",
         name: "spawn_subagent",
-        arguments: { task: "1", maxIterations: 5 },
+        arguments: { task: "1", maxIterations: 5, profile: IMPLICIT_PROFILE_NAME },
       },
       {
         id: "b",
         name: "spawn_subagent",
-        arguments: { task: "2", maxIterations: 5 },
+        arguments: { task: "2", maxIterations: 5, profile: IMPLICIT_PROFILE_NAME },
       },
     ];
     // Re-register a spawn tool backed by the concurrency-tracking runner.
@@ -321,7 +343,7 @@ describe("integration: nested agent loop through createSession (§3.8)", () => {
           {
             id: "p1",
             name: "spawn_subagent",
-            arguments: { task: "research", maxIterations: 5 },
+            arguments: { task: "research", maxIterations: 5, profile: IMPLICIT_PROFILE_NAME },
           },
         ],
       },

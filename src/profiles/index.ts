@@ -37,6 +37,7 @@ export {
   MissingMaxContextError,
   ModelNotAvailableError,
   ProfileHasNoModelError,
+  allProfileNames,
   profileEntries,
   profileNames,
   resolveProfile,

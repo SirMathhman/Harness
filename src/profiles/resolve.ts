@@ -125,6 +125,23 @@ export function profileNames(graph: ResourceGraph): string[] {
   return names;
 }
 
+/**
+ * Every profile name in the graph, including the implicit built-in one, in
+ * creation order. Unlike `profileNames` (which lists only user-defined
+ * profiles for the `/profile` command), this includes the implicit default so
+ * that `spawn_subagent` — which now requires an explicit `profile` — can name
+ * it (profiles spec §3.12).
+ */
+export function allProfileNames(graph: ResourceGraph): string[] {
+  const names: string[] = [];
+  for (const resource of graph.resources.values()) {
+    if (resource.kind === "profile") {
+      names.push(resource.def.name);
+    }
+  }
+  return names;
+}
+
 /** One row of the `/profile` listing (config spec §3.9): a name and its origin. */
 export interface ProfileEntry {
   name: string;

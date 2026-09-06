@@ -407,9 +407,9 @@ reg.createProfile({
 });
 ```
 
-`spawn_subagent` takes an optional `profile` parameter. With it, the subagent runs under
-that profile — its own prompt, tools, hooks, and model. Without it, the subagent
-inherits the parent's profile. A disallowed name or a depth breach comes back as an
+`spawn_subagent` takes a required `profile` parameter. The subagent runs under
+that profile — its own prompt, tools, hooks, and model. A disallowed name, a missing
+`profile`, or a depth breach comes back as an
 error _string_ the model can react to, never as a thrown exception.
 
 Each profile's `maxDepth` governs the subagents **it** spawns, so a subagent running
@@ -539,7 +539,7 @@ always gets, because skills are global to the session:
 | `check_command`  | no       | `id`                                                                        | Check the status/output of a background command.                               |
 | `fetch_webpage`  | no       | `url`                                                                       | Fetch a URL; returns inline text, a file path, a redirect notice, or an error. |
 | `finish`         | no       | `answer`                                                                    | Terminal tool: ends the turn with a final answer.                              |
-| `spawn_subagent` | no       | `task`, `maxIterations`, `systemPrompt?`, `profile?`                        | Run an isolated subagent and return only its final answer.                     |
+| `spawn_subagent` | no       | `task`, `maxIterations`, `systemPrompt?`, `profile`                        | Run an isolated subagent and return only its final answer.                     |
 | `list_skills`    | no       | —                                                                           | List every skill (name + description). Always present.                         |
 | `read_skill`     | no       | `name`                                                                      | Load one skill's full body, never truncated. Always present.                   |
 
@@ -818,7 +818,7 @@ required.
 | 13. Subagent under a profile       | `profiles.test.ts` (subagent runs with the researcher prompt)    |
 | 14. Forbidden profile              | `profiles.test.ts` (error listing the allowed profiles)          |
 | 15. Depth limit                    | `profiles.test.ts` (depth 1 succeeds, depth 2 refused)           |
-| 16. No `profile` param             | `profiles.test.ts` (subagent inherits the parent's profile)      |
+| 16. No `profile` param             | `profiles.test.ts` (missing `profile` is rejected)               |
 | 17. `maxDepth: 0`                  | `profiles.test.ts` (spawning always refused)                     |
 
 ### Providers acceptance criteria (providers spec §9)

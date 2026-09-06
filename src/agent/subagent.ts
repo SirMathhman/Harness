@@ -19,7 +19,7 @@ import type { Provider } from "../providers/index.js";
 import {
   availableModelIds,
   MissingMaxContextError,
-  profileNames,
+  allProfileNames,
   resolveProfile,
   systemPromptOf,
   UnknownProfileError,
@@ -208,11 +208,11 @@ export function materializeProfile(
           ...(config.model !== null ? { model: config.model } : {}),
         }),
         depth,
-        parentProfile: resolved.name,
+
         policy: resolved.subagent,
         fallbackMaxDepth: config.maxSubagentDepth,
         subagentMaxIterations: config.subagentMaxIterations,
-        knownProfiles: profileNames(ctx.graph),
+        knownProfiles: allProfileNames(ctx.graph),
         serializeRuns: provider?.serializeSubagents === true,
         parentModel: {
           baseUrl: config.baseUrl,
