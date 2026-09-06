@@ -23,10 +23,7 @@ import {
   type SubagentRender,
   type SubagentRenderEvent,
 } from "../agent/subagent.js";
-import {
-  writeStateFile,
-  type ResourceGraph,
-} from "../profiles/index.js";
+import { writeStateFile, type ResourceGraph } from "../profiles/index.js";
 import { newId } from "../utils.js";
 import {
   DEFAULT_GUI_PORT,
@@ -36,11 +33,7 @@ import {
   type ServerEvent,
   type UIState,
 } from "./protocol.js";
-import {
-  buildSnapshot,
-  buildUIState,
-  isTurnEvent,
-} from "./translate.js";
+import { buildSnapshot, buildUIState, isTurnEvent } from "./translate.js";
 import { mimeOf } from "./transport.js";
 
 /** Options for {@link createAgentServer}. */
