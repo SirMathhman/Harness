@@ -27,7 +27,7 @@ describe("file tools (AC 4)", () => {
     const p = path.join(dir, "a", "b", "c.txt");
     const out = await writeFileTool.handler({ path: p, content: "hello" });
     expect(out).toContain("5");
-    expect((await readFileTool.handler({ path: p })).trim()).toBe("hello");
+    expect((await readFileTool.handler({ path: p })).trim()).toBe("1: hello");
   });
 
   test("read_file missing file -> error (E1)", async () => {
@@ -45,7 +45,7 @@ describe("file tools (AC 4)", () => {
       startLine: 2,
       endLine: 3,
     });
-    expect(out).toBe("l2\nl3");
+    expect(out).toBe("2: l2\n3: l3");
   });
 
   test("edit_file exact match replaces", async () => {
@@ -58,7 +58,7 @@ describe("file tools (AC 4)", () => {
     });
     expect(out).not.toContain("Error");
     expect((await readFileTool.handler({ path: p })).trim()).toBe(
-      "foo baz foo",
+      "1: foo baz foo",
     );
   });
 
@@ -94,7 +94,7 @@ describe("file tools (AC 4)", () => {
       replaceAll: true,
     });
     expect(out).not.toContain("Error");
-    expect((await readFileTool.handler({ path: p })).trim()).toBe("y y y");
+    expect((await readFileTool.handler({ path: p })).trim()).toBe("1: y y y");
   });
 
   test("list_dir shows file/dir markers", async () => {

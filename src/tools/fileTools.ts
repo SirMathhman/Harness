@@ -49,7 +49,7 @@ export const readFileTool: Tool = {
     if (start > lines.length)
       return `Error: startLine ${start} is beyond end of file (${lines.length} lines).`;
     const selected = lines.slice(start - 1, end);
-    return selected.join("\n");
+    return selected.map((line, i) => `${start + i}: ${line}`).join("\n");
   },
 };
 
