@@ -68,13 +68,16 @@ export function App() {
   // Follow live output during a turn; when idle, follow only at the bottom.
   const scrollRef = { current: null as HTMLElement | null };
   const [atBottom, setAtBottom] = createSignal(true);
+  // User-facing auto-scroll toggle (default on): when on, the view follows the
+  // newest output while a turn streams; when off, the user scrolls freely.
+  const [follow, setFollow] = createSignal(true);
   const state = () => store.state();
   const turnActive = () => state()?.turnActive ?? false;
 
-  // Auto-scroll (GUI spec §3.9). While a turn is streaming, pin the view to
-  // the bottom unconditionally so live output is always visible. When idle,
-  // follow only while the user is already at the bottom. Depends on `rows` so
-  // it re-runs as content streams in.
+  // Auto-scroll (GUI spec §3.9). While a turn is streaming and follow is
+  // enabled, pin the view to the bottom so live output is always visible.
+  // When idle, follow only while the user is already at the bottom. Depends
+  // on `rows` so it re-runs as content streams in.
   let wasActive = false;
   let scrollFrame: number | undefined;
   onCleanup(() => {
@@ -82,10 +85,10 @@ export function App() {
   });
   createEffect(() => {
     const active = turnActive();
+    const following = follow();
     // Track the conversation so the effect re-runs as rows stream in.
     store.rows();
-    const follow = active || atBottom();
-    if (follow && scrollFrame === undefined) {
+    if (following && scrollFrame === undefined) {
       // Row replacement mounts a closed <details>; its own effect opens it.
       // Measure after those effects, and coalesce token updates per frame.
       scrollFrame = requestAnimationFrame(() => {
@@ -163,6 +166,26 @@ export function App() {
           onClick={() => client.send({ type: "newSession" })}
         >
           new
+        </button>
+        <button
+          class={`control follow-toggle${follow() ? " on" : ""}`}
+          title={
+            follow()
+              ? "Auto-scroll is on: the view follows live output. Click to scroll freely."
+              : "Auto-scroll is off: you can scroll freely. Click to follow live output."
+          }
+          onClick={() => {
+            setFollow((f) => {
+              // Enabling should immediately jump to the newest output.
+              if (!f) {
+                const el = scrollRef.current;
+                if (el) el.scrollTop = el.scrollHeight;
+              }
+              return !f;
+            });
+          }}
+        >
+          {follow() ? "follow: on" : "follow: off"}
         </button>
         <label class="control hooks-toggle">
           <input

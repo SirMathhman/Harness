@@ -105,6 +105,12 @@ body {
   gap: 0.35rem;
 }
 
+/* Auto-scroll follow toggle: visually distinct when following. */
+.follow-toggle.on {
+  border-color: var(--ok);
+  color: var(--ok);
+}
+
 .conn {
   margin-left: auto;
   font-size: 0.75rem;
