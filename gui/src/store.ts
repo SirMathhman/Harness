@@ -18,6 +18,9 @@ export function createStore() {
 
   // The index of the row currently receiving streamed text, per scope key.
   const streamingTarget = new Map<string, number>();
+  // The index of the row actively streaming reasoning (drives the open/
+  // collapse of a reasoning block). Reactive so the UI updates when it changes.
+  const [activeIdx, setActiveIdx] = createSignal<number | null>(null);
 
   const scopeKey = (scope: {
     kind: string;
@@ -76,10 +79,15 @@ export function createStore() {
       last !== undefined &&
       rows()[idx] === last &&
       last.item.kind === kind;
-    if (isCurrent) return idx!;
-    const newIdx = push(depth, { kind, text: "" });
-    streamingTarget.set(key, newIdx);
-    return newIdx;
+    let target = idx;
+    if (!isCurrent) {
+      target = push(depth, { kind, text: "" });
+      streamingTarget.set(key, target);
+    }
+    // Only reasoning blocks track an "active" (open) state; assistant text
+    // does not. A token arriving after reasoning ends collapses it.
+    setActiveIdx(kind === "reasoningBlock" ? target : null);
+    return target;
   };
 
   /** Apply one protocol event to the store. */
@@ -89,6 +97,7 @@ export function createStore() {
         setRows(event.history.map((item) => ({ depth: 0, item })));
         setState(event.state);
         streamingTarget.clear();
+        setActiveIdx(null);
         // Replay the in-flight events to reconstruct the live turn.
         for (const e of event.inflight) applyEvent(e);
         return;
@@ -115,6 +124,7 @@ export function createStore() {
       }
       case "toolCall": {
         streamingTarget.delete(scopeKey(event.scope));
+        setActiveIdx(null);
         push(depthOf(event.scope), {
           kind: "toolCall",
           name: event.name,
@@ -137,6 +147,7 @@ export function createStore() {
       }
       case "subagentEnd": {
         streamingTarget.delete(scopeKey(event.scope));
+        setActiveIdx(null);
         push(event.depth, {
           kind: "systemNotice",
           text: `subagent ${event.ok ? "done" : "failed"} (${event.label})`,
@@ -147,6 +158,7 @@ export function createStore() {
         // The answer is already visible: streamed as tokens in the plain-text
         // case, or in the `finish` tool call/result in the finished case.
         streamingTarget.clear();
+        setActiveIdx(null);
         return;
       }
       case "error": {
@@ -161,6 +173,7 @@ export function createStore() {
       case "cleared": {
         setRows([]);
         streamingTarget.clear();
+        setActiveIdx(null);
         return;
       }
       case "commandResult": {
@@ -173,7 +186,7 @@ export function createStore() {
     }
   };
 
-  return { rows, state, lastError, applyEvent, pushUserMessage };
+  return { rows, state, lastError, activeIdx, applyEvent, pushUserMessage };
 }
 
 /** A minimal empty UI state (before the first snapshot). */

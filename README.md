@@ -206,23 +206,23 @@ Two defaults follow from _absence_ of edges:
 
 ### Registry API
 
-| Method                                                              | Returns                      | Description                                                                 |
-| ------------------------------------------------------------------- | ---------------------------- | --------------------------------------------------------------------------- |
-| `createProfile({ name, systemPrompt, subagent?, models? })`         | `ResourceId`                 | A named configuration. `systemPrompt: ""` means the built-in one.           |
-| `createHook({ events, handler, includeSubagents? })`                | `ResourceId`                 | A lifecycle handler (see [Hooks](#hooks)).                                  |
-| `createTool({ name, description, parameters, mutating, handler })`  | `ResourceId`                 | A custom tool.                                                              |
-| `createModel({ name, baseUrl, apiKey, temperature?, maxContext? })` | `ResourceId`                 | An LLM endpoint declared directly, without a provider. Rarely needed.       |
-| `addProvider(provider)`                                             | `ResourceId`                 | Register a provider (see [Providers](#providers)); discovered at startup.   |
+| Method                                                              | Returns                      | Description                                                                   |
+| ------------------------------------------------------------------- | ---------------------------- | ----------------------------------------------------------------------------- |
+| `createProfile({ name, systemPrompt, subagent?, models? })`         | `ResourceId`                 | A named configuration. `systemPrompt: ""` means the built-in one.             |
+| `createHook({ events, handler, includeSubagents? })`                | `ResourceId`                 | A lifecycle handler (see [Hooks](#hooks)).                                    |
+| `createTool({ name, description, parameters, mutating, handler })`  | `ResourceId`                 | A custom tool.                                                                |
+| `createModel({ name, baseUrl, apiKey, temperature?, maxContext? })` | `ResourceId`                 | An LLM endpoint declared directly, without a provider. Rarely needed.         |
+| `addProvider(provider)`                                             | `ResourceId`                 | Register a provider (see [Providers](#providers)); discovered at startup.     |
 | `createSkill(name, description, text)`                              | `void`                       | A skill — deferred context the agent loads on demand (see [Skills](#skills)). |
-| `createConnection(from, to, props?)`                                | `void`                       | A directed edge.                                                            |
-| `setRuntime(settings)`                                              | `void`                       | The settings that are not resources (below), including `profileSwitchMode`. |
-| `getProfile(name)`                                                  | `ResourceId \| undefined`    | Look up a profile (either file, or built-in) by name.                       |
-| `getModel(name)`                                                    | `ResourceId \| undefined`    | Look up an explicitly `createModel()`-declared model by name.               |
-| `getTool(name)`                                                     | `ResourceId \| undefined`    | Look up a tool, built-in or custom, by name.                                |
-| `getProvider(name)`                                                 | `ResourceId \| undefined`    | Look up a registered provider by name.                                      |
-| `builtins.tools`                                                    | `Record<string, ResourceId>` | Every built-in tool, keyed by name.                                         |
-| `builtins.defaultProfile`                                           | `ResourceId`                 | The implicit `"Agent"` profile used when a profile has no explicit one.     |
-| `builtins.providers`                                                | `Record<string, ResourceId>` | Every registered provider, keyed by name.                                   |
+| `createConnection(from, to, props?)`                                | `void`                       | A directed edge.                                                              |
+| `setRuntime(settings)`                                              | `void`                       | The settings that are not resources (below), including `profileSwitchMode`.   |
+| `getProfile(name)`                                                  | `ResourceId \| undefined`    | Look up a profile (either file, or built-in) by name.                         |
+| `getModel(name)`                                                    | `ResourceId \| undefined`    | Look up an explicitly `createModel()`-declared model by name.                 |
+| `getTool(name)`                                                     | `ResourceId \| undefined`    | Look up a tool, built-in or custom, by name.                                  |
+| `getProvider(name)`                                                 | `ResourceId \| undefined`    | Look up a registered provider by name.                                        |
+| `builtins.tools`                                                    | `Record<string, ResourceId>` | Every built-in tool, keyed by name.                                           |
+| `builtins.defaultProfile`                                           | `ResourceId`                 | The implicit `"Agent"` profile used when a profile has no explicit one.       |
+| `builtins.providers`                                                | `Record<string, ResourceId>` | Every registered provider, keyed by name.                                     |
 
 `ResourceId` is opaque: an id can only come from a `create*` call, a `get*` lookup, or
 from `reg.builtins`, so a connection can never point at something that does not exist.
@@ -432,8 +432,8 @@ C:/Users/me/AppData/Local/llama-slots …`.
   config error.
 - **`slotId`** is the slot to save and restore; it defaults to `0`, the only slot on a
   single-slot server.
-- **One file per depth.** The agent at depth *N* owns `kv-depth-{N}.bin`: it writes the
-  file on the way into a nested run and restores *and deletes* it on the way out, so the
+- **One file per depth.** The agent at depth _N_ owns `kv-depth-{N}.bin`: it writes the
+  file on the way into a nested run and restores _and deletes_ it on the way out, so the
   files on disk are exactly the live ancestors of the running agent and nothing is left
   behind when the turn ends.
 - **Fail-open.** A failed save (for instance HTTP 501, because the server was started
@@ -483,20 +483,20 @@ The agent exposes twelve built-in tools. A profile's Profile→Tool edges decide
 of them it actually sees — except `list_skills` and `read_skill`, which every profile
 always gets, because skills are global to the session:
 
-| Tool             | Mutating | Parameters                                                                  | Description                                                                   |
-| ---------------- | -------- | --------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
-| `read_file`      | no       | `path`, `startLine?`, `endLine?`                                            | Read a file, optionally a 1-based line range.                                 |
-| `write_file`     | yes      | `path`, `content`                                                           | Write a file, creating parent directories.                                    |
-| `edit_file`      | yes      | `path`, `oldString`, `newString`, `replaceAll?`                             | Replace an exact string; errors on 0 or >1 matches unless `replaceAll`.       |
-| `list_dir`       | no       | `path`, `recursive?`                                                        | List directory entries with file/dir markers.                                 |
-| `search`         | no       | `pattern`, `mode` (`text`\|`glob`), `path?`, `includePattern?`, `isRegexp?` | Search file contents (`file:line:content`) or file paths.                     |
-| `run_command`    | yes      | `command`, `timeoutMs?`, `background?`, `cwd?`                              | Run a shell command (foreground by default; `background=true` returns an id). |
-| `check_command`  | no       | `id`                                                                        | Check the status/output of a background command.                              |
-| `fetch_webpage`  | no       | `url`                                                                           | Fetch a URL; returns inline text, a file path, a redirect notice, or an error.  |
-| `finish`         | no       | `answer`                                                                    | Terminal tool: ends the turn with a final answer.                             |
-| `spawn_subagent` | no       | `task`, `maxIterations`, `systemPrompt?`, `profile?`                        | Run an isolated subagent and return only its final answer.                    |
-| `list_skills`    | no       | —                                                                           | List every skill (name + description). Always present.                        |
-| `read_skill`     | no       | `name`                                                                      | Load one skill's full body, never truncated. Always present.                  |
+| Tool             | Mutating | Parameters                                                                  | Description                                                                    |
+| ---------------- | -------- | --------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| `read_file`      | no       | `path`, `startLine?`, `endLine?`                                            | Read a file, optionally a 1-based line range.                                  |
+| `write_file`     | yes      | `path`, `content`                                                           | Write a file, creating parent directories.                                     |
+| `edit_file`      | yes      | `path`, `oldString`, `newString`, `replaceAll?`                             | Replace an exact string; errors on 0 or >1 matches unless `replaceAll`.        |
+| `list_dir`       | no       | `path`, `recursive?`                                                        | List directory entries with file/dir markers.                                  |
+| `search`         | no       | `pattern`, `mode` (`text`\|`glob`), `path?`, `includePattern?`, `isRegexp?` | Search file contents (`file:line:content`) or file paths.                      |
+| `run_command`    | yes      | `command`, `timeoutMs?`, `background?`, `cwd?`                              | Run a shell command (foreground by default; `background=true` returns an id).  |
+| `check_command`  | no       | `id`                                                                        | Check the status/output of a background command.                               |
+| `fetch_webpage`  | no       | `url`                                                                       | Fetch a URL; returns inline text, a file path, a redirect notice, or an error. |
+| `finish`         | no       | `answer`                                                                    | Terminal tool: ends the turn with a final answer.                              |
+| `spawn_subagent` | no       | `task`, `maxIterations`, `systemPrompt?`, `profile?`                        | Run an isolated subagent and return only its final answer.                     |
+| `list_skills`    | no       | —                                                                           | List every skill (name + description). Always present.                         |
+| `read_skill`     | no       | `name`                                                                      | Load one skill's full body, never truncated. Always present.                   |
 
 Custom tools created with `reg.createTool()` are available only to the profiles they are
 connected to.
@@ -572,22 +572,22 @@ tool edges fires for every tool.
 
 ### Events
 
-| Event           | Fires when                                   | Can block? | Block effect                                |
-| --------------- | -------------------------------------------- | ---------- | ------------------------------------------- |
-| `tool:before`   | Just before a tool executes                  | **yes**    | Tool is not executed; message → tool result |
-| `tool:after`    | Just after a tool completes (success or not) | no         | —                                           |
-| `turn:start`    | A new user task begins                       | no         | —                                           |
-| `turn:end`      | The model calls `finish`                     | **yes**    | `finish` is rejected; message → tool result |
-| `session:start` | The REPL session is created                  | no         | —                                           |
-| `session:end`   | The REPL session is torn down                | no         | —                                           |
-| `on:compaction` | Just before context compaction runs          | no         | —                                           |
-| `subagent:before` | Just before a spawned subagent starts running | no       | —                                           |
-| `subagent:after`  | Just after it finishes (done, cap, or failure) | no      | —                                           |
+| Event             | Fires when                                     | Can block? | Block effect                                |
+| ----------------- | ---------------------------------------------- | ---------- | ------------------------------------------- |
+| `tool:before`     | Just before a tool executes                    | **yes**    | Tool is not executed; message → tool result |
+| `tool:after`      | Just after a tool completes (success or not)   | no         | —                                           |
+| `turn:start`      | A new user task begins                         | no         | —                                           |
+| `turn:end`        | The model calls `finish`                       | **yes**    | `finish` is rejected; message → tool result |
+| `session:start`   | The REPL session is created                    | no         | —                                           |
+| `session:end`     | The REPL session is torn down                  | no         | —                                           |
+| `on:compaction`   | Just before context compaction runs            | no         | —                                           |
+| `subagent:before` | Just before a spawned subagent starts running  | no         | —                                           |
+| `subagent:after`  | Just after it finishes (done, cap, or failure) | no         | —                                           |
 
 A block returned on a non-blocking event is downgraded to an advisory message.
 
 `subagent:before` / `subagent:after` fire on the **spawning** agent's hooks, with
-`ctx.depth` set to *its* depth — the agent whose context is about to be interrupted —
+`ctx.depth` set to _its_ depth — the agent whose context is about to be interrupted —
 and `subagent:after` fires from a `finally`, so it runs whatever the subagent did.
 
 ### Return values
@@ -649,7 +649,7 @@ A model declared directly via `reg.createModel()`, with no provider behind it, d
 
 ## Skills
 
-A **skill** is a named body of knowledge the agent loads *on demand* — a library
+A **skill** is a named body of knowledge the agent loads _on demand_ — a library
 reference, a domain procedure, a project convention. Putting all of that in the system
 prompt would bloat every request and hurt KV-cache reuse even when it is irrelevant to
 the task at hand. A skill splits the difference: only its name and one-line description
@@ -728,18 +728,18 @@ required.
 
 ### fetch_webpage acceptance criteria (fetch spec §9)
 
-| AC | Covered by test |
-| --- | --- |
-| 1. Inline content + header | `webTools.test.ts` (small text page, exact header format) |
-| 2. Large body to file path | `webTools.test.ts` (70,000-byte body, file round-trip) |
-| 3. PDF to file path | `webTools.test.ts` (application/pdf bytes round-trip) |
-| 4. 301 to redirect notice | `webTools.test.ts` (301 with Location) |
-| 5. 404 to error line | `webTools.test.ts` (exact `[error: HTTP 404: Not Found]`) |
-| 6. Unreachable host to error string | `webTools.test.ts` (connection refused, no throw) |
-| 7. Empty URL to error line | `webTools.test.ts` (exact `[error: empty URL]`) |
-| 8. Redirects never followed | `webTools.test.ts` (server sees exactly one request) |
-| 9. 30-second timeout | `webTools.test.ts` (short-timeout build, slow stream) |
-| 10. TLS verification enforced | `webTools.test.ts` (TLS error classification; no insecure flag in code) |
+| AC                                  | Covered by test                                                         |
+| ----------------------------------- | ----------------------------------------------------------------------- |
+| 1. Inline content + header          | `webTools.test.ts` (small text page, exact header format)               |
+| 2. Large body to file path          | `webTools.test.ts` (70,000-byte body, file round-trip)                  |
+| 3. PDF to file path                 | `webTools.test.ts` (application/pdf bytes round-trip)                   |
+| 4. 301 to redirect notice           | `webTools.test.ts` (301 with Location)                                  |
+| 5. 404 to error line                | `webTools.test.ts` (exact `[error: HTTP 404: Not Found]`)               |
+| 6. Unreachable host to error string | `webTools.test.ts` (connection refused, no throw)                       |
+| 7. Empty URL to error line          | `webTools.test.ts` (exact `[error: empty URL]`)                         |
+| 8. Redirects never followed         | `webTools.test.ts` (server sees exactly one request)                    |
+| 9. 30-second timeout                | `webTools.test.ts` (short-timeout build, slow stream)                   |
+| 10. TLS verification enforced       | `webTools.test.ts` (TLS error classification; no insecure flag in code) |
 
 ### Hooks acceptance criteria (hooks spec §9)
 
@@ -810,28 +810,28 @@ required.
 
 ### Skills acceptance criteria (skills spec §9)
 
-| AC                             | Covered by test                                                          |
-| ------------------------------ | ------------------------------------------------------------------------ |
-| 1. `createSkill` stores it     | `skills.test.ts` (store keyed by name; not a graph node)                 |
-| 2. Empty name                  | `skills.test.ts` ("Skill name must be non-empty.")                       |
-| 3. Duplicate in one file       | `skills.test.ts` (fatal, names the duplicate)                            |
-| 4. Duplicate across files      | `skills.test.ts` (two-tier load → "Config conflict")                     |
-| 5. Index in the system prompt  | `skills.test.ts` (`## Available Skills`, bodies excluded)                |
-| 6. No skills → no section      | `skills.test.ts` (header absent; `appendSkillIndex` is a no-op)          |
-| 7. Creation order              | `skills.test.ts` (global first, then project)                            |
-| 8/13. Always registered        | `skills.test.ts` (default *and* tool-enumerating profiles)               |
-| 9. `list_skills` output        | `skills.test.ts` (one `name: description` per line)                      |
-| 10. `list_skills` empty        | `skills.test.ts` ("No skills available.")                                |
-| 11/18. Read-only               | `skills.test.ts` (`mutating: false` on both)                             |
-| 12/19. Dynamic-tools surface   | `skills.test.ts` (both advertised; both in `CORE_TOOL_NAMES`)            |
-| 14. `read_skill` body          | `skills.test.ts` (full text returned)                                    |
-| 15. No truncation              | `skills.test.ts` (5 KB body under a 100-char cap; a normal tool is cut)  |
-| 16. Unknown skill              | `skills.test.ts` (lists what is available; empty-store variant)          |
-| 17. Empty name                 | `skills.test.ts` (result string, turn not aborted)                       |
-| 20–22. Subagent visibility     | `skills.test.ts` (same index, both tools, body loaded in the subagent)   |
-| 23. `/skills` listing          | `skills.test.ts` (name + description, dispatched by the REPL)            |
-| 24. `/skills` with none        | `skills.test.ts` ("No skills defined.")                                  |
-| 25. Backward compatibility     | `skills.test.ts` (no index, tools present, "no skills" messages)         |
+| AC                            | Covered by test                                                         |
+| ----------------------------- | ----------------------------------------------------------------------- |
+| 1. `createSkill` stores it    | `skills.test.ts` (store keyed by name; not a graph node)                |
+| 2. Empty name                 | `skills.test.ts` ("Skill name must be non-empty.")                      |
+| 3. Duplicate in one file      | `skills.test.ts` (fatal, names the duplicate)                           |
+| 4. Duplicate across files     | `skills.test.ts` (two-tier load → "Config conflict")                    |
+| 5. Index in the system prompt | `skills.test.ts` (`## Available Skills`, bodies excluded)               |
+| 6. No skills → no section     | `skills.test.ts` (header absent; `appendSkillIndex` is a no-op)         |
+| 7. Creation order             | `skills.test.ts` (global first, then project)                           |
+| 8/13. Always registered       | `skills.test.ts` (default _and_ tool-enumerating profiles)              |
+| 9. `list_skills` output       | `skills.test.ts` (one `name: description` per line)                     |
+| 10. `list_skills` empty       | `skills.test.ts` ("No skills available.")                               |
+| 11/18. Read-only              | `skills.test.ts` (`mutating: false` on both)                            |
+| 12/19. Dynamic-tools surface  | `skills.test.ts` (both advertised; both in `CORE_TOOL_NAMES`)           |
+| 14. `read_skill` body         | `skills.test.ts` (full text returned)                                   |
+| 15. No truncation             | `skills.test.ts` (5 KB body under a 100-char cap; a normal tool is cut) |
+| 16. Unknown skill             | `skills.test.ts` (lists what is available; empty-store variant)         |
+| 17. Empty name                | `skills.test.ts` (result string, turn not aborted)                      |
+| 20–22. Subagent visibility    | `skills.test.ts` (same index, both tools, body loaded in the subagent)  |
+| 23. `/skills` listing         | `skills.test.ts` (name + description, dispatched by the REPL)           |
+| 24. `/skills` with none       | `skills.test.ts` ("No skills defined.")                                 |
+| 25. Backward compatibility    | `skills.test.ts` (no index, tools present, "no skills" messages)        |
 
 ## Troubleshooting
 

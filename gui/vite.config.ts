@@ -10,15 +10,14 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      // WebSocket endpoint.
+      // In dev, Vite serves the app's own assets and index.html directly;
+      // only the WebSocket (and the agent-server's HTTP surface, if any web
+      // fetch is added later) is proxied. The catch-all "/" is deliberately
+      // NOT proxied so Vite's HMR and source serving are not rerouted to the
+      // agent-server (which would 500 on /src/*, /@vite/*, style.css, etc.).
       "/ws": {
         target: TARGET,
         ws: true,
-        changeOrigin: true,
-      },
-      // Everything else (static assets) falls through to the agent-server.
-      "/": {
-        target: TARGET,
         changeOrigin: true,
       },
     },

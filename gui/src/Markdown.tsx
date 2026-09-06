@@ -11,9 +11,9 @@ export function Markdown(props: { text: string }) {
 }
 
 /** A collapsible reasoning block (GUI spec §3.9). */
-export function ReasoningBlock(props: { text: string }) {
+export function ReasoningBlock(props: { text: string; active?: boolean }) {
   return (
-    <details class="reasoning">
+    <details class="reasoning" open={props.active ?? false}>
       <summary>reasoning</summary>
       <Markdown text={props.text} />
     </details>
@@ -31,7 +31,10 @@ export function formatArgs(args: Record<string, unknown>): string {
 }
 
 /** Render the inner content of a conversation item. */
-function ItemContent(props: { item: import("./types").ConversationItem }) {
+function ItemContent(props: {
+  item: import("./types").ConversationItem;
+  active?: boolean;
+}) {
   const item = props.item;
   switch (item.kind) {
     case "userMessage":
@@ -39,7 +42,7 @@ function ItemContent(props: { item: import("./types").ConversationItem }) {
     case "assistantMessage":
       return <Markdown text={item.text} />;
     case "reasoningBlock":
-      return <ReasoningBlock text={item.text} />;
+      return <ReasoningBlock text={item.text} active={props.active} />;
     case "toolCall":
       return (
         <span class="tool-call">
@@ -63,13 +66,14 @@ function ItemContent(props: { item: import("./types").ConversationItem }) {
 export function Row(props: {
   depth: number;
   item: import("./types").ConversationItem;
+  active?: boolean;
 }) {
   return (
     <div
       class={`row row-${props.item.kind}`}
       style={{ "margin-left": `${props.depth * 1.25}rem` }}
     >
-      <ItemContent item={props.item} />
+      <ItemContent item={props.item} active={props.active} />
     </div>
   );
 }

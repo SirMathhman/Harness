@@ -113,9 +113,11 @@ export function App() {
         <span class="context" title="context usage">
           {contextLabel(state())}
         </span>
-        <span class="cwd" title="working directory">
-          {cwdLabel(state())}
-        </span>
+        <Show when={state()}>
+          <span class="cwd" title="working directory">
+            {state()!.cwd}
+          </span>
+        </Show>
         <button
           class="control"
           disabled={!turnActive()}
@@ -177,8 +179,12 @@ export function App() {
         >
           <Show
             when={store.rows().length === 0}
-            fallback={store.rows().map((row) => (
-              <Row depth={row.depth} item={row.item} />
+            fallback={store.rows().map((row, i) => (
+              <Row
+                depth={row.depth}
+                item={row.item}
+                active={store.activeIdx() === i}
+              />
             ))}
           >
             <div class="empty">
@@ -247,10 +253,4 @@ function contextLabel(state: UIState | null): string {
   if (promptTokens === null || maxContext === 0) return "context: —";
   const pct = Math.round((promptTokens / maxContext) * 100);
   return `context: ${promptTokens} / ${maxContext} (${pct}%)`;
-}
-
-/** Format the working-directory readout. */
-function cwdLabel(state: UIState | null): string {
-  if (!state || !state.cwd) return "cwd: —";
-  return state.cwd;
 }
