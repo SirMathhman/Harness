@@ -83,7 +83,10 @@ export function resolveStartingProfile(
       `Warning: saved profile "${parsed.profile}" not found in config. ` +
         `Starting with the default profile.`,
     );
-    return fallback;
+    // The implicit profile's model is auto-discovered, so the saved
+    // lastModel still pins it (config spec §3.8.2, §3.8.4): a restart
+    // restores the same model even though the saved profile is gone.
+    return { profile: IMPLICIT_PROFILE_NAME, lastModel: parsed.lastModel };
   }
 
   return { profile: parsed.profile, lastModel: parsed.lastModel };
@@ -109,7 +112,9 @@ export function writeStateFile(
     mkdirSync(path.dirname(statePath), { recursive: true });
     writeFileSync(statePath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
   } catch (err) {
-    log(`Warning: could not save state to ${statePath}: ${(err as Error).message}.`);
+    log(
+      `Warning: could not save state to ${statePath}: ${(err as Error).message}.`,
+    );
   }
 }
 

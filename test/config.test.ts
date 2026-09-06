@@ -523,6 +523,9 @@ describe("starting-profile resolution (config spec §3.7, §3.8.4)", () => {
       (m) => warnings.push(m),
     );
     expect(result.profile).toBe(IMPLICIT_PROFILE_NAME);
+    // The saved lastModel still pins the implicit profile's auto-discovered
+    // model (config spec §3.8.2) even though the saved profile is gone.
+    expect(result.lastModel).toBe("x");
     expect(warnings[0]).toContain('saved profile "ghost" not found');
     cleanup();
   });

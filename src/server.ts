@@ -11,6 +11,7 @@
  */
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { c } from "./cli/color.js";
 import {
   addDiscoveredModels,
@@ -52,17 +53,49 @@ export type Scope =
 
 /** A protocol event the server pushes to the client (GUI spec §6.1). */
 export type ServerEvent =
-  | { type: "snapshot"; history: ConversationItem[]; inflight: ServerEvent[]; state: UIState }
+  | {
+      type: "snapshot";
+      history: ConversationItem[];
+      inflight: ServerEvent[];
+      state: UIState;
+    }
   | { type: "token"; scope: Scope; text: string }
   | { type: "reasoning"; scope: Scope; text: string }
-  | { type: "toolCall"; scope: Scope; name: string; args: Record<string, unknown> }
-  | { type: "toolResult"; scope: Scope; name: string; ok: boolean; summary: string }
+  | {
+      type: "toolCall";
+      scope: Scope;
+      name: string;
+      args: Record<string, unknown>;
+    }
+  | {
+      type: "toolResult";
+      scope: Scope;
+      name: string;
+      ok: boolean;
+      summary: string;
+    }
   | { type: "compacting"; scope: Scope }
-  | { type: "subagentEnd"; scope: Scope; ok: boolean; label: string; depth: number }
-  | { type: "turnEnd"; answer: string; kind: "finished" | "cap" | "text" | "aborted"; finished: boolean }
+  | {
+      type: "subagentEnd";
+      scope: Scope;
+      ok: boolean;
+      label: string;
+      depth: number;
+    }
+  | {
+      type: "turnEnd";
+      answer: string;
+      kind: "finished" | "cap" | "text" | "aborted";
+      finished: boolean;
+    }
   | { type: "error"; message: string; kind: "llm" | "other" }
   | { type: "state"; patch: Partial<UIState> }
-  | { type: "commandResult"; ok: boolean; error?: string; data?: Record<string, unknown> }
+  | {
+      type: "commandResult";
+      ok: boolean;
+      error?: string;
+      data?: Record<string, unknown>;
+    }
   | { type: "cleared" }
   | { type: "pong" }
   | { type: "serverEvent"; name: string; payload: Record<string, unknown> };
@@ -231,7 +264,8 @@ export class AgentServer {
         return [{ kind: "userMessage", text: msg.content ?? "" }];
       case "assistant": {
         const items: ConversationItem[] = [];
-        if (msg.content) items.push({ kind: "assistantMessage", text: msg.content });
+        if (msg.content)
+          items.push({ kind: "assistantMessage", text: msg.content });
         for (const tc of msg.tool_calls ?? []) {
           items.push({ kind: "toolCall", name: tc.name, args: tc.arguments });
         }
@@ -247,7 +281,9 @@ export class AgentServer {
           },
         ];
       case "system":
-        return [{ kind: "systemNotice", text: msg.content ?? "" }];
+        // The system prompt is not part of the conversation (GUI spec §3.8:
+        // history is user/assistant/tool messages only).
+        return [];
     }
   }
 
@@ -304,7 +340,12 @@ export class AgentServer {
           this.emit({ type: "token", scope, text: event.text });
           break;
         case "toolCall":
-          this.emit({ type: "toolCall", scope, name: event.name, args: event.args });
+          this.emit({
+            type: "toolCall",
+            scope,
+            name: event.name,
+            args: event.args,
+          });
           break;
         case "toolResult":
           this.emit({
@@ -335,7 +376,10 @@ export class AgentServer {
   /** Handle an HTTP request: WebSocket upgrade or static UI (GUI spec §3.5). */
   private onRequest(req: Request, server: Bun.Server<unknown>): Response {
     const url = new URL(req.url);
-    if (url.pathname === WS_PATH && req.headers.get("upgrade") === "websocket") {
+    if (
+      url.pathname === WS_PATH &&
+      req.headers.get("upgrade") === "websocket"
+    ) {
       const ws = server.upgrade(req, { data: {} });
       if (!ws) return new Response("WebSocket upgrade failed", { status: 400 });
       return new Response(null, { status: 101 });
@@ -388,9 +432,15 @@ export class AgentServer {
     if (ws !== this.ws) return; // stale connection
     let command: ClientCommand;
     try {
-      command = JSON.parse(typeof msg === "string" ? msg : new TextDecoder().decode(msg));
+      command = JSON.parse(
+        typeof msg === "string" ? msg : new TextDecoder().decode(msg),
+      );
     } catch {
-      this.send({ type: "commandResult", ok: false, error: "Malformed JSON command." });
+      this.send({
+        type: "commandResult",
+        ok: false,
+        error: "Malformed JSON command.",
+      });
       return;
     }
     this.handleCommand(command);
@@ -438,11 +488,19 @@ export class AgentServer {
   /** Start a turn (GUI spec §3.4, §4.8). */
   private doTask(text: unknown): void {
     if (typeof text !== "string" || text.trim().length === 0) {
-      this.send({ type: "commandResult", ok: false, error: "task requires a non-empty `text`." });
+      this.send({
+        type: "commandResult",
+        ok: false,
+        error: "task requires a non-empty `text`.",
+      });
       return;
     }
     if (this.turnActive) {
-      this.send({ type: "commandResult", ok: false, error: "A turn is already running." });
+      this.send({
+        type: "commandResult",
+        ok: false,
+        error: "A turn is already running.",
+      });
       return;
     }
     this.turnActive = true;
@@ -452,14 +510,22 @@ export class AgentServer {
     this.send({ type: "state", patch: { turnActive: true } });
 
     const callbacks = {
-      onToken: (t: string) => this.emit({ type: "token", scope: { kind: "main" }, text: t }),
+      onToken: (t: string) =>
+        this.emit({ type: "token", scope: { kind: "main" }, text: t }),
       onReasoning: (t: string) =>
         this.emit({ type: "reasoning", scope: { kind: "main" }, text: t }),
       onToolCall: (name: string, args: Record<string, unknown>) =>
         this.emit({ type: "toolCall", scope: { kind: "main" }, name, args }),
       onToolResult: (name: string, ok: boolean, summary: string) =>
-        this.emit({ type: "toolResult", scope: { kind: "main" }, name, ok, summary }),
-      onCompacting: () => this.emit({ type: "compacting", scope: { kind: "main" } }),
+        this.emit({
+          type: "toolResult",
+          scope: { kind: "main" },
+          name,
+          ok,
+          summary,
+        }),
+      onCompacting: () =>
+        this.emit({ type: "compacting", scope: { kind: "main" } }),
     };
 
     runTurn(
@@ -479,7 +545,11 @@ export class AgentServer {
           this.send({ type: "error", message: err.message, kind: "llm" });
           this.finishTurn("", "text", false);
         } else {
-          this.send({ type: "error", message: (err as Error).message, kind: "other" });
+          this.send({
+            type: "error",
+            message: (err as Error).message,
+            kind: "other",
+          });
           this.finishTurn("", "text", false);
         }
       });
@@ -495,43 +565,71 @@ export class AgentServer {
   /** Switch the active profile (GUI spec §3.4, §4.7, §4.8). */
   private doSwitchProfile(name: unknown): void {
     if (typeof name !== "string" || name.length === 0) {
-      this.send({ type: "commandResult", ok: false, error: "switchProfile requires a `name`." });
+      this.send({
+        type: "commandResult",
+        ok: false,
+        error: "switchProfile requires a `name`.",
+      });
       return;
     }
     if (this.turnActive) {
-      this.send({ type: "commandResult", ok: false, error: "Cannot switch profile while a turn is running." });
+      this.send({
+        type: "commandResult",
+        ok: false,
+        error: "Cannot switch profile while a turn is running.",
+      });
       return;
     }
     try {
       this.handle.switchProfile(name);
       this.send({ type: "state", patch: this.buildState() });
     } catch (err) {
-      this.send({ type: "commandResult", ok: false, error: (err as Error).message });
+      this.send({
+        type: "commandResult",
+        ok: false,
+        error: (err as Error).message,
+      });
     }
   }
 
   /** Switch the active model (GUI spec §3.4, §4.7, §4.8). */
   private doSwitchModel(ref: unknown): void {
     if (typeof ref !== "string" || ref.length === 0) {
-      this.send({ type: "commandResult", ok: false, error: "switchModel requires a `ref`." });
+      this.send({
+        type: "commandResult",
+        ok: false,
+        error: "switchModel requires a `ref`.",
+      });
       return;
     }
     if (this.turnActive) {
-      this.send({ type: "commandResult", ok: false, error: "Cannot switch model while a turn is running." });
+      this.send({
+        type: "commandResult",
+        ok: false,
+        error: "Cannot switch model while a turn is running.",
+      });
       return;
     }
     try {
       this.handle.switchModel(ref);
       this.send({ type: "state", patch: this.buildState() });
     } catch (err) {
-      this.send({ type: "commandResult", ok: false, error: (err as Error).message });
+      this.send({
+        type: "commandResult",
+        ok: false,
+        error: (err as Error).message,
+      });
     }
   }
 
   /** Clear the conversation (GUI spec §3.4, §4.12). */
   private doClear(): void {
     if (this.turnActive) {
-      this.send({ type: "commandResult", ok: false, error: "Cannot clear while a turn is running." });
+      this.send({
+        type: "commandResult",
+        ok: false,
+        error: "Cannot clear while a turn is running.",
+      });
       return;
     }
     this.handle.clearConversation();
@@ -542,7 +640,11 @@ export class AgentServer {
   /** Toggle hooks (GUI spec §3.4, §4.13). */
   private doHooks(enabled: unknown): void {
     if (typeof enabled !== "boolean") {
-      this.send({ type: "commandResult", ok: false, error: "hooks requires a boolean `enabled`." });
+      this.send({
+        type: "commandResult",
+        ok: false,
+        error: "hooks requires a boolean `enabled`.",
+      });
       return;
     }
     this.handle.setHooksEnabled(enabled);
@@ -550,7 +652,11 @@ export class AgentServer {
   }
 
   /** Mark a turn complete and return to idle (GUI spec §2.3.1). */
-  private finishTurn(answer: string, kind: "finished" | "cap" | "text" | "aborted", finished: boolean): void {
+  private finishTurn(
+    answer: string,
+    kind: "finished" | "cap" | "text" | "aborted",
+    finished: boolean,
+  ): void {
     this.turnActive = false;
     this.inflightBuffer = [];
     this.abortController = null;
@@ -644,14 +750,22 @@ export async function runServer(
   const statePath = stateFilePath();
   const starting = resolveStartingProfile(graph, statePath);
   try {
-    resolveProfile(graph, starting.profile, { modelNameHint: starting.lastModel });
+    resolveProfile(graph, starting.profile, {
+      modelNameHint: starting.lastModel,
+    });
   } catch (err) {
     if (err instanceof MissingMaxContextError) return fail(err.message);
     throw err;
   }
 
   // Locate the built UI assets (gui/dist), relative to this source file.
-  const staticDir = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..", "gui", "dist");
+  // fileURLToPath handles Windows drive-letter paths correctly.
+  const staticDir = path.resolve(
+    path.dirname(fileURLToPath(import.meta.url)),
+    "..",
+    "gui",
+    "dist",
+  );
 
   const server = new AgentServer({
     graph,
@@ -706,13 +820,24 @@ async function discoverAllModels(
     try {
       models = await provider.discoverModels();
     } catch (err) {
-      console.error(c.yellow(`Provider "${provider.name}" threw during discovery: ${(err as Error).message}`));
+      console.error(
+        c.yellow(
+          `Provider "${provider.name}" threw during discovery: ${(err as Error).message}`,
+        ),
+      );
       models = [];
     }
     if (models.length === 0) {
       const url = (provider as { baseUrl?: unknown }).baseUrl;
-      const label = typeof url === "string" ? `'${provider.name}' (${url})` : `'${provider.name}'`;
-      console.error(c.yellow(`Provider ${label} returned no models. Is the server running?`));
+      const label =
+        typeof url === "string"
+          ? `'${provider.name}' (${url})`
+          : `'${provider.name}'`;
+      console.error(
+        c.yellow(
+          `Provider ${label} returned no models. Is the server running?`,
+        ),
+      );
     }
     results.push({ providerId, models });
     totalDiscovered += models.length;
