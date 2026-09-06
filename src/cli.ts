@@ -32,7 +32,8 @@ async function main(): Promise<void> {
 
   // The agent-server commands (GUI spec §3.1) have their own startup path.
   if (args.command === "serve" || args.command === "gui") {
-    const { runServer, DEFAULT_GUI_PORT } = await import("./server.js");
+    const { runServer } = await import("./server/entry.js");
+    const { DEFAULT_GUI_PORT } = await import("./server/protocol.js");
     await runServer(args.port ?? DEFAULT_GUI_PORT, args.command === "gui");
     return;
   }

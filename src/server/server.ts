@@ -1,138 +1,47 @@
-#!/usr/bin/env bun
 /**
  * The Vise agent-server (GUI spec §3.1).
  *
  * A separate, long-lived entry point that owns one session and exposes it over
  * a WebSocket protocol (§6.1). It reuses the side-effect-free session machinery
- * (`loadViseConfig`, `createSession`, `runTurn`) unchanged and adds no runtime
- * dependency to the core. It never touches stdin.
+ * (`createSession`, `runTurn`) unchanged and adds no runtime dependency to the
+ * core. It never touches stdin.
  *
- * Invoked by `vise serve` (headless) or `vise gui` (serve + open browser).
+ * The server surface is split across this module (the `AgentServer` class —
+ * session ownership, turn lifecycle, command dispatch, transport wiring) and
+ * its siblings, so no single file owns the whole presentation layer:
+ * - `protocol.ts`  — the wire types (a pure, shared boundary).
+ * - `translate.ts` — pure session→protocol mapping (snapshot/history/UI state).
+ * - `transport.ts` — byte-level helpers (MIME typing).
+ * - `entry.ts`     — the `serve`/`gui` entry point (startup/shutdown).
  */
 import { existsSync } from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
-import { c } from "./cli/color.js";
-import {
-  addDiscoveredModels,
-  MissingMaxContextError,
-  resolveProfile,
-  resolveStartingProfile,
-  stateFilePath,
-  writeStateFile,
-  ViseConfigError,
-  loadViseConfig,
-  type DiscoveryResult,
-  type ModelDef,
-  type ResourceGraph,
-} from "./profiles/index.js";
-import { createSession, type SessionHandle } from "./agent/session.js";
-import { runTurn } from "./agent/loop.js";
-import { LLMError } from "./llm/errors.js";
+import { createSession, type SessionHandle } from "../agent/session.js";
+import { runTurn } from "../agent/loop.js";
+import { LLMError } from "../llm/errors.js";
 import {
   type SubagentRender,
   type SubagentRenderEvent,
-} from "./agent/subagent.js";
-import { newId } from "./utils.js";
-import type { Message } from "./types.js";
-
-/** The default port the agent-server binds to (GUI spec §3.1, §5). */
-export const DEFAULT_GUI_PORT = 8787;
-
-/** The WebSocket endpoint path (GUI spec §3.2). */
-export const WS_PATH = "/ws";
-
-/**
- * The protocol `Scope` (GUI spec §6.1): which agent produced an event.
- * `main` for the top-level agent; `subagent` carries an `id` that correlates
- * the subagent's events to its parent `spawn_subagent` call and a `depth`.
- */
-export type Scope =
-  | { kind: "main" }
-  | { kind: "subagent"; id: string; depth: number };
-
-/** A protocol event the server pushes to the client (GUI spec §6.1). */
-export type ServerEvent =
-  | {
-      type: "snapshot";
-      history: ConversationItem[];
-      inflight: ServerEvent[];
-      state: UIState;
-    }
-  | { type: "token"; scope: Scope; text: string }
-  | { type: "reasoning"; scope: Scope; text: string }
-  | {
-      type: "toolCall";
-      scope: Scope;
-      name: string;
-      args: Record<string, unknown>;
-    }
-  | {
-      type: "toolResult";
-      scope: Scope;
-      name: string;
-      ok: boolean;
-      summary: string;
-    }
-  | { type: "compacting"; scope: Scope }
-  | {
-      type: "subagentEnd";
-      scope: Scope;
-      ok: boolean;
-      label: string;
-      depth: number;
-    }
-  | {
-      type: "turnEnd";
-      answer: string;
-      kind: "finished" | "cap" | "text" | "aborted";
-      finished: boolean;
-    }
-  | { type: "error"; message: string; kind: "llm" | "other" }
-  | { type: "state"; patch: Partial<UIState> }
-  | {
-      type: "commandResult";
-      ok: boolean;
-      error?: string;
-      data?: Record<string, unknown>;
-    }
-  | { type: "cleared" }
-  | { type: "pong" }
-  | { type: "serverEvent"; name: string; payload: Record<string, unknown> };
-
-/** A client command (GUI spec §6.1). */
-export type ClientCommand =
-  | { type: "task"; text: string }
-  | { type: "abort" }
-  | { type: "switchProfile"; name: string }
-  | { type: "switchModel"; ref: string }
-  | { type: "clear" }
-  | { type: "newSession" }
-  | { type: "hooks"; enabled: boolean }
-  | { type: "ping" };
-
-/** A rendered conversation item (GUI spec §2.1.3). */
-export type ConversationItem =
-  | { kind: "userMessage"; text: string }
-  | { kind: "assistantMessage"; text: string }
-  | { kind: "reasoningBlock"; text: string }
-  | { kind: "toolCall"; name: string; args: Record<string, unknown> }
-  | { kind: "toolResult"; name: string; ok: boolean; summary: string }
-  | { kind: "compactionNotice" }
-  | { kind: "systemNotice"; text: string };
-
-/** The non-conversation UI state (GUI spec §2.1.4). */
-export interface UIState {
-  activeProfile: string;
-  activeModel: string | null;
-  context: { promptTokens: number | null; maxContext: number };
-  profiles: { name: string; origin: string }[];
-  models: { name: string; baseUrl: string; providerName: string | null }[];
-  skills: { name: string; description: string }[];
-  hooks: { events: string[]; source: string; tools?: string[] }[];
-  hooksEnabled: boolean;
-  turnActive: boolean;
-}
+} from "../agent/subagent.js";
+import {
+  writeStateFile,
+  type ResourceGraph,
+} from "../profiles/index.js";
+import { newId } from "../utils.js";
+import {
+  DEFAULT_GUI_PORT,
+  WS_PATH,
+  type ClientCommand,
+  type Scope,
+  type ServerEvent,
+  type UIState,
+} from "./protocol.js";
+import {
+  buildSnapshot,
+  buildUIState,
+  isTurnEvent,
+} from "./translate.js";
+import { mimeOf } from "./transport.js";
 
 /** Options for {@link createAgentServer}. */
 export interface AgentServerOptions {
@@ -217,93 +126,18 @@ export class AgentServer {
 
   /** The current UI state (GUI spec §2.1.4). */
   private buildState(): UIState {
-    const session = this.handle.session;
-    return {
-      activeProfile: this.handle.profile,
-      activeModel: session.config.model,
-      context: {
-        promptTokens: session.lastPromptTokens,
-        maxContext: session.config.maxContext,
-      },
-      profiles: this.handle.profileEntries().map((p) => ({
-        name: p.name,
-        origin: p.origin,
-      })),
-      models: this.handle.modelEntries().map((m) => ({
-        name: m.name,
-        baseUrl: m.baseUrl,
-        providerName: m.providerName,
-      })),
-      skills: this.handle.skills().map((s) => ({
-        name: s.name,
-        description: s.description,
-      })),
-      hooks: this.handle.session.hooks.list().map((h) => ({
-        events: h.hook.events,
-        source: h.source,
-        tools: h.tools,
-      })),
-      hooksEnabled: this.handle.session.hooks.isEnabled(),
-      turnActive: this.turnActive,
-    };
-  }
-
-  /** Reconstruct the conversation from session messages (GUI spec §3.8). */
-  private buildHistory(): ConversationItem[] {
-    const items: ConversationItem[] = [];
-    for (const msg of this.handle.session.messages) {
-      items.push(...this.messageToItems(msg));
-    }
-    return items;
-  }
-
-  /** Convert one message into zero or more conversation items. */
-  private messageToItems(msg: Message): ConversationItem[] {
-    switch (msg.role) {
-      case "user":
-        return [{ kind: "userMessage", text: msg.content ?? "" }];
-      case "assistant": {
-        const items: ConversationItem[] = [];
-        if (msg.content)
-          items.push({ kind: "assistantMessage", text: msg.content });
-        for (const tc of msg.tool_calls ?? []) {
-          items.push({ kind: "toolCall", name: tc.name, args: tc.arguments });
-        }
-        return items;
-      }
-      case "tool":
-        return [
-          {
-            kind: "toolResult",
-            name: msg.name ?? "tool",
-            ok: !(msg.content ?? "").startsWith("Error:"),
-            summary: firstLine(msg.content ?? ""),
-          },
-        ];
-      case "system":
-        // The system prompt is not part of the conversation (GUI spec §3.8:
-        // history is user/assistant/tool messages only).
-        return [];
-    }
+    return buildUIState(this.handle, this.turnActive);
   }
 
   /** The snapshot sent on (re)connect (GUI spec §3.8). */
   private buildSnapshot(): ServerEvent {
-    // Split history at the turn boundary so the in-flight buffer does not
-    // duplicate committed messages (GUI spec §3.8, §4.1).
-    const end = this.turnActive
-      ? this.turnStartMessageCount + 1 // include this turn's user message
-      : this.handle.session.messages.length;
-    const items: ConversationItem[] = [];
-    for (const msg of this.handle.session.messages.slice(0, end)) {
-      items.push(...this.messageToItems(msg));
-    }
-    return {
-      type: "snapshot",
-      history: items,
-      inflight: this.inflightBuffer,
-      state: this.buildState(),
-    };
+    return buildSnapshot({
+      handle: this.handle,
+      turnActive: this.turnActive,
+      turnStartMessageCount: this.turnStartMessageCount,
+      inflightBuffer: this.inflightBuffer,
+      buildState: () => this.buildState(),
+    });
   }
 
   /** Push an event to the attached client and buffer it if mid-turn. */
@@ -674,185 +508,4 @@ export class AgentServer {
       this.log,
     );
   }
-}
-
-/** True for events that belong to the in-flight turn buffer. */
-function isTurnEvent(e: ServerEvent): boolean {
-  return (
-    e.type === "token" ||
-    e.type === "reasoning" ||
-    e.type === "toolCall" ||
-    e.type === "toolResult" ||
-    e.type === "compacting" ||
-    e.type === "subagentEnd"
-  );
-}
-
-/** The first non-empty line of a string (for tool-result summaries). */
-function firstLine(text: string): string {
-  const line = text.split("\n").find((l) => l.trim().length > 0);
-  return (line ?? text).trim();
-}
-
-/** A minimal MIME map for the static UI assets. */
-function mimeOf(filePath: string): string {
-  const ext = path.extname(filePath).toLowerCase();
-  const map: Record<string, string> = {
-    ".html": "text/html",
-    ".js": "text/javascript",
-    ".mjs": "text/javascript",
-    ".css": "text/css",
-    ".json": "application/json",
-    ".svg": "image/svg+xml",
-    ".png": "image/png",
-    ".ico": "image/x-icon",
-    ".woff": "font/woff",
-    ".woff2": "font/woff2",
-    ".map": "application/json",
-  };
-  return map[ext] ?? "application/octet-stream";
-}
-
-/**
- * The `vise serve` / `vise gui` entry point (GUI spec §3.1).
- *
- * Loads config, discovers models, resolves the starting profile, and starts
- * the agent-server. Exits non-zero on the same fatal conditions as the CLI.
- */
-export async function runServer(
-  port: number,
-  openBrowser: boolean,
-): Promise<void> {
-  let graph: ResourceGraph;
-  try {
-    graph = await loadViseConfig();
-  } catch (err) {
-    if (err instanceof ViseConfigError) return fail(err.message);
-    throw err;
-  }
-
-  if (graph.providers.size === 0) {
-    return fail(
-      "No models available. Register a provider in .vise/index.ts (e.g., " +
-        "reg.addProvider(new LlamaProvider({ url: 'http://localhost:8080' }))).",
-    );
-  }
-
-  const { results, totalDiscovered } = await discoverAllModels(graph);
-  if (totalDiscovered === 0) {
-    return fail(
-      "No models available. Register a provider in .vise/index.ts (e.g., " +
-        "reg.addProvider(new LlamaProvider({ url: 'http://localhost:8080' }))).",
-    );
-  }
-
-  graph = addDiscoveredModels(graph, results);
-  const statePath = stateFilePath();
-  const starting = resolveStartingProfile(graph, statePath);
-  try {
-    resolveProfile(graph, starting.profile, {
-      modelNameHint: starting.lastModel,
-    });
-  } catch (err) {
-    if (err instanceof MissingMaxContextError) return fail(err.message);
-    throw err;
-  }
-
-  // Locate the built UI assets (gui/dist), relative to this source file.
-  // fileURLToPath handles Windows drive-letter paths correctly.
-  const staticDir = path.resolve(
-    path.dirname(fileURLToPath(import.meta.url)),
-    "..",
-    "gui",
-    "dist",
-  );
-
-  const server = new AgentServer({
-    graph,
-    profile: starting.profile,
-    lastModel: starting.lastModel,
-    statePath,
-    staticDir: existsSync(staticDir) ? staticDir : null,
-  });
-
-  const actualPort = await server.start(port);
-  const url = `http://localhost:${actualPort}`;
-  console.log(c.green(`Vise GUI: ${url}`));
-
-  if (openBrowser) {
-    try {
-      await openInBrowser(url);
-    } catch {
-      // best-effort; the user can open the URL manually
-    }
-  }
-
-  // Keep running until the process is stopped (GUI spec §4.1, §6.2).
-  await new Promise<void>((resolve) => {
-    const shutdown = () => {
-      server.stop().then(resolve);
-    };
-    process.on("SIGINT", shutdown);
-    process.on("SIGTERM", shutdown);
-  });
-}
-
-/** Open a URL in the default browser (best-effort, cross-platform). */
-async function openInBrowser(url: string): Promise<void> {
-  const args =
-    process.platform === "win32"
-      ? ["cmd", "/c", "start", "", url]
-      : process.platform === "darwin"
-        ? ["open", url]
-        : ["xdg-open", url];
-  const child = Bun.spawn(args, { stdout: "ignore", stderr: "ignore" });
-  await child.exited;
-}
-
-/** Discover providers sequentially; failed discovery warns and continues. */
-async function discoverAllModels(
-  graph: ResourceGraph,
-): Promise<{ results: DiscoveryResult[]; totalDiscovered: number }> {
-  const results: DiscoveryResult[] = [];
-  let totalDiscovered = 0;
-  for (const [providerId, provider] of graph.providers) {
-    let models: ModelDef[];
-    try {
-      models = await provider.discoverModels();
-    } catch (err) {
-      console.error(
-        c.yellow(
-          `Provider "${provider.name}" threw during discovery: ${(err as Error).message}`,
-        ),
-      );
-      models = [];
-    }
-    if (models.length === 0) {
-      const url = (provider as { baseUrl?: unknown }).baseUrl;
-      const label =
-        typeof url === "string"
-          ? `'${provider.name}' (${url})`
-          : `'${provider.name}'`;
-      console.error(
-        c.yellow(
-          `Provider ${label} returned no models. Is the server running?`,
-        ),
-      );
-    }
-    results.push({ providerId, models });
-    totalDiscovered += models.length;
-  }
-  return { results, totalDiscovered };
-}
-
-function fail(message: string): void {
-  console.error(c.red(message));
-  process.exitCode = 1;
-}
-
-if (import.meta.main) {
-  runServer(DEFAULT_GUI_PORT, false).catch((err) => {
-    console.error(c.red(`Fatal: ${(err as Error).message}`));
-    process.exitCode = 1;
-  });
 }
