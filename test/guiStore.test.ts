@@ -116,6 +116,29 @@ describe("gui store (GUI spec §3.8, §4.11)", () => {
     expect(store.isActive(idx1)).toBe(false);
     expect(store.isActive(idx2)).toBe(true);
   });
+
+  test("interleaved same-depth subagent tokens each stay in one row", () => {
+    const store = createStore();
+    const s1 = { kind: "sub" as const, id: "s1" };
+    const s2 = { kind: "sub" as const, id: "s2" };
+    // Two subagents at the same depth interleave (the default: spawn_subagent
+    // is concurrent). Each scope's text must land in a single row, not
+    // fragment across rows as the "last row" moves between scopes.
+    store.applyEvent({ type: "token", scope: s1, text: "a1 " });
+    store.applyEvent({ type: "token", scope: s2, text: "b1 " });
+    store.applyEvent({ type: "token", scope: s1, text: "a2 " });
+    store.applyEvent({ type: "token", scope: s2, text: "b2 " });
+    // Two rows total (one per scope), not four.
+    expect(store.rows()).toHaveLength(2);
+    expect(store.rows()[0].item).toEqual({
+      kind: "assistantMessage",
+      text: "a1 a2 ",
+    });
+    expect(store.rows()[1].item).toEqual({
+      kind: "assistantMessage",
+      text: "b1 b2 ",
+    });
+  });
 });
 
 function snapshot(history: unknown[], state: unknown): ServerEvent {

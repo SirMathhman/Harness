@@ -91,8 +91,12 @@ export function createStore() {
   };
 
   /**
-   * Ensure the last row is a streaming text row of the given kind for the
-   * given scope; create one if not. Returns the row index.
+   * Ensure the scope has a streaming text row of the given kind; create one
+   * if not. Returns the row index.
+   *
+   * Continuation is by scope identity (the `streamingTarget` map), not by
+   * "is the last row": concurrent same-depth subagents interleave, so a
+   * scope's row is not necessarily the last row when its next token arrives.
    */
   const ensureStreamingRow = (
     key: string,
@@ -100,12 +104,10 @@ export function createStore() {
     kind: "assistantMessage" | "reasoningBlock",
   ): number => {
     const idx = streamingTarget.get(key);
-    const last = rows()[rows().length - 1];
     const isCurrent =
       idx !== undefined &&
-      last !== undefined &&
-      rows()[idx] === last &&
-      last.item.kind === kind;
+      rows()[idx] !== undefined &&
+      rows()[idx].item.kind === kind;
     let target = idx;
     if (!isCurrent || target === undefined) {
       target = push(depth, { kind, text: "" });
