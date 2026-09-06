@@ -59,6 +59,35 @@ describe("gui store (GUI spec §3.8, §4.11)", () => {
     // Active profile from the snapshot is retained.
     expect(store.state()?.activeProfile).toBe("Agent");
   });
+
+  test("activeIdx tracks the open reasoning block (GUI spec §3.9)", () => {
+    const store = createStore();
+    store.applyEvent({
+      type: "reasoning",
+      scope: { kind: "main" },
+      text: "hmm",
+    });
+    expect(store.activeIdx()).toBe(0); // reasoning row is open
+    store.applyEvent({
+      type: "token",
+      scope: { kind: "main" },
+      text: "answer",
+    });
+    expect(store.activeIdx()).toBeNull(); // a token after reasoning collapses it
+    store.applyEvent({
+      type: "reasoning",
+      scope: { kind: "main" },
+      text: "more",
+    });
+    expect(store.activeIdx()).toBe(2); // new reasoning row (index 2) is open
+    store.applyEvent({
+      type: "toolCall",
+      scope: { kind: "main" },
+      name: "t",
+      args: {},
+    });
+    expect(store.activeIdx()).toBeNull(); // toolCall clears it
+  });
 });
 
 function snapshot(history: unknown[], state: unknown): ServerEvent {
