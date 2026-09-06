@@ -1,6 +1,6 @@
 // A small Markdown renderer (GUI spec §3.9). Uses `marked` to produce HTML.
 import { marked } from "marked";
-import { createMemo } from "solid-js";
+import { createMemo, createEffect, createSignal } from "solid-js";
 
 marked.setOptions({ breaks: true, gfm: true });
 
@@ -12,8 +12,16 @@ export function Markdown(props: { text: string }) {
 
 /** A collapsible reasoning block (GUI spec §3.9). */
 export function ReasoningBlock(props: { text: string; active?: boolean }) {
+  const [el, setEl] = createSignal<HTMLDetailsElement>();
+  // Open when reasoning starts, collapse when it ends. Reacting only to the
+  // `active` transition (not binding `open` continuously) lets the user
+  // toggle the block freely while it is streaming.
+  createEffect(() => {
+    const node = el();
+    if (node) node.open = props.active ?? false;
+  });
   return (
-    <details class="reasoning" open={props.active ?? false}>
+    <details class="reasoning" ref={setEl}>
       <summary>reasoning</summary>
       <Markdown text={props.text} />
     </details>
