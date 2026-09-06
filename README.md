@@ -83,12 +83,38 @@ prompt shows it: `vise:refactor> `. Type `/exit` (or `exit` / `quit`) to leave. 
 | `/init`           | Create a `./.vise/index.ts` stub for this project (never overwrites an existing one).                                                  |
 | `/init-global`    | Create a `~/.vise/index.ts` stub shared across every project (never overwrites an existing one).                                       |
 
+## GUI
+
+Vise also ships a browser-based GUI that drives the same session as the REPL. It is
+served by a separate **agent-server** entry point (`vise serve` / `vise gui`) that
+wraps the existing session machinery over a WebSocket.
+
+```bash
+# Start the GUI and open it in the browser:
+bun run gui
+
+# Or start the headless agent-server (prints its URL, does not open a browser):
+bun run serve
+
+# Override the port (default 8787):
+bun run gui -- --port 9000
+
+# Or, after `npm link` / installing the package:
+vise gui
+```
+
+The server prints its URL (e.g. `Vise GUI: http://localhost:8787`) and keeps running
+after the browser disconnects. The GUI and the REPL share the same session state
+(active profile + model).
+
 ## Scripts
 
 | Script              | Description                              |
 | ------------------- | ---------------------------------------- |
 | `bun run dev`       | Run the agent from source (`src/cli.ts`) |
 | `bun run start`     | Run the agent from source (`src/cli.ts`) |
+| `bun run gui`       | Start the GUI and open it in the browser |
+| `bun run serve`     | Start the headless agent-server          |
 | `bun test`          | Run the test suite (unit + integration)  |
 | `bun run lint`      | Lint with ESLint                         |
 | `bun run lint:fix`  | Lint and auto-fix                        |

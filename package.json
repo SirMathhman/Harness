@@ -17,6 +17,8 @@
   "scripts": {
     "dev": "bun run src/cli.ts",
     "start": "bun run src/cli.ts",
+    "gui": "bun run src/cli.ts gui",
+    "serve": "bun run src/cli.ts serve",
     "test": "bun test",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
