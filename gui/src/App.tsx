@@ -113,6 +113,9 @@ export function App() {
         <span class="context" title="context usage">
           {contextLabel(state())}
         </span>
+        <span class="cwd" title="working directory">
+          {cwdLabel(state())}
+        </span>
         <button
           class="control"
           disabled={!turnActive()}
@@ -244,4 +247,10 @@ function contextLabel(state: UIState | null): string {
   if (promptTokens === null || maxContext === 0) return "context: —";
   const pct = Math.round((promptTokens / maxContext) * 100);
   return `context: ${promptTokens} / ${maxContext} (${pct}%)`;
+}
+
+/** Format the working-directory readout. */
+function cwdLabel(state: UIState | null): string {
+  if (!state || !state.cwd) return "cwd: —";
+  return state.cwd;
 }

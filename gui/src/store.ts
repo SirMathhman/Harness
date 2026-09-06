@@ -181,6 +181,7 @@ function emptyState(): UIState {
   return {
     activeProfile: "",
     activeModel: null,
+    cwd: "",
     context: { promptTokens: null, maxContext: 0 },
     profiles: [],
     models: [],

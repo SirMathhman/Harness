@@ -114,6 +114,7 @@ The non-conversation state the UI tracks:
 
 - `activeProfile: string`
 - `activeModel: string | null`
+- `cwd: string` (the working directory the agent-server and its tools run in)
 - `context: { promptTokens: number | null; maxContext: number }`
 - `profiles: ProfileEntry[]` (name + origin)
 - `models: ModelListEntry[]` (name + origin)

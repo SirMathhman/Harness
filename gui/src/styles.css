@@ -89,6 +89,16 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+.cwd {
+  color: var(--fg-muted);
+  font-size: 0.8rem;
+  font-family: ui-monospace, "Cascadia Code", "Consolas", monospace;
+  max-width: 24rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .hooks-toggle {
   display: inline-flex;
   align-items: center;

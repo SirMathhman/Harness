@@ -59,6 +59,7 @@ export function buildUIState(
   return {
     activeProfile: handle.profile,
     activeModel: session.config.model,
+    cwd: process.cwd(),
     context: {
       promptTokens: session.lastPromptTokens,
       maxContext: session.config.maxContext,

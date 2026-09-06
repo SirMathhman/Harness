@@ -17,12 +17,7 @@ describe("gui store (GUI spec §3.8, §4.11)", () => {
       anything: true,
     } as unknown as ServerEvent);
     // Snapshot reconstitution, then verify neither crashed nor polluted rows.
-    const snap = snapshot(
-      [
-        { kind: "userMessage", text: "hi" },
-      ],
-      basicState(),
-    );
+    const snap = snapshot([{ kind: "userMessage", text: "hi" }], basicState());
     store.applyEvent(snap);
     expect(store.rows().length).toBe(1);
     expect(store.rows()[0].item.kind).toBe("userMessage");
@@ -50,7 +45,10 @@ describe("gui store (GUI spec §3.8, §4.11)", () => {
     const store = createStore();
     store.pushUserMessage("my task");
     expect(store.rows()).toHaveLength(1);
-    expect(store.rows()[0].item).toEqual({ kind: "userMessage", text: "my task" });
+    expect(store.rows()[0].item).toEqual({
+      kind: "userMessage",
+      text: "my task",
+    });
   });
 
   test("state patches merge partial updates", () => {
@@ -63,10 +61,7 @@ describe("gui store (GUI spec §3.8, §4.11)", () => {
   });
 });
 
-function snapshot(
-  history: unknown[],
-  state: unknown,
-): ServerEvent {
+function snapshot(history: unknown[], state: unknown): ServerEvent {
   return {
     type: "snapshot",
     history: history as never,
@@ -79,6 +74,7 @@ function basicState() {
   return {
     activeProfile: "Agent",
     activeModel: "m",
+    cwd: "/work",
     context: { promptTokens: null, maxContext: 8192 },
     profiles: [{ name: "Agent", origin: "builtin" }],
     models: [],

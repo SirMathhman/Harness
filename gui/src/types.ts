@@ -74,6 +74,8 @@ export type ConversationItem =
 export interface UIState {
   activeProfile: string;
   activeModel: string | null;
+  /** The working directory the agent-server (and its tools) run in. */
+  cwd: string;
   context: { promptTokens: number | null; maxContext: number };
   profiles: { name: string; origin: string }[];
   models: { name: string; baseUrl: string; providerName: string | null }[];
