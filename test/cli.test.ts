@@ -3,6 +3,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -13,13 +14,22 @@ import { createSession } from "../src/agent/session.js";
 import { promptLabel } from "../src/cli/repl.js";
 import {
   contextUsageLine,
+  deleteCommand,
   findCommand,
   helpText,
   initCommand,
+  loadCommand,
   modelCommand,
   REPL_COMMANDS,
+  renameCommand,
+  saveCommand,
+  sessionsCommand,
 } from "../src/cli/commands.js";
-import { CONFIG_STUB, writeConfigStub } from "../src/profiles/index.js";
+import {
+  CONFIG_STUB,
+  IMPLICIT_PROFILE_NAME,
+  writeConfigStub,
+} from "../src/profiles/index.js";
 import { modelGraph } from "./helpers.js";
 
 /**
@@ -99,11 +109,11 @@ describe("CLI startup (AC 1; providers spec §3.6, §4 E-P0)", () => {
   });
 });
 
-describe("profile persistence end-to-end (config spec §3.8, AC 9, AC 13, C17)", () => {
-  test("a clean exit saves the active profile and model to ./.vise/state.json", async () => {
+describe("fresh start (v0.8.0, AC 9)", () => {
+  test("a clean exit starts the implicit profile and writes no state file", async () => {
     // A provider that discovers one model with no real network call, so the
     // REPL starts up deterministically with no real LLM server running.
-    const dir = mkdtempSync(path.join(tmpdir(), "vise-state-e2e-"));
+    const dir = mkdtempSync(path.join(tmpdir(), "vise-fresh-e2e-"));
     mkdirSync(path.join(dir, ".vise"));
     writeFileSync(
       path.join(dir, ".vise", "index.ts"),
@@ -127,14 +137,14 @@ describe("profile persistence end-to-end (config spec §3.8, AC 9, AC 13, C17)",
       stderr: "pipe",
     });
     const exitCode = await proc.exited;
-    const statePath = path.join(dir, ".vise", "state.json");
 
+    // v0.8.0 removed the state file: a fresh start never reads or writes one.
     expect(exitCode).toBe(0);
-    expect(existsSync(statePath)).toBe(true);
-    const state = JSON.parse(readFileSync(statePath, "utf8"));
-    expect(state.profile).toBe("Agent");
-    expect(state.lastModel).toBe("stub-model");
-    expect(typeof state.savedAt).toBe("string");
+    expect(existsSync(path.join(dir, ".vise", "state.json"))).toBe(false);
+    // An empty conversation never auto-saves `last` (spec §3.3 R8).
+    expect(existsSync(path.join(dir, ".vise", "sessions", "last.json"))).toBe(
+      false,
+    );
 
     rmSync(dir, { recursive: true, force: true });
   });
@@ -151,6 +161,11 @@ describe("REPL command registry", () => {
     expect(names).toContain("/hooks");
     expect(names).toContain("/init");
     expect(names).toContain("/init-global");
+    expect(names).toContain("/save");
+    expect(names).toContain("/load");
+    expect(names).toContain("/sessions");
+    expect(names).toContain("/rename");
+    expect(names).toContain("/delete");
     expect(names).toContain("/exit");
   });
 
@@ -258,6 +273,190 @@ describe("/clear command", () => {
     const cmd = findCommand("/clear");
     cmd!.run({ handle }, []);
     expect(handle.session.messages.length).toBe(before);
+  });
+});
+
+describe("session commands (v0.8.0, spec §3.1)", () => {
+  // A REPL context backed by an isolated temp sessions directory.
+  function makeCtx() {
+    const dir = mkdtempSync(path.join(tmpdir(), "vise-sessions-"));
+    const handle = createSession({ graph: modelGraph() });
+    return {
+      ctx: { handle, sessionsDir: dir },
+      dir,
+      cleanup: () => rmSync(dir, { recursive: true, force: true }),
+    };
+  }
+
+  test("/save persists the conversation, stripping the system message (AC 1)", () => {
+    const { ctx, dir, cleanup } = makeCtx();
+    try {
+      ctx.handle.session.messages.push({ role: "user", content: "hello" });
+      ctx.handle.session.messages.push({ role: "assistant", content: "hi" });
+      const out = saveCommand(ctx, ["my-session"]);
+      expect(out).toBe('saved session "my-session" (2 messages).');
+      const file = path.join(dir, "my-session.json");
+      expect(existsSync(file)).toBe(true);
+      const saved = JSON.parse(readFileSync(file, "utf8"));
+      expect(saved.version).toBe(1);
+      expect(saved.name).toBe("my-session");
+      expect(saved.profile).toBe("Agent");
+      // The leading system message is stripped (R1).
+      expect(saved.messages).toEqual([
+        { role: "user", content: "hello" },
+        { role: "assistant", content: "hi" },
+      ]);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("/save with no argument auto-generates a name (R4)", () => {
+    const { ctx, dir, cleanup } = makeCtx();
+    try {
+      ctx.handle.session.messages.push({ role: "user", content: "hi" });
+      const out = saveCommand(ctx, []);
+      expect(out).toContain("saved session");
+      const files = readdirSync(dir).filter((f) => f.endsWith(".json"));
+      expect(files).toHaveLength(1);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("/save reports usage when given more than one argument", () => {
+    const { ctx, cleanup } = makeCtx();
+    try {
+      expect(saveCommand(ctx, ["a", "b"])).toBe(
+        "Usage: /save [<name>] (session names cannot contain spaces).",
+      );
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("/load replaces the conversation with the saved one (AC 4)", () => {
+    const { ctx, cleanup } = makeCtx();
+    try {
+      // Seed a saved session with a real user message.
+      ctx.handle.session.messages.push({ role: "user", content: "hi" });
+      saveCommand(ctx, ["seed"]);
+      // Start a fresh conversation, then load it back.
+      ctx.handle.clearConversation();
+      const out = loadCommand(ctx, ["seed"]);
+      expect(out).toContain('loaded session "seed"');
+      expect(ctx.handle.session.messages).toEqual([
+        { role: "system", content: expect.any(String) },
+        { role: "user", content: "hi" },
+      ]);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("/load with no argument reports usage", () => {
+    const { ctx, cleanup } = makeCtx();
+    try {
+      expect(loadCommand(ctx, [])).toBe(
+        "Usage: /load <name> (see /sessions for available names).",
+      );
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("/load of a missing name reports the error and lists sessions (E1)", () => {
+    const { ctx, cleanup } = makeCtx();
+    try {
+      const out = loadCommand(ctx, ["ghost"]);
+      expect(out).toContain('No session named "ghost".');
+      expect(out).toContain("No saved sessions.");
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("/load of a stale profile falls back to the implicit profile (R6)", () => {
+    const { ctx, dir, cleanup } = makeCtx();
+    try {
+      saveCommand(ctx, ["stale"]);
+      // Rewrite the saved profile to one that does not exist in the graph.
+      const file = path.join(dir, "stale.json");
+      const saved = JSON.parse(readFileSync(file, "utf8"));
+      saved.profile = "ghost";
+      writeFileSync(file, JSON.stringify(saved), "utf8");
+      const out = loadCommand(ctx, ["stale"]);
+      expect(out).toContain('saved profile "ghost" not found');
+      expect(out).toContain(`using "${IMPLICIT_PROFILE_NAME}"`);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("/sessions prints the empty state when nothing is saved", () => {
+    const { ctx, cleanup } = makeCtx();
+    try {
+      expect(sessionsCommand(ctx)).toBe("No saved sessions.");
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("/sessions lists saved sessions (AC 3)", () => {
+    const { ctx, cleanup } = makeCtx();
+    try {
+      saveCommand(ctx, ["alpha"]);
+      const out = sessionsCommand(ctx);
+      expect(out).toContain("Sessions:");
+      expect(out).toContain("alpha");
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("/rename renames a session (AC 6)", () => {
+    const { ctx, dir, cleanup } = makeCtx();
+    try {
+      saveCommand(ctx, ["old"]);
+      expect(renameCommand(ctx, ["old", "new"])).toBe(
+        'renamed session "old" to "new".',
+      );
+      expect(existsSync(path.join(dir, "old.json"))).toBe(false);
+      expect(existsSync(path.join(dir, "new.json"))).toBe(true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("/rename of a missing source lists the available sessions (E9)", () => {
+    const { ctx, cleanup } = makeCtx();
+    try {
+      const out = renameCommand(ctx, ["ghost", "new"]);
+      expect(out).toContain('No session named "ghost".');
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("/delete removes a session (AC 7)", () => {
+    const { ctx, dir, cleanup } = makeCtx();
+    try {
+      saveCommand(ctx, ["doomed"]);
+      expect(deleteCommand(ctx, ["doomed"])).toBe('deleted session "doomed".');
+      expect(existsSync(path.join(dir, "doomed.json"))).toBe(false);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("/delete of a missing name reports the error (E11)", () => {
+    const { ctx, cleanup } = makeCtx();
+    try {
+      const out = deleteCommand(ctx, ["ghost"]);
+      expect(out).toContain('No session named "ghost".');
+    } finally {
+      cleanup();
+    }
   });
 });
 

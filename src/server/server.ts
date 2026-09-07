@@ -65,6 +65,11 @@ export interface AgentServerOptions {
   staticDir?: string | null;
   /** Where log lines go. Defaults to stderr. */
   log?: (message: string) => void;
+  /**
+   * The directory for saved sessions. Defaults to {@link sessionsDir}()
+   * (project or global `.vise/sessions`). Injectable for tests.
+   */
+  sessionsDir?: string;
 }
 
 /**
@@ -76,6 +81,7 @@ export class AgentServer {
   private readonly handle: SessionHandle;
   private readonly staticDir: string | null;
   private readonly log: (message: string) => void;
+  private readonly sessionsDir: string;
 
   /** The single attached WebSocket, or null when disconnected. */
   private ws: Bun.ServerWebSocket | null = null;
@@ -95,6 +101,7 @@ export class AgentServer {
   constructor(options: AgentServerOptions) {
     this.staticDir = options.staticDir ?? null;
     this.log = options.log ?? ((m) => console.error(m));
+    this.sessionsDir = options.sessionsDir ?? sessionsDir();
     this.handle = createSession({
       graph: options.graph,
       profile: options.profile,
@@ -123,9 +130,11 @@ export class AgentServer {
   async stop(): Promise<void> {
     this.handle.manager.killAll();
     try {
-      autoSaveLast(sessionsDir(), this.handle);
+      autoSaveLast(this.sessionsDir, this.handle);
     } catch (err) {
-      this.log(`warning: could not auto-save session: ${(err as Error).message}`);
+      this.log(
+        `warning: could not auto-save session: ${(err as Error).message}`,
+      );
     }
     this.server?.stop(true);
     this.server = null;
@@ -544,7 +553,7 @@ export class AgentServer {
       messages,
     };
     try {
-      saveSession(sessionsDir(), saved);
+      saveSession(this.sessionsDir, saved);
     } catch (err) {
       this.send({
         type: "commandResult",
@@ -576,7 +585,7 @@ export class AgentServer {
     }
     let saved: SavedSession;
     try {
-      saved = loadSession(sessionsDir(), name);
+      saved = loadSession(this.sessionsDir, name);
     } catch (err) {
       if (err instanceof SessionError) {
         this.send({ type: "commandResult", ok: false, error: err.message });
@@ -631,7 +640,7 @@ export class AgentServer {
 
   /** List saved sessions (spec §3.2, W2). */
   private doSessions(): void {
-    this.send({ type: "sessions", sessions: listSessions(sessionsDir()) });
+    this.send({ type: "sessions", sessions: listSessions(this.sessionsDir) });
   }
 
   /** Rename a saved session (spec §3.2, W4). */
@@ -650,7 +659,7 @@ export class AgentServer {
       return;
     }
     try {
-      renameSession(sessionsDir(), oldName, newName);
+      renameSession(this.sessionsDir, oldName, newName);
     } catch (err) {
       if (err instanceof SessionError) {
         this.send({ type: "commandResult", ok: false, error: err.message });
@@ -663,7 +672,7 @@ export class AgentServer {
       });
       return;
     }
-    this.send({ type: "sessions", sessions: listSessions(sessionsDir()) });
+    this.send({ type: "sessions", sessions: listSessions(this.sessionsDir) });
   }
 
   /** Delete a saved session (spec §3.2, W4). */
@@ -677,7 +686,7 @@ export class AgentServer {
       return;
     }
     try {
-      deleteSession(sessionsDir(), name);
+      deleteSession(this.sessionsDir, name);
     } catch (err) {
       if (err instanceof SessionError) {
         this.send({ type: "commandResult", ok: false, error: err.message });

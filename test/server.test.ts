@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { AgentServer } from "../src/server/server.js";
 import { modelGraph, profileGraph, graphFrom } from "./helpers.js";
@@ -87,13 +90,13 @@ async function startServer(opts: {
   graph: ReturnType<typeof modelGraph>;
   profile?: string;
   staticDir?: string | null;
+  sessionsDir?: string;
 }): Promise<{ port: number; stop: () => Promise<void> }> {
   const server = new AgentServer({
     graph: opts.graph,
     profile: opts.profile ?? "Agent",
-    lastModel: null,
-    statePath: ":memory:",
     staticDir: opts.staticDir ?? null,
+    sessionsDir: opts.sessionsDir,
     log: () => {},
   });
   const port = await server.start(0);
@@ -199,8 +202,6 @@ describe("agent-server (GUI spec §9)", () => {
     const server = new AgentServer({
       graph: graph as ReturnType<typeof modelGraph>,
       profile: "Alpha",
-      lastModel: null,
-      statePath: ":memory:",
       staticDir: null,
       log: () => {},
     });
@@ -413,8 +414,6 @@ describe("agent-server (GUI spec §9)", () => {
     const server = new AgentServer({
       graph: graph as ReturnType<typeof modelGraph>,
       profile: "Agent",
-      lastModel: null,
-      statePath: ":memory:",
       staticDir: null,
       log: () => {},
     });
@@ -507,6 +506,145 @@ describe("agent-server (GUI spec §9)", () => {
     server.stop();
     reconnected.close();
     await stop();
+  });
+});
+
+describe("agent-server session commands (v0.8.0 spec §3.2)", () => {
+  function tempSessionsDir(): { dir: string; cleanup: () => void } {
+    const dir = mkdtempSync(path.join(tmpdir(), "vise-server-sessions-"));
+    return {
+      dir,
+      cleanup: () => rmSync(dir, { recursive: true, force: true }),
+    };
+  }
+
+  test("sessions lists empty, then save/load/rename/delete round-trip", async () => {
+    const { baseUrl } = mockBackend([{ kind: "content", content: "hi" }]);
+    const { dir, cleanup } = tempSessionsDir();
+    try {
+      const { port, stop } = await startServer({
+        graph: modelGraph(baseUrl, { maxIterations: 1 }),
+        sessionsDir: dir,
+      });
+      const client = connect(`http://localhost:${port}`);
+      await client.opened;
+      await client.waitFor((e) => (e.type === "snapshot" ? e : undefined));
+
+      // Empty listing.
+      client.send({ type: "sessions" });
+      const empty = await client.waitFor((e) =>
+        e.type === "sessions" ? e : undefined,
+      );
+      expect(empty.sessions).toEqual([]);
+
+      // Build a real conversation, then save it.
+      client.send({ type: "task", text: "hi" });
+      await client.waitFor((e) => (e.type === "turnEnd" ? e : undefined));
+      client.send({ type: "save", name: "conv" });
+      const saved = await client.waitFor((e) =>
+        e.type === "sessionSaved" ? e : undefined,
+      );
+      expect(saved.name).toBe("conv");
+      expect(existsSync(path.join(dir, "conv.json"))).toBe(true);
+
+      // It now appears in the listing.
+      client.send({ type: "sessions" });
+      const listed = await client.waitFor((e) =>
+        e.type === "sessions" && e.sessions.length > 0 ? e : undefined,
+      );
+      expect(listed.sessions.map((s) => s.name)).toContain("conv");
+
+      // Rename it.
+      client.send({ type: "rename", old: "conv", new: "renamed" });
+      const renamed = await client.waitFor((e) =>
+        e.type === "sessions" && e.sessions.some((s) => s.name === "renamed")
+          ? e
+          : undefined,
+      );
+      expect(renamed.sessions.map((s) => s.name)).toContain("renamed");
+      expect(existsSync(path.join(dir, "renamed.json"))).toBe(true);
+
+      // Delete it.
+      client.send({ type: "delete", name: "renamed" });
+      const deleted = await client.waitFor((e) =>
+        e.type === "sessionDeleted" ? e : undefined,
+      );
+      expect(deleted.name).toBe("renamed");
+      expect(existsSync(path.join(dir, "renamed.json"))).toBe(false);
+
+      client.close();
+      await stop();
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("load of a missing name reports an error", async () => {
+    const { baseUrl } = mockBackend([]);
+    const { dir, cleanup } = tempSessionsDir();
+    try {
+      const { port, stop } = await startServer({
+        graph: modelGraph(baseUrl),
+        sessionsDir: dir,
+      });
+      const client = connect(`http://localhost:${port}`);
+      await client.opened;
+      await client.waitFor((e) => (e.type === "snapshot" ? e : undefined));
+
+      client.send({ type: "load", name: "ghost" });
+      const err = await client.waitFor((e) =>
+        e.type === "commandResult" && !e.ok ? e.error : undefined,
+      );
+      expect(err).toContain("ghost");
+
+      client.close();
+      await stop();
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("stop auto-saves a non-empty conversation to last.json (AC 8)", async () => {
+    const { baseUrl } = mockBackend([{ kind: "content", content: "hi" }]);
+    const { dir, cleanup } = tempSessionsDir();
+    try {
+      const { port, stop } = await startServer({
+        graph: modelGraph(baseUrl, { maxIterations: 1 }),
+        sessionsDir: dir,
+      });
+      const client = connect(`http://localhost:${port}`);
+      await client.opened;
+      await client.waitFor((e) => (e.type === "snapshot" ? e : undefined));
+
+      client.send({ type: "task", text: "hi" });
+      await client.waitFor((e) => (e.type === "turnEnd" ? e : undefined));
+      client.close();
+      await stop();
+
+      expect(existsSync(path.join(dir, "last.json"))).toBe(true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("stop does not auto-save an empty conversation (R8)", async () => {
+    const { baseUrl } = mockBackend([]);
+    const { dir, cleanup } = tempSessionsDir();
+    try {
+      const { port, stop } = await startServer({
+        graph: modelGraph(baseUrl),
+        sessionsDir: dir,
+      });
+      const client = connect(`http://localhost:${port}`);
+      await client.opened;
+      await client.waitFor((e) => (e.type === "snapshot" ? e : undefined));
+      client.close();
+      await stop();
+
+      expect(existsSync(path.join(dir, "last.json"))).toBe(false);
+    } finally {
+      cleanup();
+    }
   });
 });
 

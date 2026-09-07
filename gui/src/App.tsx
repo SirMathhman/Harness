@@ -247,11 +247,7 @@ export function App() {
                   if (e.key === "Enter") doSave();
                 }}
               />
-              <button
-                class="control"
-                disabled={turnActive()}
-                onClick={doSave}
-              >
+              <button class="control" disabled={turnActive()} onClick={doSave}>
                 save
               </button>
             </div>

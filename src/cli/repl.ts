@@ -3,7 +3,10 @@ import { runTurn, type AgentCallbacks } from "../agent/loop.js";
 import { createSession, type SessionHandle } from "../agent/session.js";
 import type { SubagentRender } from "../agent/subagent.js";
 import { LLMError } from "../llm/errors.js";
-import { IMPLICIT_PROFILE_NAME, type ResourceGraph } from "../profiles/index.js";
+import {
+  IMPLICIT_PROFILE_NAME,
+  type ResourceGraph,
+} from "../profiles/index.js";
 import { autoSaveLast, sessionsDir } from "../sessions/index.js";
 import { c } from "./color.js";
 import { commandArgs, findCommand, type ReplContext } from "./commands.js";

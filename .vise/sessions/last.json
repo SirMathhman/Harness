@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "name": "last",
+  "title": "last",
+  "profile": "Agent",
+  "model": "test-model",
+  "savedAt": "2026-09-07T02:19:20.065Z",
+  "messages": [
+    {
+      "role": "user",
+      "content": "stream"
+    },
+    {
+      "role": "assistant",
+      "content": "partial"
+    }
+  ]
+}

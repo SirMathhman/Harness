@@ -10,7 +10,12 @@
 
 import { batch, createSignal } from "solid-js";
 import { createStore as createSolidStore } from "solid-js/store";
-import type { ConversationItem, ServerEvent, SessionInfo, UIState } from "./types";
+import type {
+  ConversationItem,
+  ServerEvent,
+  SessionInfo,
+  UIState,
+} from "./types";
 
 /** A rendered conversation row, with its nesting depth (0 = main). */
 export interface Row {
@@ -175,7 +180,10 @@ export function createStore() {
       return;
     }
     if (tailScope === scope) {
-      setGroupItem("blocks", blockCount - 1, "items", tailItems, { index, row });
+      setGroupItem("blocks", blockCount - 1, "items", tailItems, {
+        index,
+        row,
+      });
       tailItems += 1;
       return;
     }

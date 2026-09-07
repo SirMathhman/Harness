@@ -1,12 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -14,16 +7,13 @@ import {
   loadViseConfig,
   profileEntries,
   resolveProfile,
-  resolveStartingProfile,
-  stateFilePath,
   ViseConfigError,
   ViseRegistry,
-  writeStateFile,
   type Registry,
 } from "../src/profiles/index.js";
 import { createSession } from "../src/agent/session.js";
 import { profileCommand, profileListing } from "../src/cli/commands.js";
-import { graphFrom, modelGraph } from "./helpers.js";
+import { graphFrom } from "./helpers.js";
 
 /** Two isolated temp directories standing in for `~/.vise` and `./.vise`. */
 function twoTierProject(files: {
@@ -430,177 +420,6 @@ describe("/profile listing origin markers (config spec §3.9, AC 14)", () => {
     // Active one (the implicit default here) is marked.
     expect(listing).toContain("* Agent");
     cleanup();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// §3.8 — profile persistence (state file)
-// ---------------------------------------------------------------------------
-
-describe("state file location (config spec §3.8.1, AC 13)", () => {
-  test("with a project config present, state lives under ./.vise", () => {
-    const { dir, cleanup } = makeProject({
-      ".vise/index.ts": "export default () => {};",
-    });
-    expect(stateFilePath(dir, "/nonexistent-home")).toBe(
-      path.join(dir, ".vise", "state.json"),
-    );
-    cleanup();
-  });
-
-  test("with no project config, state falls back to the global root", () => {
-    const { dir, cleanup } = makeProject({});
-    const globalRoot = mkdtempSync(path.join(tmpdir(), "vise-globalhome-"));
-    expect(stateFilePath(dir, globalRoot)).toBe(
-      path.join(globalRoot, ".vise", "state.json"),
-    );
-    cleanup();
-    rmSync(globalRoot, { recursive: true, force: true });
-  });
-});
-
-describe("starting-profile resolution (config spec §3.7, §3.8.4)", () => {
-  const graph = () =>
-    modelGraph("http://localhost:8080", {}, (reg) => {
-      reg.createProfile({ name: "implement", systemPrompt: "" });
-    });
-
-  test("no state file: implicit profile, no warning (C7)", () => {
-    const { dir, cleanup } = makeProject({});
-    const warnings: string[] = [];
-    const result = resolveStartingProfile(
-      graph(),
-      path.join(dir, ".vise", "state.json"),
-      (m) => warnings.push(m),
-    );
-    expect(result).toEqual({ profile: IMPLICIT_PROFILE_NAME, lastModel: null });
-    expect(warnings).toEqual([]);
-    cleanup();
-  });
-
-  test("malformed JSON warns and falls back (C8)", () => {
-    const { dir, cleanup } = makeProject({
-      ".vise/state.json": "{ this is not json",
-    });
-    const warnings: string[] = [];
-    const result = resolveStartingProfile(
-      graph(),
-      path.join(dir, ".vise", "state.json"),
-      (m) => warnings.push(m),
-    );
-    expect(result.profile).toBe(IMPLICIT_PROFILE_NAME);
-    expect(warnings[0]).toContain("could not read state file");
-    cleanup();
-  });
-
-  test("an unexpected shape warns and falls back (C9)", () => {
-    const { dir, cleanup } = makeProject({
-      ".vise/state.json": JSON.stringify({ profile: 42 }),
-    });
-    const warnings: string[] = [];
-    const result = resolveStartingProfile(
-      graph(),
-      path.join(dir, ".vise", "state.json"),
-      (m) => warnings.push(m),
-    );
-    expect(result.profile).toBe(IMPLICIT_PROFILE_NAME);
-    expect(warnings[0]).toContain("could not read state file");
-    cleanup();
-  });
-
-  test("a saved profile absent from the graph warns by name and falls back (AC 11, C10)", () => {
-    const { dir, cleanup } = makeProject({
-      ".vise/state.json": JSON.stringify({
-        profile: "ghost",
-        savedAt: new Date().toISOString(),
-        lastModel: "x",
-      }),
-    });
-    const warnings: string[] = [];
-    const result = resolveStartingProfile(
-      graph(),
-      path.join(dir, ".vise", "state.json"),
-      (m) => warnings.push(m),
-    );
-    expect(result.profile).toBe(IMPLICIT_PROFILE_NAME);
-    // The saved lastModel still pins the implicit profile's auto-discovered
-    // model (config spec §3.8.2) even though the saved profile is gone.
-    expect(result.lastModel).toBe("x");
-    expect(warnings[0]).toContain('saved profile "ghost" not found');
-    cleanup();
-  });
-
-  test("a valid saved profile is restored, with its lastModel (AC 10)", () => {
-    const { dir, cleanup } = makeProject({
-      ".vise/state.json": JSON.stringify({
-        profile: "implement",
-        savedAt: new Date().toISOString(),
-        lastModel: "qwen2.5-coder-32b",
-      }),
-    });
-    const warnings: string[] = [];
-    const result = resolveStartingProfile(
-      graph(),
-      path.join(dir, ".vise", "state.json"),
-      (m) => warnings.push(m),
-    );
-    expect(result).toEqual({
-      profile: "implement",
-      lastModel: "qwen2.5-coder-32b",
-    });
-    expect(warnings).toEqual([]);
-    cleanup();
-  });
-
-  test('a saved profile of "Agent" restores the implicit profile without warning (C22)', () => {
-    const { dir, cleanup } = makeProject({
-      ".vise/state.json": JSON.stringify({
-        profile: "Agent",
-        savedAt: new Date().toISOString(),
-        lastModel: "",
-      }),
-    });
-    const warnings: string[] = [];
-    const result = resolveStartingProfile(
-      graph(),
-      path.join(dir, ".vise", "state.json"),
-      (m) => warnings.push(m),
-    );
-    expect(result.profile).toBe("Agent");
-    expect(warnings).toEqual([]);
-    cleanup();
-  });
-});
-
-describe("writing the state file (config spec §3.8.3, AC 9)", () => {
-  test("writes profile, timestamp, and model, creating the directory", () => {
-    const dir = mkdtempSync(path.join(tmpdir(), "vise-writestate-"));
-    const statePath = path.join(dir, ".vise", "state.json");
-    expect(existsSync(statePath)).toBe(false);
-
-    writeStateFile(statePath, "implement", "qwen2.5-coder-32b");
-
-    expect(existsSync(statePath)).toBe(true);
-    const saved = JSON.parse(readFileSync(statePath, "utf8"));
-    expect(saved.profile).toBe("implement");
-    expect(saved.lastModel).toBe("qwen2.5-coder-32b");
-    expect(typeof saved.savedAt).toBe("string");
-    rmSync(dir, { recursive: true, force: true });
-  });
-
-  test("a write failure warns and does not throw (C12)", () => {
-    // A file where a directory needs to be makes mkdirSync fail.
-    const dir = mkdtempSync(path.join(tmpdir(), "vise-writefail-"));
-    const blocker = path.join(dir, "blocker");
-    writeFileSync(blocker, "not a directory");
-    const statePath = path.join(blocker, "state.json");
-
-    const warnings: string[] = [];
-    expect(() =>
-      writeStateFile(statePath, "implement", "m", (m) => warnings.push(m)),
-    ).not.toThrow();
-    expect(warnings[0]).toContain("could not save state");
-    rmSync(dir, { recursive: true, force: true });
   });
 });
 

@@ -136,7 +136,11 @@ export interface SessionHandle {
    * @throws MissingMaxContextError when the resolved model reports no
    *   context-window size.
    */
-  loadConversation(messages: Message[], profile: string, model: string | null): void;
+  loadConversation(
+    messages: Message[],
+    profile: string,
+    model: string | null,
+  ): void;
 }
 
 /**
@@ -212,7 +216,11 @@ export function createSession(options: SessionOptions = {}): SessionHandle {
       session.messages = session.messages.slice(0, i);
       session.lastPromptTokens = null;
     },
-    loadConversation(messages: Message[], profile: string, model: string | null) {
+    loadConversation(
+      messages: Message[],
+      profile: string,
+      model: string | null,
+    ) {
       // Resolve *before* touching anything, so a failed load leaves the
       // session exactly as it was (spec §4).
       const resolved = resolveProfile(graph, profile, {
