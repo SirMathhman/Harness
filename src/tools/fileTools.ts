@@ -106,16 +106,24 @@ export const editFileTool: Tool = {
     const newString = String(args.newString);
     const replaceAll = args.replaceAll === true;
     if (oldString.length === 0) return "Error: oldString must be non-empty.";
-    const text = readFileSync(p, "utf8");
-    const count = countOccurrences(text, oldString);
+    const raw = readFileSync(p, "utf8");
+    // Normalize line endings so oldString/newString match regardless of the
+    // file's CRLF vs LF style; restore the file's original style on write.
+    const crlf = raw.includes("\r\n");
+    const norm = (s: string) => (crlf ? s.replace(/\r?\n/g, "\n") : s);
+    const text = norm(raw);
+    const old = norm(oldString);
+    const fresh = norm(newString);
+    const count = countOccurrences(text, old);
     if (count === 0) return `Error: oldString not found in ${p}.`;
     if (count > 1 && !replaceAll) {
       return `Error: oldString matched ${count} times in ${p}; pass replaceAll=true to replace all.`;
     }
+    const denorm = (s: string) => (crlf ? s.replace(/\n/g, "\r\n") : s);
     const updated = replaceAll
-      ? text.split(oldString).join(newString)
-      : text.replace(oldString, newString);
-    writeFileSync(p, updated, "utf8");
+      ? text.split(old).join(fresh)
+      : text.replace(old, () => fresh);
+    writeFileSync(p, denorm(updated), "utf8");
     return `Edited ${p} (${replaceAll ? count : 1} replacement${count === 1 ? "" : "s"}).`;
   },
 };
