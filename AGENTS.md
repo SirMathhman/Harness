@@ -43,7 +43,7 @@ is required.
 under Bun's default `node` condition it resolves to the non-reactive SSR build and the
 GUI tests assert against a reactivity graph that never updates. `bunfig.toml` separately
 confines test discovery to `test/`, keeping the GUI's Playwright specs (which use
-`*.spec.ts`, a pattern Bun 1.3 *does* collect) out of the Bun suite.
+`*.spec.ts`, a pattern Bun 1.3 _does_ collect) out of the Bun suite.
 
 The GUI has its own checks, run from `gui/`: `bunx tsc --noEmit -p tsconfig.json`,
 `bun run build`, and `bun run test:browser` (Playwright; `bun run test:browser:install`
@@ -77,7 +77,8 @@ src/
                     # names, skills (list_skills/read_skill + the skill index)
   context/          # compaction.ts (token accounting + recap/truncation)
   hooks/            # manager.ts, types.ts, index.ts (lifecycle dispatch)
-  profiles/         # registry, load, resolve, validate, state, types, index
+  profiles/         # registry, load, resolve, validate, types, index
+  sessions/         # store.ts (save/load/list/rename/delete + autoSaveLast), index.ts
   providers/        # llamaProvider.ts, types.ts, index.ts
   config/           # defaults.ts (built-in prompt/runtime/config defaults)
   server/           # agent-server: protocol, server, translate, transport, entry
@@ -87,8 +88,8 @@ gui/                # SolidJS + Vite browser client
     conversation/   # ConversationViewport.tsx, viewModel.ts, eventQueue.ts
   e2e/              # Playwright browser specs + the mock-WebSocket fixture
 test/               # *.test.ts (unit + integration), helpers.ts
-specs/              # v0.1.0/ … v0.7.0/ + gui/ — the specification documents
-.vise/              # project-level config (index.ts) + state.json (gitignored)
+specs/              # v0.1.0/ … v0.8.0/ + gui/ — the specification documents
+.vise/              # project-level config (index.ts) + sessions/ (gitignored)
 ```
 
 ## Architecture: the resource graph
@@ -181,7 +182,7 @@ exposes it over a WebSocket, mirroring the REPL. It reuses the same session mach
   - `gui/src/store.ts` keeps rows in a **`solid-js/store`** and appends text with a path
     write (`setDoc("rows", i, "item", "text", …)`). It must never copy the rows array or
     replace a row object: doing so changes every row's identity and remounts the history.
-    The block sequence is maintained *incrementally* beside the rows, so a text delta
+    The block sequence is maintained _incrementally_ beside the rows, so a text delta
     cannot invalidate it.
   - `gui/src/conversation/viewModel.ts` flattens blocks into a linear list of render
     items and reads **structure only** — never a row's text. It also owns expand/collapse
@@ -193,7 +194,7 @@ exposes it over a WebSocket, mirroring the REPL. It reuses the same session mach
     that to find its target window and silently installs no observers when it is null,
     leaving the list permanently unmeasured and empty.
 - **Event scheduling:** `gui/src/conversation/eventQueue.ts` applies incoming events on
-  an animation frame. It merges only *adjacent* stream events of the same scope and kind,
+  an animation frame. It merges only _adjacent_ stream events of the same scope and kind,
   flushes pending work before any non-stream event, and treats `snapshot`/`cleared` as
   reset barriers that discard superseded pending events. `createStore.applyEvent` stays
   synchronous for direct consumers and tests.
@@ -226,9 +227,14 @@ exposes it over a WebSocket, mirroring the REPL. It reuses the same session mach
   name and never conflict.
 - **`setRuntime` merges per key** (project file wins over global, which wins over
   built-in defaults).
-- **State file** (`.vise/state.json` or `~/.vise/state.json`) is per-user session state,
-  not config — it is gitignored. A bad/missing state file never blocks startup; Vise
-  warns and falls back to the built-in `Agent` profile.
+- **Saved sessions** (`.vise/sessions/` or `~/.vise/sessions/`) are per-user conversation
+  state, not config — the directory is gitignored. A session is one JSON file
+  (`<name>.json`, `version: 1`) holding the domain `Message[]` (system messages stripped),
+  the profile, and the model. The REPL exposes `/save`, `/load`, `/sessions`, `/rename`,
+  `/delete`; the agent-server exposes the same over the WebSocket (additive protocol).
+  On a clean exit the REPL and server auto-save the current conversation to `last.json`
+  (only if non-empty). A bad/missing/corrupt session file never blocks startup or a load —
+  it is reported as an error string (or listed as unreadable), never a crash.
 - **The name `Agent` is reserved** for the implicit built-in profile; a config file cannot
   define a profile by that name.
 - **Relative imports in config files use the `.ts` extension** (Bun accepts either, but

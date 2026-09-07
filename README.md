@@ -68,20 +68,25 @@ At the `vise> ` prompt, type a task and press Enter. When a named profile is act
 prompt shows it: `vise:refactor> `. Type `/exit` (or `exit` / `quit`) to leave. Press
 `Ctrl-C` during a turn to abort it (any running foreground command is killed).
 
-| Command           | Effect                                                                                                                                 |
-| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `/help`           | List the commands.                                                                                                                     |
-| `/context`        | Prompt tokens from the last LLM call vs. the context window.                                                                           |
-| `/clear`          | Clear the conversation (drops every exchange, keeps the system prompt).                                                                |
-| `/profile`        | List the profiles (with origin: `builtin`/`global`/`project`), `*` marks the active one.                                               |
-| `/profile <name>` | Switch profiles: prompt, tools, hooks, and model are all re-resolved. `/profile Agent` switches back to the implicit built-in profile. |
-| `/model`          | List the models declared in `.vise/index.ts` (with origin), `*` marks the active one.                                                  |
-| `/model <name>`   | Switch the active model, adopting its whole resource (`baseUrl`, `apiKey`, `temperature`, `maxContext`). The conversation is kept.     |
-| `/skills`         | List the skills available to the agent (name + description).                                                                           |
-| `/hooks`          | List the hooks active for the current profile.                                                                                         |
-| `/hooks off\|on`  | Disable or re-enable every hook for the rest of the session.                                                                           |
-| `/init`           | Create a `./.vise/index.ts` stub for this project (never overwrites an existing one).                                                  |
-| `/init-global`    | Create a `~/.vise/index.ts` stub shared across every project (never overwrites an existing one).                                       |
+| Command               | Effect                                                                                                                                 |
+| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `/help`               | List the commands.                                                                                                                     |
+| `/context`            | Prompt tokens from the last LLM call vs. the context window.                                                                           |
+| `/clear`              | Clear the conversation (drops every exchange, keeps the system prompt).                                                                |
+| `/profile`            | List the profiles (with origin: `builtin`/`global`/`project`), `*` marks the active one.                                               |
+| `/profile <name>`     | Switch profiles: prompt, tools, hooks, and model are all re-resolved. `/profile Agent` switches back to the implicit built-in profile. |
+| `/model`              | List the models declared in `.vise/index.ts` (with origin), `*` marks the active one.                                                  |
+| `/model <name>`       | Switch the active model, adopting its whole resource (`baseUrl`, `apiKey`, `temperature`, `maxContext`). The conversation is kept.     |
+| `/skills`             | List the skills available to the agent (name + description).                                                                           |
+| `/hooks`              | List the hooks active for the current profile.                                                                                         |
+| `/hooks off\|on`      | Disable or re-enable every hook for the rest of the session.                                                                           |
+| `/init`               | Create a `./.vise/index.ts` stub for this project (never overwrites an existing one).                                                  |
+| `/init-global`        | Create a `~/.vise/index.ts` stub shared across every project (never overwrites an existing one).                                       |
+| `/save [<name>]`      | Save the current conversation to a named session (auto-name if omitted).                                                               |
+| `/load <name>`        | Replace the conversation with a saved session.                                                                                         |
+| `/sessions`           | List saved sessions.                                                                                                                   |
+| `/rename <old> <new>` | Rename a saved session.                                                                                                                |
+| `/delete <name>`      | Delete a saved session.                                                                                                                |
 
 ## GUI
 
@@ -355,42 +360,54 @@ named **`Agent`** — the built-in prompt, every built-in tool, no hooks, and (w
 `models` whitelist of its own) whichever model the active-model selection below picks.
 The name `Agent` is reserved; a profile in either config file cannot use it.
 
-A session starts under `Agent` **unless** a saved profile is restored from the state file
-(see [Profile persistence](#profile-persistence) below) — naming a profile `default` no
-longer selects it automatically.
+A session always starts under `Agent`. Naming a profile `default` does not select it
+automatically.
 
 `/profile <name>` re-resolves everything, including `/profile Agent` to switch back to
 the implicit profile. **Conversation history is retained**; only the system message
 changes, either replaced in place (the default) or appended to, per the `profileSwitchMode`
 runtime setting. Switching takes effect between turns, never mid-turn.
 
-### Profile persistence
+### Saved sessions
 
-On a clean exit (`/exit`, bare `exit`/`quit`, or Ctrl-D), Vise saves the active profile
-name and model to a small state file, and restores it on the next start. Ctrl-C mid-turn
-aborts the turn instead of exiting, so it never triggers a save.
+Vise can save a conversation to disk and load it back later. A saved session is one JSON
+file (`<name>.json`, `version: 1`) holding the conversation's domain messages (system
+messages stripped), the profile, and the model. The REPL exposes five commands:
 
-The state file's location depends on whether a project config exists:
+| Command               | Purpose                                              |
+| --------------------- | ---------------------------------------------------- |
+| `/save [<name>]`      | Save the current conversation (auto-name if omitted) |
+| `/load <name>`        | Replace the conversation with a saved one            |
+| `/sessions`           | List saved sessions                                  |
+| `/rename <old> <new>` | Rename a saved session                               |
+| `/delete <name>`      | Delete a saved session                               |
 
-| Condition                    | State file           |
-| ---------------------------- | -------------------- |
-| `./.vise/index.ts` exists    | `./.vise/state.json` |
-| `./.vise/index.ts` is absent | `~/.vise/state.json` |
+The agent-server exposes the same operations over the WebSocket (an additive protocol),
+and the GUI has a sessions panel for save/load/rename/delete.
 
-It is per-user session state, not configuration — add it to your project's
+The sessions directory depends on whether a project config exists:
+
+| Condition                    | Sessions dir        |
+| ---------------------------- | ------------------- |
+| `./.vise/index.ts` exists    | `./.vise/sessions/` |
+| `./.vise/index.ts` is absent | `~/.vise/sessions/` |
+
+It is per-user conversation state, not configuration — add it to your project's
 `.gitignore`:
 
 ```gitignore
 # .gitignore
-.vise/state.json
+.vise/sessions/
 ```
 
-If the saved profile no longer exists in the config, or the file is missing, corrupt, or
-malformed, Vise warns on stderr and starts under `Agent` instead — it never refuses to
-start over a bad state file. The saved model name also pins the active-model selection on
-restart (and on every later `/profile` switch), so the same model is used even if a
-provider's model list has since changed — as long as a model with that name is still in
-the profile's available set.
+On a clean exit (`/exit`, bare `exit`/`quit`, or Ctrl-D) the REPL and the agent-server
+auto-save the current conversation to `last.json` — but only if it is non-empty. Ctrl-C
+mid-turn aborts the turn instead of exiting, so it never triggers a save.
+
+Loading a session whose saved profile or model no longer exists in the config falls back
+to the implicit `Agent` profile (and to the profile's first available model) with a
+warning — it never refuses to load. A missing, corrupt, or malformed session file is
+reported as an error string (or listed as unreadable), never a crash.
 
 ### Subagent policy
 
@@ -508,9 +525,8 @@ reg.createProfile({
 - A `[providerName, regex]` tuple includes only that provider's models whose name
   matches the regex (full-string match).
 - Omitted or empty → every discovered/declared model is available.
-- The active model is whichever the state file's `lastModel` names, if it's in the
-  available set; otherwise the first one, in discovery order. A `Profile → Model`
-  connection (still supported, mainly for a model declared directly via
+- The active model is the first one in the available set, in discovery order. A
+  `Profile → Model` connection (still supported, mainly for a model declared directly via
   `reg.createModel()`) pins one model outright, overriding this selection — it must
   itself be in the whitelist, or the config is rejected.
 - A subagent whose profile has no whitelist inherits the parent's exact active model
@@ -539,7 +555,7 @@ always gets, because skills are global to the session:
 | `check_command`  | no       | `id`                                                                        | Check the status/output of a background command.                               |
 | `fetch_webpage`  | no       | `url`                                                                       | Fetch a URL; returns inline text, a file path, a redirect notice, or an error. |
 | `finish`         | no       | `answer`                                                                    | Terminal tool: ends the turn with a final answer.                              |
-| `spawn_subagent` | no       | `task`, `maxIterations`, `systemPrompt?`, `profile`                        | Run an isolated subagent and return only its final answer.                     |
+| `spawn_subagent` | no       | `task`, `maxIterations`, `systemPrompt?`, `profile`                         | Run an isolated subagent and return only its final answer.                     |
 | `list_skills`    | no       | —                                                                           | List every skill (name + description). Always present.                         |
 | `read_skill`     | no       | `name`                                                                      | Load one skill's full body, never truncated. Always present.                   |
 
