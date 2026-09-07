@@ -216,6 +216,15 @@ exposes it over a WebSocket, mirroring the REPL. It reuses the same session mach
 - **No provider → fatal at startup.** A config must register at least one provider
   (e.g. `reg.addProvider(new LlamaProvider({ url: "http://localhost:8080" }))`), or Vise
   exits with "No models available". There is no built-in default model.
+- **The context window is observed state, not config.** It is not on `ModelDef`, not on
+  `Config`, and not resolvable from the graph — a llama.cpp router lists models it has
+  never loaded, and `--fit on` only picks a window at load time, so nothing can know it
+  before the first completion. `Session.contextWindow` starts `null`, the agent loop
+  fills it in from `Provider.contextWindow(model)` after each completion while it is
+  still unknown, and **compaction is off while it is `null`** — never guess a default.
+  `setRuntime({ contextWindow: N })` pins it for a backend that never reports one; a
+  pinned value is never probed. Changing the session's model (`/model`, `/profile`,
+  `/load`) drops what was learned and re-probes.
 - **Skills are global and always available:** `reg.createSkill(name, description, text)`
   puts a one-line index entry in every system prompt (main agent and subagents alike)
   and registers `list_skills`/`read_skill` in every profile's registry — outside the

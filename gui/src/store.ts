@@ -468,7 +468,7 @@ function emptyState(): UIState {
     activeProfile: "",
     activeModel: null,
     cwd: "",
-    context: { promptTokens: null, maxContext: 0 },
+    context: { promptTokens: null, maxContext: null },
     profiles: [],
     models: [],
     skills: [],

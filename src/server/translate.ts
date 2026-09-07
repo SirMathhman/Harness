@@ -62,7 +62,7 @@ export function buildUIState(
     cwd: process.cwd(),
     context: {
       promptTokens: session.lastPromptTokens,
-      maxContext: session.config.maxContext,
+      maxContext: session.contextWindow,
     },
     profiles: handle.profileEntries().map((p) => ({
       name: p.name,

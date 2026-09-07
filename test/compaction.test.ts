@@ -15,20 +15,27 @@ import type { LLMClient } from "../src/llm/client.js";
 import { graphFrom } from "./helpers.js";
 import type { Config, Message } from "../src/types.js";
 
-const cfg: Config = { ...DEFAULT_CONFIG, model: "m", maxContext: 8192 };
+const cfg: Config = { ...DEFAULT_CONFIG, model: "m" };
+const WINDOW = 8192;
 
 describe("compaction (AC 8)", () => {
   test("shouldCompact is false below threshold", () => {
-    expect(shouldCompact(100, cfg)).toBe(false);
+    expect(shouldCompact(100, WINDOW, cfg)).toBe(false);
   });
 
   test("shouldCompact is true above threshold", () => {
     // threshold 0.8 * 8192 = 6553.6
-    expect(shouldCompact(7000, cfg)).toBe(true);
+    expect(shouldCompact(7000, WINDOW, cfg)).toBe(true);
   });
 
   test("shouldCompact is false when tokens unknown", () => {
-    expect(shouldCompact(null, cfg)).toBe(false);
+    expect(shouldCompact(null, WINDOW, cfg)).toBe(false);
+  });
+
+  test("shouldCompact is false when the window is unknown", () => {
+    // The backend has not reported one yet (v0.9.0 spec §2, §3): there is
+    // no threshold to compare against and nothing to guess.
+    expect(shouldCompact(999999, null, cfg)).toBe(false);
   });
 
   test("findKeepBoundary keeps the last N messages", () => {
@@ -127,20 +134,23 @@ describe("compaction (AC 8)", () => {
 });
 
 describe("compaction in the agent loop (spec v0.2.0 §3.3–3.5)", () => {
-  // A session whose tiny window (maxContext 10, threshold 0.5) makes the very
+  // A session whose tiny window (10 tokens, threshold 0.5) makes the very
   // first prompt-token count exceed the threshold, so compaction runs before
   // the second LLM call.
   function compactingSession() {
     return createSession({
       graph: graphFrom((reg) => {
-        reg.setRuntime({ compactThreshold: 0.5, compactKeepMessages: 2 });
+        reg.setRuntime({
+          contextWindow: 10,
+          compactThreshold: 0.5,
+          compactKeepMessages: 2,
+        });
         reg.createConnection(
           reg.builtins.defaultProfile,
           reg.createModel({
             name: "test-model",
             baseUrl: "http://localhost:8080",
             apiKey: "",
-            maxContext: 10,
           }),
         );
       }),

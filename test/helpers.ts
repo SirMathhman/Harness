@@ -23,15 +23,12 @@ export function modelGraph(
   extra: (reg: Registry) => void = () => {},
 ): ResourceGraph {
   return graphFrom((reg) => {
-    reg.setRuntime(runtime);
+    // Tests never talk to a real backend, so nothing can report a context
+    // window; pin one so compaction has a threshold to work against.
+    reg.setRuntime({ contextWindow: 8192, ...runtime });
     reg.createConnection(
       reg.builtins.defaultProfile,
-      reg.createModel({
-        name: "test-model",
-        baseUrl,
-        apiKey: "",
-        maxContext: 8192,
-      }),
+      reg.createModel({ name: "test-model", baseUrl, apiKey: "" }),
     );
     extra(reg);
   });
@@ -52,11 +49,11 @@ export function profileGraph(
   ) => void,
 ): ResourceGraph {
   return graphFrom((reg) => {
+    reg.setRuntime({ contextWindow: 8192 });
     const model = reg.createModel({
       name: "test-model",
       baseUrl: "http://localhost:8080",
       apiKey: "",
-      maxContext: 8192,
     });
     const profile = (name: string, def: Partial<ProfileDef> = {}) => {
       const id = reg.createProfile({ name, systemPrompt: "", ...def });

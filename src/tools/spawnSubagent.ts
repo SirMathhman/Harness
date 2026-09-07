@@ -7,7 +7,6 @@ export interface ParentModel {
   model: string | null;
   apiKey: string;
   temperature: number;
-  maxContext: number;
   /**
    * The `ResourceId` of the parent's active Model resource, or `null` when it
    * has none. Carried so a subagent that *inherits* this model also inherits

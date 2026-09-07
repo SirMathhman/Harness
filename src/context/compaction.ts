@@ -2,14 +2,21 @@ import type { Config, Message } from "../types.js";
 
 /**
  * Determine whether compaction should run given the last reported prompt token
- * count (spec §3.5).
+ * count and the context window the session is running against (spec §3.5).
+ *
+ * A `null` window means the backend has not reported one yet (a llama.cpp
+ * router only knows it once the model is loaded). There is no threshold to
+ * compare against and no default to guess, so compaction stays off until the
+ * session learns the real number (v0.9.0 spec §2, §3).
  */
 export function shouldCompact(
   promptTokens: number | null | undefined,
+  contextWindow: number | null,
   config: Config,
 ): boolean {
   if (promptTokens === null || promptTokens === undefined) return false;
-  return promptTokens > config.compactThreshold * config.maxContext;
+  if (contextWindow === null) return false;
+  return promptTokens > config.compactThreshold * contextWindow;
 }
 
 /**

@@ -73,7 +73,7 @@ describe("two-tier config loading (config spec §3.2, §3.10)", () => {
       global: {
         ".vise/index.ts": `
           export default (reg) => {
-            reg.createModel({ name: "local", baseUrl: "http://localhost:8080", apiKey: "", maxContext: 8192 });
+            reg.createModel({ name: "local", baseUrl: "http://localhost:8080", apiKey: "" });
           };`,
       },
       project: {
@@ -349,7 +349,6 @@ describe("the implicit Agent profile (config spec §3.7)", () => {
         name: "m",
         baseUrl: "http://localhost:8080",
         apiKey: "",
-        maxContext: 8192,
       });
       reg.createConnection(reg.builtins.defaultProfile, model);
       const other = reg.createProfile({ name: "other", systemPrompt: "o" });
@@ -365,7 +364,7 @@ describe("the implicit Agent profile (config spec §3.7)", () => {
       global: {
         ".vise/index.ts": `
           export default (reg) => {
-            const model = reg.createModel({ name: "m", baseUrl: "http://localhost:8080", apiKey: "", maxContext: 8192 });
+            const model = reg.createModel({ name: "m", baseUrl: "http://localhost:8080", apiKey: "" });
             const p = reg.createProfile({ name: "local-dev", systemPrompt: "g" });
             reg.createConnection(p, model);
           };`,
@@ -373,7 +372,7 @@ describe("the implicit Agent profile (config spec §3.7)", () => {
       project: {
         ".vise/index.ts": `
           export default (reg) => {
-            const model = reg.createModel({ name: "m2", baseUrl: "http://localhost:8080", apiKey: "", maxContext: 8192 });
+            const model = reg.createModel({ name: "m2", baseUrl: "http://localhost:8080", apiKey: "" });
             const p = reg.createProfile({ name: "implement", systemPrompt: "p" });
             reg.createConnection(p, model);
           };`,

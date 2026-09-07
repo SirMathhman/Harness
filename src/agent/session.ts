@@ -7,7 +7,6 @@ import {
   defaultGraph,
   defaultProfileName,
   findModelsByRef,
-  MissingMaxContextError,
   ModelNotAvailableError,
   ProfileHasNoModelError,
   profileEntries,
@@ -23,6 +22,7 @@ import {
 } from "../profiles/index.js";
 import { DEFAULT_CONFIG } from "../config/defaults.js";
 import {
+  contextProbeFor,
   materializeProfile,
   type AgentContext,
   type SubagentRender,
@@ -86,8 +86,6 @@ export interface SessionHandle {
    *
    * @throws UnknownProfileError when no such profile exists.
    * @throws ProfileHasNoModelError when the profile resolves to no model.
-   * @throws MissingMaxContextError when the resolved model reports no
-   *   context-window size.
    *   Either way the session is left untouched.
    */
   switchProfile(name: string): void;
@@ -101,15 +99,14 @@ export interface SessionHandle {
   /**
    * Switch the active model to the one named by `ref` — a bare model name, or
    * `<provider>/<name>` to disambiguate (providers spec §3.8) — adopting its
-   * whole resource (`baseUrl`, `apiKey`, `temperature`, `maxContext`) into the
-   * session's config. The conversation and system prompt are kept.
+   * whole resource (`baseUrl`, `apiKey`, `temperature`) into the session's
+   * config. The conversation and system prompt are kept, and the context
+   * window is re-learned from the new model's backend.
    *
    * @throws UnknownModelError when no model matches `ref`.
    * @throws AmbiguousModelError when `ref` matches more than one provider.
    * @throws ModelNotAvailableError when the match is outside the active
    *   profile's `models` whitelist.
-   * @throws MissingMaxContextError when the matched model reports no
-   *   context-window size.
    *   In every case the session is left untouched.
    */
   switchModel(ref: string): void;
@@ -133,8 +130,6 @@ export interface SessionHandle {
    *
    * @throws UnknownProfileError when no such profile exists.
    * @throws ProfileHasNoModelError when the profile resolves to no model.
-   * @throws MissingMaxContextError when the resolved model reports no
-   *   context-window size.
    */
   loadConversation(
     messages: Message[],
@@ -178,6 +173,12 @@ export function createSession(options: SessionOptions = {}): SessionHandle {
     messages: [{ role: "system", content: initial.systemPrompt }],
     config: initial.config,
     lastPromptTokens: null,
+    // A pinned window if the config sets one, else unknown until the backend
+    // reports it after the first completion (v0.9.0 spec §2, §3).
+    contextWindow: initial.config.contextWindow,
+    ...(initial.probeContextWindow !== undefined
+      ? { probeContextWindow: initial.probeContextWindow }
+      : {}),
     hooks: initial.hooks,
     depth: 0,
     profile: startingProfile,
@@ -243,6 +244,7 @@ export function createSession(options: SessionOptions = {}): SessionHandle {
       session.hooks = next.hooks;
       session.profile = profile;
       session.lastPromptTokens = null;
+      adoptContextSource(session, next);
       handle.registry = next.registry;
       handle.manager = next.manager;
       handle.profile = profile;
@@ -268,6 +270,7 @@ export function createSession(options: SessionOptions = {}): SessionHandle {
       session.config = next.config;
       session.hooks = next.hooks;
       session.profile = name;
+      adoptContextSource(session, next);
       handle.registry = next.registry;
       handle.manager = next.manager;
       handle.profile = name;
@@ -302,9 +305,6 @@ export function createSession(options: SessionOptions = {}): SessionHandle {
       const resource = graph.resources.get(match.id);
       const def = resource?.kind === "model" ? resource.def : undefined;
       if (def === undefined) throw new UnknownModelError(ref);
-      if (def.maxContext === undefined) {
-        throw new MissingMaxContextError(def.name, def.baseUrl);
-      }
 
       session.config = {
         ...session.config,
@@ -312,9 +312,11 @@ export function createSession(options: SessionOptions = {}): SessionHandle {
         baseUrl: def.baseUrl,
         apiKey: def.apiKey,
         temperature: def.temperature ?? DEFAULT_CONFIG.temperature,
-        maxContext: def.maxContext,
       };
       activeModelId = match.id;
+      // A different model means a different window; forget the one we learned
+      // and re-probe against the new model on its first completion.
+      adoptContextSource(session, contextProbeFor(graph, match.id, def.name));
     },
   };
 
@@ -324,6 +326,27 @@ export function createSession(options: SessionOptions = {}): SessionHandle {
   }
 
   return handle;
+}
+
+/**
+ * Re-point a live session at a new source for its context window.
+ *
+ * The window is observed state, not configuration: whenever the session's
+ * model changes underneath it, whatever was learned describes the old backend
+ * and must be dropped. The session falls back to a pinned
+ * `config.contextWindow` if there is one, and otherwise re-learns from the new
+ * model's provider on its next completion (v0.9.0 spec §2, §3).
+ */
+function adoptContextSource(
+  session: Session,
+  source: { probeContextWindow?: () => Promise<number | null> },
+): void {
+  session.contextWindow = session.config.contextWindow;
+  if (source.probeContextWindow !== undefined) {
+    session.probeContextWindow = source.probeContextWindow;
+  } else {
+    delete session.probeContextWindow;
+  }
 }
 
 /** The name of the Model resource behind `id`, or `undefined`. */

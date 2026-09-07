@@ -51,7 +51,6 @@ const stubParentModel = {
   model: "parent-model",
   apiKey: "",
   temperature: 0.2,
-  maxContext: 8192,
 };
 
 /** A spawn tool with the boring options filled in. */
@@ -224,7 +223,6 @@ describe("subagent runner (§3.8.2, §3.8.5)", () => {
       ...DEFAULT_CONFIG,
       model: "test-model",
       maxIterations: 2,
-      maxContext: 8192,
     };
     const { registry } = buildToolRegistry(cfg);
     const mkSession = (): Session => ({

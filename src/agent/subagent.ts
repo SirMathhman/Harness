@@ -18,7 +18,6 @@ import { HookManager, type RegisteredHook } from "../hooks/index.js";
 import type { Provider } from "../providers/index.js";
 import {
   availableModelIds,
-  MissingMaxContextError,
   allProfileNames,
   resolveProfile,
   systemPromptOf,
@@ -118,8 +117,7 @@ export function identitySection(
   return (
     `${IDENTITY_HEADER}\n` +
     `You are Vise, a local coding-agent harness. You are running model ` +
-    `"${config.model}"${via} at ${config.baseUrl}, with a ` +
-    `${config.maxContext}-token context window.`
+    `"${config.model}"${via} at ${config.baseUrl}.`
   );
 }
 
@@ -145,6 +143,11 @@ export interface MaterializedProfile {
   hooks: HookManager;
   /** The system prompt the agent runs under. */
   systemPrompt: string;
+  /**
+   * Asks the active model's provider for its context window, or absent when
+   * the model has no provider to ask. Becomes `Session.probeContextWindow`.
+   */
+  probeContextWindow?: () => Promise<number | null>;
 }
 
 /**
@@ -219,7 +222,6 @@ export function materializeProfile(
           model: config.model,
           apiKey: config.apiKey,
           temperature: config.temperature,
-          maxContext: config.maxContext,
           modelId: resolved.modelId,
         },
       }),
@@ -243,7 +245,28 @@ export function materializeProfile(
       ),
       ctx.graph.skills,
     ),
+    ...contextProbeFor(ctx.graph, resolved.modelId, config.model),
   };
+}
+
+/**
+ * The `probeContextWindow` an agent on `modelId` runs with, or nothing when
+ * there is no provider to ask.
+ *
+ * The context window is not in the resource graph: it belongs to the model as
+ * the server currently has it loaded, so the only way to learn it is to ask
+ * the provider at runtime (v0.9.0 spec §2, §3). Exported because `/model`
+ * re-points a live session at a different model without re-materializing it.
+ */
+export function contextProbeFor(
+  graph: ResourceGraph,
+  modelId: ResourceId | null,
+  model: string | null,
+): { probeContextWindow?: () => Promise<number | null> } {
+  const provider = activeProvider(graph, modelId);
+  const ask = provider?.contextWindow;
+  if (provider === undefined || ask === undefined || model === null) return {};
+  return { probeContextWindow: () => ask.call(provider, model) };
 }
 
 /**
@@ -307,13 +330,9 @@ export function makeSubagentRunner(
       });
     } catch (err) {
       // The tool validates the name first, so an unknown profile is only
-      // reachable if the graph changed underneath us; a missing context size
-      // is a real, reachable condition when the whitelist picks a model that
-      // reports none. Either way it's data, never control (E18-E20).
-      if (
-        err instanceof UnknownProfileError ||
-        err instanceof MissingMaxContextError
-      ) {
+      // reachable if the graph changed underneath us. Either way it's data,
+      // never control (E18-E20).
+      if (err instanceof UnknownProfileError) {
         emit({ kind: "end", ok: false, label: "failed" });
         return `subagent failed: ${err.message}`;
       }
@@ -333,7 +352,6 @@ export function makeSubagentRunner(
           model: opts.parentModel.model,
           apiKey: opts.parentModel.apiKey,
           temperature: opts.parentModel.temperature,
-          maxContext: opts.parentModel.maxContext,
         },
       };
     }
@@ -357,6 +375,12 @@ export function makeSubagentRunner(
       messages: [{ role: "system", content: materialized.systemPrompt }],
       config,
       lastPromptTokens: null,
+      // A subagent starts where the main session starts: a pinned window if
+      // the user set one, otherwise unknown until its own first completion.
+      contextWindow: config.contextWindow,
+      ...(materialized.probeContextWindow !== undefined
+        ? { probeContextWindow: materialized.probeContextWindow }
+        : {}),
       hooks,
       depth: opts.depth,
       profile: resolved.name,

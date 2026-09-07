@@ -90,6 +90,9 @@ export async function runTurn(
 
     // Track usage for compaction (spec §3.5).
     session.lastPromptTokens = response.usage?.prompt_tokens ?? null;
+    // The completion just forced the backend to load the model, so this is the
+    // first moment it can report a context window (v0.9.0 spec §2, §3).
+    await learnContextWindow(session);
 
     // Append the assistant message to history.
     const assistantMsg: Message = {
@@ -182,6 +185,30 @@ export async function runTurn(
 }
 
 /**
+ * Fill in `session.contextWindow` from the backend once, when it is unknown.
+ *
+ * The window is a property of a *loaded* model, not of the model definition:
+ * a llama.cpp router lists models it has never loaded and only picks a window
+ * at load time. So the session asks after a completion, when the model is
+ * guaranteed to be resident. A pinned `config.contextWindow`, or a window
+ * already learned, short-circuits this; a provider that cannot say leaves it
+ * `null` and compaction simply stays off (v0.9.0 spec §2, §3).
+ *
+ * Never throws: the probe is best-effort, and a turn must not fail because the
+ * server was slow to answer a diagnostic question.
+ */
+async function learnContextWindow(session: Session): Promise<void> {
+  if (session.contextWindow !== null) return;
+  const probe = session.probeContextWindow;
+  if (probe === undefined) return;
+  try {
+    session.contextWindow = await probe();
+  } catch {
+    session.contextWindow = null;
+  }
+}
+
+/**
  * Apply context compaction if the last prompt token count exceeded the
  * threshold. Summarizes older messages via a recap LLM call; falls back to
  * truncation if that call fails (E7).
@@ -193,7 +220,14 @@ async function maybeCompact(
   signal?: AbortSignal,
   client: LLMClient = defaultLLMClient,
 ): Promise<void> {
-  if (!shouldCompact(session.lastPromptTokens, session.config)) return;
+  if (
+    !shouldCompact(
+      session.lastPromptTokens,
+      session.contextWindow,
+      session.config,
+    )
+  )
+    return;
 
   callbacks.onCompacting?.();
   // on:compaction (hooks §3.1): advisory output lands before the recap call.

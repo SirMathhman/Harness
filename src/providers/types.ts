@@ -45,6 +45,23 @@ export interface Provider {
   hooks?(): Hook[];
 
   /**
+   * Ask the backend what context window `model` is currently running with, in
+   * tokens (v0.9.0 spec §2, §3).
+   *
+   * The window is a property of a *loaded* model on a server, not of a model
+   * definition: a llama.cpp router lists models it has never loaded, and with
+   * `--fit on` the window is only chosen at load time from the memory actually
+   * available. So this is asked lazily, after a completion has forced the load,
+   * and may be asked again later.
+   *
+   * Implementations MUST be read-only — never force a load — and MUST never
+   * throw: "cannot say (yet)" is reported by resolving to `null`. Default:
+   * absent, i.e. the backend never reports one and only `setRuntime({
+   * contextWindow })` can supply it.
+   */
+  contextWindow?(model: string): Promise<number | null>;
+
+  /**
    * True when subagent runs must be serialized while this provider is active
    * (KV spec §3.7, §8.4).
    *

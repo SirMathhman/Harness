@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { createSession } from "../src/agent/session.js";
-import { LlamaProvider } from "../src/providers/index.js";
+import { runTurn } from "../src/agent/loop.js";
+import { LlamaProvider, type Provider } from "../src/providers/index.js";
 import type { Config, LLMClient } from "../src/llm/client.js";
 import {
   AmbiguousModelError,
@@ -42,6 +43,120 @@ const finish = (answer: string): Awaited<ReturnType<LLMClient["chat"]>> => ({
   usage: null,
 });
 
+describe("the context window is learned at runtime (v0.9.0 spec §2, §3)", () => {
+  /** A graph whose one discovered model comes from a provider under test. */
+  function graphWith(provider: Partial<Provider> & { name: string }) {
+    return withDiscovered(
+      (reg) => {
+        reg.addProvider({
+          name: provider.name,
+          async discoverModels() {
+            return [];
+          },
+          ...provider,
+        });
+      },
+      {
+        [provider.name]: [
+          { name: "m", baseUrl: "http://x", apiKey: "" },
+        ] as ModelDef[],
+      },
+    );
+  }
+
+  test("a provider that reports no window still starts a session (the router case)", () => {
+    // A llama.cpp router lists models it has never loaded, so discovery can
+    // report no window at all. That used to be fatal at startup.
+    const handle = createSession({
+      graph: graphWith({ name: "llama" }),
+      client: { async chat() { return finish("ok"); } },
+    });
+    expect(handle.session.config.model).toBe("m");
+    expect(handle.session.contextWindow).toBe(null);
+  });
+
+  test("the window is learned from the provider after the first completion", async () => {
+    const asked: string[] = [];
+    const handle = createSession({
+      graph: graphWith({
+        name: "llama",
+        async contextWindow(model: string) {
+          asked.push(model);
+          // Unloaded on the first ask, loaded by the second.
+          return asked.length === 1 ? null : 32768;
+        },
+      }),
+      client: { async chat() { return finish("ok"); } },
+    });
+    const client: LLMClient = { async chat() { return finish("ok"); } };
+
+    await runTurn(handle.session, "one", handle.registry, {}, undefined, client);
+    expect(asked).toEqual(["m"]);
+    expect(handle.session.contextWindow).toBe(null);
+
+    await runTurn(handle.session, "two", handle.registry, {}, undefined, client);
+    expect(handle.session.contextWindow).toBe(32768);
+
+    // Once known it is never re-asked.
+    await runTurn(handle.session, "three", handle.registry, {}, undefined, client);
+    expect(asked).toHaveLength(2);
+  });
+
+  test("a probe that throws leaves the window unknown, not the turn failed", async () => {
+    const handle = createSession({
+      graph: graphWith({
+        name: "llama",
+        async contextWindow() {
+          throw new Error("boom");
+        },
+      }),
+    });
+    const client: LLMClient = { async chat() { return finish("ok"); } };
+    const result = await runTurn(
+      handle.session,
+      "t",
+      handle.registry,
+      {},
+      undefined,
+      client,
+    );
+    expect(result.answer).toBe("ok");
+    expect(handle.session.contextWindow).toBe(null);
+  });
+
+  test("a pinned setRuntime window wins and is never probed", async () => {
+    let asked = 0;
+    const graph = withDiscovered(
+      (reg) => {
+        reg.setRuntime({ contextWindow: 4096 });
+        reg.addProvider({
+          name: "llama",
+          async discoverModels() {
+            return [];
+          },
+          async contextWindow() {
+            asked++;
+            return 32768;
+          },
+        });
+      },
+      { llama: [{ name: "m", baseUrl: "http://x", apiKey: "" }] },
+    );
+    const handle = createSession({ graph });
+    expect(handle.session.contextWindow).toBe(4096);
+    await runTurn(
+      handle.session,
+      "t",
+      handle.registry,
+      {},
+      undefined,
+      { async chat() { return finish("ok"); } },
+    );
+    expect(handle.session.contextWindow).toBe(4096);
+    expect(asked).toBe(0);
+  });
+});
+
 describe("LlamaProvider (providers spec §3.2)", () => {
   test("discovers every model from GET /v1/models, including router mode", async () => {
     const server = Bun.serve({
@@ -62,16 +177,14 @@ describe("LlamaProvider (providers spec §3.2)", () => {
     }
   });
 
-  test("surfaces llama.cpp's meta.n_ctx as maxContext, omitting it when absent", async () => {
+  test("discovery reports only where a model lives, never its window", async () => {
+    // Even when the server does report meta.n_ctx, discovery drops it: the
+    // window belongs to the loaded model and is asked for separately.
     const server = Bun.serve({
       port: 0,
       fetch() {
         return Response.json({
-          data: [
-            { id: "with-ctx", meta: { n_ctx: 88576 } },
-            { id: "no-ctx" },
-            { id: "bad-ctx", meta: { n_ctx: -1 } },
-          ],
+          data: [{ id: "with-ctx", meta: { n_ctx: 88576 } }, { id: "no-ctx" }],
         });
       },
     });
@@ -79,13 +192,73 @@ describe("LlamaProvider (providers spec §3.2)", () => {
       const url = `http://127.0.0.1:${server.port}`;
       const provider = new LlamaProvider({ url });
       expect(await provider.discoverModels()).toEqual([
-        { name: "with-ctx", baseUrl: url, apiKey: "", maxContext: 88576 },
+        { name: "with-ctx", baseUrl: url, apiKey: "" },
         { name: "no-ctx", baseUrl: url, apiKey: "" },
-        { name: "bad-ctx", baseUrl: url, apiKey: "" },
       ]);
     } finally {
       server.stop();
     }
+  });
+
+  describe("contextWindow (v0.9.0 spec §2, §3)", () => {
+    /** A stub llama.cpp exposing `/v1/models` and `/props`. */
+    function serve(models: unknown, props: unknown) {
+      return Bun.serve({
+        port: 0,
+        fetch(req) {
+          const { pathname } = new URL(req.url);
+          if (pathname === "/v1/models") return Response.json(models);
+          if (pathname === "/props") return Response.json(props);
+          return new Response("nope", { status: 404 });
+        },
+      });
+    }
+
+    test("reads meta.n_ctx of the loaded model", async () => {
+      const server = serve(
+        { data: [{ id: "a" }, { id: "b", meta: { n_ctx: 88576 } }] },
+        { role: "router", default_generation_settings: { n_ctx: 0 } },
+      );
+      try {
+        const url = `http://127.0.0.1:${server.port}`;
+        expect(await new LlamaProvider({ url }).contextWindow("b")).toBe(88576);
+      } finally {
+        server.stop();
+      }
+    });
+
+    test("falls back to /props on a plain single-model server", async () => {
+      const server = serve(
+        { data: [{ id: "a" }] },
+        { default_generation_settings: { n_ctx: 4096 } },
+      );
+      try {
+        const url = `http://127.0.0.1:${server.port}`;
+        expect(await new LlamaProvider({ url }).contextWindow("a")).toBe(4096);
+      } finally {
+        server.stop();
+      }
+    });
+
+    test("is null for a router model that is not loaded yet", async () => {
+      // The exact shape a llama.cpp router serves before anything is loaded:
+      // no `meta` on any entry, and a /props that describes the router.
+      const server = serve(
+        { data: [{ id: "a", status: { value: "unloaded" } }] },
+        { role: "router", default_generation_settings: { n_ctx: 0 } },
+      );
+      try {
+        const url = `http://127.0.0.1:${server.port}`;
+        expect(await new LlamaProvider({ url }).contextWindow("a")).toBe(null);
+      } finally {
+        server.stop();
+      }
+    });
+
+    test("is null for an unreachable server, never a throw", async () => {
+      const provider = new LlamaProvider({ url: "http://127.0.0.1:1" });
+      expect(await provider.contextWindow("a")).toBe(null);
+    });
   });
 
   test("returns [] when the server is unreachable (E-P1)", async () => {
@@ -270,8 +443,8 @@ describe("profile model-selection whitelist (providers spec §3.4)", () => {
       },
       {
         llama: [
-          { name: "a", baseUrl: "http://x", apiKey: "", maxContext: 8192 },
-          { name: "b", baseUrl: "http://x", apiKey: "", maxContext: 8192 },
+          { name: "a", baseUrl: "http://x", apiKey: "" },
+          { name: "b", baseUrl: "http://x", apiKey: "" },
         ],
       },
     );
@@ -292,8 +465,8 @@ describe("profile model-selection whitelist (providers spec §3.4)", () => {
       },
       {
         llama: [
-          { name: "a", baseUrl: "http://x", apiKey: "", maxContext: 8192 },
-          { name: "b", baseUrl: "http://x", apiKey: "", maxContext: 8192 },
+          { name: "a", baseUrl: "http://x", apiKey: "" },
+          { name: "b", baseUrl: "http://x", apiKey: "" },
         ],
       },
     );
@@ -327,11 +500,11 @@ describe("profile model-selection whitelist (providers spec §3.4)", () => {
       },
       {
         llama: [
-          { name: "a", baseUrl: "http://x", apiKey: "", maxContext: 8192 },
-          { name: "b", baseUrl: "http://x", apiKey: "", maxContext: 8192 },
+          { name: "a", baseUrl: "http://x", apiKey: "" },
+          { name: "b", baseUrl: "http://x", apiKey: "" },
         ],
         openrouter: [
-          { name: "c", baseUrl: "http://y", apiKey: "", maxContext: 8192 },
+          { name: "c", baseUrl: "http://y", apiKey: "" },
         ],
       },
     );
@@ -357,8 +530,8 @@ describe("profile model-selection whitelist (providers spec §3.4)", () => {
       },
       {
         llama: [
-          { name: "qwen-7b", baseUrl: "http://x", apiKey: "", maxContext: 8192 },
-          { name: "llama-3", baseUrl: "http://x", apiKey: "", maxContext: 8192 },
+          { name: "qwen-7b", baseUrl: "http://x", apiKey: "" },
+          { name: "llama-3", baseUrl: "http://x", apiKey: "" },
         ],
       },
     );
@@ -381,7 +554,7 @@ describe("profile model-selection whitelist (providers spec §3.4)", () => {
       },
       {
         llama: [
-          { name: "a", baseUrl: "http://x", apiKey: "", maxContext: 8192 },
+          { name: "a", baseUrl: "http://x", apiKey: "" },
         ],
       },
     );
@@ -444,10 +617,10 @@ describe("/model across providers (providers spec §3.8)", () => {
       },
       {
         llama_a: [
-          { name: "shared", baseUrl: "http://a", apiKey: "", maxContext: 8192 },
+          { name: "shared", baseUrl: "http://a", apiKey: "" },
         ],
         llama_b: [
-          { name: "shared", baseUrl: "http://b", apiKey: "", maxContext: 8192 },
+          { name: "shared", baseUrl: "http://b", apiKey: "" },
         ],
       },
     );
@@ -473,7 +646,6 @@ describe("/model across providers (providers spec §3.8)", () => {
             name: "peculiar-ragdoll/Dirk-Qwen3.8-27B-GGUF:Q4_K_XL",
             baseUrl: "http://x",
             apiKey: "",
-            maxContext: 8192,
           },
         ],
       },
@@ -503,8 +675,8 @@ describe("/model across providers (providers spec §3.8)", () => {
       },
       {
         llama: [
-          { name: "a", baseUrl: "http://x", apiKey: "", maxContext: 8192 },
-          { name: "b", baseUrl: "http://x", apiKey: "", maxContext: 8192 },
+          { name: "a", baseUrl: "http://x", apiKey: "" },
+          { name: "b", baseUrl: "http://x", apiKey: "" },
         ],
       },
     );
@@ -532,7 +704,6 @@ describe("subagent model inheritance (providers spec §3.7)", () => {
             baseUrl: "http://a",
             apiKey: "k1",
             temperature: 0.3,
-            maxContext: 4096,
           },
         ],
       },
@@ -556,7 +727,6 @@ describe("subagent model inheritance (providers spec §3.7)", () => {
     expect(seenConfigs[0].model).toBe("a");
     expect(seenConfigs[0].apiKey).toBe("k1");
     expect(seenConfigs[0].temperature).toBe(0.3);
-    expect(seenConfigs[0].maxContext).toBe(4096);
   });
 
   test("a non-empty whitelist matching no models falls back to the parent's model, with a warning (E-P8)", async () => {
@@ -582,7 +752,7 @@ describe("subagent model inheritance (providers spec §3.7)", () => {
       },
       {
         llama: [
-          { name: "a", baseUrl: "http://a", apiKey: "", maxContext: 8192 },
+          { name: "a", baseUrl: "http://a", apiKey: "" },
         ],
       },
     );
@@ -620,8 +790,8 @@ describe("subagent model inheritance (providers spec §3.7)", () => {
       },
       {
         llama: [
-          { name: "a", baseUrl: "http://a", apiKey: "", maxContext: 8192 },
-          { name: "b", baseUrl: "http://b", apiKey: "", maxContext: 8192 },
+          { name: "a", baseUrl: "http://a", apiKey: "" },
+          { name: "b", baseUrl: "http://b", apiKey: "" },
         ],
       },
     );

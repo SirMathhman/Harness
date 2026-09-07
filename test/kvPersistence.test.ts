@@ -187,7 +187,7 @@ function providerGraph(provider: LlamaProvider, baseUrl: string): ResourceGraph 
   return addDiscoveredModels(graph, [
     {
       providerId,
-      models: [{ name: "test-model", baseUrl, apiKey: "", maxContext: 8192 }],
+      models: [{ name: "test-model", baseUrl, apiKey: "" }],
     },
   ]);
 }
@@ -241,7 +241,6 @@ function runOpts(graph: ResourceGraph) {
       model: "test-model",
       apiKey: "",
       temperature: 0.2,
-      maxContext: 8192,
       modelId: model?.id ?? null,
     },
   };
@@ -591,7 +590,6 @@ async function spawnOverlap(serializeRuns: boolean): Promise<number> {
         model: "test-model",
         apiKey: "",
         temperature: 0.2,
-        maxContext: 8192,
       },
     }),
   );

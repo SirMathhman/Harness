@@ -106,8 +106,6 @@ export interface ModelDef {
   apiKey: string;
   /** Default sampling temperature. A connection prop can override it. */
   temperature?: number;
-  /** Context-window size in tokens. A connection prop can override it. */
-  maxContext?: number;
   /**
    * The `ResourceId` of the `Provider` that discovered this model (providers
    * spec §3.3). Set by the harness at startup; never set by the config
@@ -126,6 +124,15 @@ export interface ModelDef {
  * settings carry the rest of what the agent loop needs.
  */
 export interface RuntimeSettings {
+  /**
+   * Pin the context window, in tokens, instead of believing the backend.
+   *
+   * `null` (the default) means "ask the server": the window is a property of
+   * a *loaded* model, not of a model definition, so Vise discovers it at
+   * runtime through `Provider.contextWindow()` (v0.9.0 spec §2, §3). Set a
+   * number here only for a backend that never reports one.
+   */
+  contextWindow: number | null;
   /** Fraction of the context window that triggers compaction, in (0, 1]. */
   compactThreshold: number;
   /** How many recent messages compaction keeps verbatim. */

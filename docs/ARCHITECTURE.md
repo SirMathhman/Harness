@@ -15,7 +15,7 @@ current state. It should always sit ahead of the code.
 | **Connection** | A directed edge between two resources, optionally carrying props. Only Profile→Hook, Profile→Tool, Profile→Model, and Hook→Tool are valid. |
 | **Profile** | A named agent configuration: system prompt, tool set, hook set, model whitelist, and subagent policy. |
 | **Provider** | A config-time convention (not a graph node) that discovers models at startup and may contribute hooks. Registered via `reg.addProvider()`. |
-| **Model** | An LLM endpoint (name, baseUrl, apiKey, temperature, maxContext). Either declared directly or discovered by a provider. |
+| **Model** | An LLM endpoint (name, baseUrl, apiKey, temperature). Either declared directly or discovered by a provider. The context window is deliberately absent: it belongs to the model as the server has it loaded, and is learned at runtime. |
 | **Hook** | A lifecycle handler subscribed to one or more `HookEvent`s. Per-profile, except provider-contributed hooks which merge into every session. |
 | **Tool** | A callable capability exposed to the model. Built-in or user-defined. Mutating tools run sequentially; read-only tools run concurrently. |
 | **Skill** | A named body of deferred context. Global side-channel (not a graph node); visible to every agent at every depth. |

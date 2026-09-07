@@ -5,7 +5,6 @@ import { HookManager } from "../hooks/index.js";
 import {
   AmbiguousModelError,
   IMPLICIT_PROFILE_NAME,
-  MissingMaxContextError,
   ModelNotAvailableError,
   ProfileHasNoModelError,
   UnknownModelError,
@@ -184,11 +183,19 @@ export function helpText(): string {
 
 /**
  * Format the context-usage line for the `/context` command: prompt tokens used
- * on the most recent LLM call vs. the configured context window.
+ * on the most recent LLM call vs. the window the session is running against.
+ *
+ * The window is learned from the backend after the first completion, so before
+ * that — and on a backend that never reports one — it is genuinely unknown and
+ * says so rather than showing a made-up number (v0.9.0 spec §2, §3).
  */
 export function contextUsageLine(session: Session): string {
   const used = session.lastPromptTokens;
-  const total = session.config.maxContext;
+  const total = session.contextWindow;
+  if (total === null) {
+    const usage = used === null ? "no LLM call yet" : `${used} tokens used`;
+    return `context: ${usage} (window not reported by the server yet)`;
+  }
   if (used === null) {
     return `context: no LLM call yet (window ${total} tokens)`;
   }
@@ -218,8 +225,7 @@ export function profileCommand(
   } catch (err) {
     if (
       err instanceof UnknownProfileError ||
-      err instanceof ProfileHasNoModelError ||
-      err instanceof MissingMaxContextError
+      err instanceof ProfileHasNoModelError
     ) {
       return err.message;
     }
@@ -271,8 +277,7 @@ export function modelCommand(
     if (
       err instanceof UnknownModelError ||
       err instanceof AmbiguousModelError ||
-      err instanceof ModelNotAvailableError ||
-      err instanceof MissingMaxContextError
+      err instanceof ModelNotAvailableError
     ) {
       return err.message;
     }
@@ -497,8 +502,7 @@ export function loadCommand(ctx: ReplContext, args: string[] = []): string {
   } catch (err) {
     if (
       err instanceof UnknownProfileError ||
-      err instanceof ProfileHasNoModelError ||
-      err instanceof MissingMaxContextError
+      err instanceof ProfileHasNoModelError
     ) {
       return err.message;
     }

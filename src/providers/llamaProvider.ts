@@ -53,13 +53,24 @@ export interface LlamaProviderOptions {
 /** One entry of llama.cpp's `GET /v1/models` response (wire shape). */
 interface LlamaModelEntry {
   id: string;
-  /** llama.cpp metadata; `n_ctx` is the runtime context window in tokens. */
+  /**
+   * llama.cpp metadata; `n_ctx` is the runtime context window in tokens.
+   * Present only once the model is actually loaded — a router lists models it
+   * has never loaded, and those entries carry no `meta` at all.
+   */
   meta?: { n_ctx?: number };
 }
 
 /** The `GET /v1/models` response body (wire shape). */
 interface LlamaModelsResponse {
   data?: LlamaModelEntry[];
+}
+
+/** The `GET /props` response body, narrowed to what we read (wire shape). */
+interface LlamaPropsResponse {
+  /** `"router"` on a multi-model router, absent on a plain single-model server. */
+  role?: string;
+  default_generation_settings?: { n_ctx?: number };
 }
 
 /** The cache file owned by the agent at `depth` (KV spec §3.8). */
@@ -165,22 +176,55 @@ export class LlamaProvider implements Provider {
         (entry): entry is LlamaModelEntry =>
           typeof entry?.id === "string" && entry.id.length > 0,
       )
-      .map((entry) => {
-        // llama.cpp reports the runtime context window as `meta.n_ctx` on each
-        // /v1/models entry. Surface it as the model's `maxContext`; omit it
-        // when absent/invalid, which leaves the model with no context size —
-        // a fatal MissingMaxContextError when it's actually resolved, rather
-        // than a silent guess (providers spec §3.11).
-        const nCtx = entry.meta?.n_ctx;
-        return {
-          name: entry.id,
-          baseUrl: this.baseUrl,
-          apiKey: this.apiKey,
-          ...(typeof nCtx === "number" && Number.isInteger(nCtx) && nCtx > 0
-            ? { maxContext: nCtx }
-            : {}),
-        };
+      // Discovery reports *where* each model lives, never how big its window
+      // is: on a router every model here may still be unloaded, and the window
+      // is only chosen at load time. `contextWindow()` asks later instead.
+      .map((entry) => ({
+        name: entry.id,
+        baseUrl: this.baseUrl,
+        apiKey: this.apiKey,
+      }));
+  }
+
+  /**
+   * The context window `model` is currently running with, or `null` when the
+   * server cannot say yet (v0.9.0 spec §2, §3).
+   *
+   * Two read-only sources, in order:
+   *  1. `GET /v1/models` → the entry's `meta.n_ctx`, which a router fills in
+   *     once the model is loaded. This is the per-model answer.
+   *  2. `GET /props` → `default_generation_settings.n_ctx`, the window of a
+   *     plain single-model server's slots. Skipped in router mode, where the
+   *     value describes the router itself (and is 0) rather than any model.
+   *
+   * Neither request loads anything — `GET /props?model=…` would, so it is
+   * deliberately not used. Every failure is `null`, never a throw.
+   */
+  async contextWindow(model: string): Promise<number | null> {
+    const models = await this.getJson<LlamaModelsResponse>("/v1/models");
+    const entry = models?.data?.find((candidate) => candidate?.id === model);
+    const fromModel = positiveInt(entry?.meta?.n_ctx);
+    if (fromModel !== null) return fromModel;
+
+    const props = await this.getJson<LlamaPropsResponse>("/props");
+    if (props === null || props.role === "router") return null;
+    return positiveInt(props.default_generation_settings?.n_ctx);
+  }
+
+  /** `GET {base}{path}` as JSON, or `null` for any failure. */
+  private async getJson<T>(path: string): Promise<T | null> {
+    const headers: Record<string, string> = { Accept: "application/json" };
+    if (this.apiKey) headers.Authorization = `Bearer ${this.apiKey}`;
+    try {
+      const response = await fetch(`${this.endpointBase()}${path}`, {
+        method: "GET",
+        headers,
       });
+      if (!response.ok) return null;
+      return (await response.json()) as T;
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -312,6 +356,13 @@ export class LlamaProvider implements Provider {
   private noteMessage(message: string): void {
     this.note(`[${this.name || "llama"}] ${message}`);
   }
+}
+
+/** `value` when it is a usable token count, else `null`. */
+function positiveInt(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) && value > 0
+    ? value
+    : null;
 }
 
 /** The message of a thrown value, whatever was thrown. */

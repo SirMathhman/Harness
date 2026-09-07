@@ -76,7 +76,7 @@ prompt shows it: `vise:refactor> `. Type `/exit` (or `exit` / `quit`) to leave. 
 | `/profile`            | List the profiles (with origin: `builtin`/`global`/`project`), `*` marks the active one.                                               |
 | `/profile <name>`     | Switch profiles: prompt, tools, hooks, and model are all re-resolved. `/profile Agent` switches back to the implicit built-in profile. |
 | `/model`              | List the models declared in `.vise/index.ts` (with origin), `*` marks the active one.                                                  |
-| `/model <name>`       | Switch the active model, adopting its whole resource (`baseUrl`, `apiKey`, `temperature`, `maxContext`). The conversation is kept.     |
+| `/model <name>`       | Switch the active model, adopting its whole resource (`baseUrl`, `apiKey`, `temperature`). The conversation is kept.                   |
 | `/skills`             | List the skills available to the agent (name + description).                                                                           |
 | `/hooks`              | List the hooks active for the current profile.                                                                                         |
 | `/hooks off\|on`      | Disable or re-enable every hook for the rest of the session.                                                                           |
@@ -238,7 +238,7 @@ following its outgoing edges.
 | --------------- | -------------------------------------- | ----------------------------- |
 | Profile → Hook  | The hook is active for this profile.   | —                             |
 | Profile → Tool  | The tool is available to this profile. | —                             |
-| Profile → Model | The profile uses this model.           | `temperature?`, `maxContext?` |
+| Profile → Model | The profile uses this model.           | `temperature?`                |
 | Hook → Tool     | The hook only fires for these tools.   | —                             |
 
 Any other pairing (Tool → Profile, Profile → Profile, …) is a fatal config error.
@@ -261,7 +261,7 @@ Two defaults follow from _absence_ of edges:
 | `createProfile({ name, systemPrompt, subagent?, models? })`         | `ResourceId`                 | A named configuration. `systemPrompt: ""` means the built-in one.             |
 | `createHook({ events, handler, includeSubagents? })`                | `ResourceId`                 | A lifecycle handler (see [Hooks](#hooks)).                                    |
 | `createTool({ name, description, parameters, mutating, handler })`  | `ResourceId`                 | A custom tool.                                                                |
-| `createModel({ name, baseUrl, apiKey, temperature?, maxContext? })` | `ResourceId`                 | An LLM endpoint declared directly, without a provider. Rarely needed.         |
+| `createModel({ name, baseUrl, apiKey, temperature? })`              | `ResourceId`                 | An LLM endpoint declared directly, without a provider. Rarely needed.         |
 | `addProvider(provider)`                                             | `ResourceId`                 | Register a provider (see [Providers](#providers)); discovered at startup.     |
 | `createSkill(name, description, text)`                              | `void`                       | A skill — deferred context the agent loads on demand (see [Skills](#skills)). |
 | `createConnection(from, to, props?)`                                | `void`                       | A directed edge.                                                              |
@@ -335,6 +335,7 @@ rather than the agent's capabilities.
 
 | Setting                 | Type                      | Default     | Description                                                     |
 | ----------------------- | ------------------------- | ----------- | --------------------------------------------------------------- |
+| `contextWindow`         | number \| null            | `null`      | Pin the context window instead of asking the backend.           |
 | `compactThreshold`      | number (0, 1]             | `0.8`       | Fraction of the context window that triggers compaction.        |
 | `compactKeepMessages`   | number                    | `6`         | Recent messages kept verbatim during compaction.                |
 | `commandTimeoutMs`      | number                    | `60000`     | Default foreground command timeout.                             |
@@ -350,8 +351,9 @@ rather than the agent's capabilities.
 If both files call `setRuntime`, settings are merged **per key**, with the project
 file's value winning over the global file's (which wins over the built-in default).
 
-The model's own `temperature` and `maxContext` come from its `ModelDef`, overridable per
-profile through connection props.
+The model's own `temperature` comes from its `ModelDef`, overridable per profile through
+a connection prop. The **context window is not a model setting** — see
+[The context window](#the-context-window).
 
 ### Profiles
 
@@ -468,6 +470,35 @@ export default (reg: Registry) => {
   and Vise assigns one (`llama_0`, `llama_1`, …). Two providers with the same name is a
   fatal config error.
 
+### The context window
+
+A model's context window is **not** a property of the model resource, and Vise never asks
+you to declare one. It belongs to the model *as the server currently has it loaded*: a
+llama.cpp router lists models it has never loaded, and with `--fit on` the window is only
+chosen at load time from the memory actually available. Nothing can know it up front.
+
+So the session learns it at runtime:
+
+1. Discovery reports only *where* each model lives — never a window.
+2. After the first completion the model is resident, so Vise asks the provider through
+   its optional `contextWindow(model)` method. `LlamaProvider` reads `meta.n_ctx` from
+   `GET /v1/models`, falling back to `default_generation_settings.n_ctx` from
+   `GET /props` on a plain single-model server. Neither request forces a load.
+3. Until it gets an answer the window is *unknown*, and **compaction stays off** — there
+   is no threshold to compare prompt tokens against and Vise will not guess one. `/context`
+   says so plainly, and the GUI shows `context: —`.
+4. A model whose window changes (a `/model` switch) drops what was learned and asks again.
+
+A custom provider that can answer implements `contextWindow(model): Promise<number | null>`
+— read-only, never throwing, `null` for "cannot say yet". For a backend that never
+reports one, pin it instead:
+
+```ts
+reg.setRuntime({ contextWindow: 32768 });
+```
+
+A pinned value wins outright and is never probed.
+
 ### KV cache persistence across subagent calls
 
 A subagent runs against the same llama.cpp slot as the agent that spawned it, evicting
@@ -530,7 +561,7 @@ reg.createProfile({
   `reg.createModel()`) pins one model outright, overriding this selection — it must
   itself be in the whitelist, or the config is rejected.
 - A subagent whose profile has no whitelist inherits the parent's exact active model
-  (including its `baseUrl`, `apiKey`, `temperature`, and `maxContext`) rather than
+  (including its `baseUrl`, `apiKey`, and `temperature`) rather than
   picking its own; one with a whitelist picks the first match, falling back to the
   parent's model (with a warning) if the whitelist matches nothing.
 
@@ -693,14 +724,14 @@ advisory messages are joined with newlines into one system message.
 ## Identity
 
 Every system prompt ends with a short paragraph telling the model what it's actually
-running as — Vise, on which model, via which provider, with what context window — so it
-can answer "what are you?" or "what model are you?" from its own prompt instead of
-guessing or claiming to be whichever model it happens to be talking to:
+running as — Vise, on which model, via which provider — so it can answer "what are you?"
+or "what model are you?" from its own prompt instead of guessing or claiming to be
+whichever model it happens to be talking to:
 
 ```
 ## Identity
 You are Vise, a local coding-agent harness. You are running model "qwen-7b" via the
-"llama" provider at http://localhost:8080, with a 32768-token context window.
+"llama" provider at http://localhost:8080.
 ```
 
 It comes right after the profile's own prompt (or the built-in default) and before the
@@ -844,7 +875,7 @@ required.
 | P1. Discovery incl. router mode     | `providers.test.ts` (`LlamaProvider` against a mock `/v1/models`)            |
 | P2. `models` whitelist filters      | `providers.test.ts` (string and `[provider, regex]` elements)                |
 | P3. No whitelist → all models       | `providers.test.ts` (first wins, `lastModel` pins another)                   |
-| P4. Subagent inherits parent model  | `providers.test.ts` (exact `baseUrl`/`apiKey`/`temperature`/`maxContext`)    |
+| P4. Subagent inherits parent model  | `providers.test.ts` (exact `baseUrl`/`apiKey`/`temperature`)                 |
 | P5. No provider → fatal             | `cli.test.ts` ("No models available", non-zero exit)                         |
 | P6. Same name, two providers        | `providers.test.ts` (ambiguous bare name, `<provider>/<name>` disambiguates) |
 | P7. Provider interface is general   | `providers.test.ts` (a plain object literal, no concrete class)              |
@@ -894,11 +925,27 @@ required.
 | 24. `/skills` with none       | `skills.test.ts` ("No skills defined.")                                 |
 | 25. Backward compatibility    | `skills.test.ts` (no index, tools present, "no skills" messages)        |
 
+### Runtime context window acceptance criteria (v0.9.0 spec §5)
+
+| AC                                | Covered by test                                                   |
+| --------------------------------- | ----------------------------------------------------------------- |
+| 1. No reported window still runs  | `providers.test.ts` (the llama.cpp router case; startup not fatal) |
+| 2. Learned after the first call   | `providers.test.ts` (null, then 32768; never re-asked)             |
+| 3. A throwing probe is harmless   | `providers.test.ts` (window unknown, turn still succeeds)          |
+| 4. A pinned window wins           | `providers.test.ts` (`setRuntime`, never probed)                   |
+| 5. Compaction off while unknown   | `compaction.test.ts` (`shouldCompact` false with a null window)    |
+| 6–8. `LlamaProvider` probe        | `providers.test.ts` (`meta.n_ctx`, `/props` fallback, router null) |
+| 9. Discovery reports no window    | `providers.test.ts` (`meta.n_ctx` dropped from `discoverModels`)   |
+
 ## Troubleshooting
 
 - **KV cache files pile up in `--slot-save-path`** — a `kv-depth-*.bin` left behind means
   a restore failed (the warning is on stderr); it is overwritten by the next run at that
   depth and is safe to delete by hand.
+- **`/context` says "window not reported by the server yet"** — the backend has not told
+  Vise how big the window is, so compaction is off. A llama.cpp router only knows once
+  the model is loaded; run a turn and it fills in. If it never does, pin it with
+  `reg.setRuntime({ contextWindow: N })`.
 - **"No models available"** — no provider is registered, or every registered provider
   discovered zero models. Register one in `.vise/index.ts` (e.g.
   `reg.addProvider(new LlamaProvider({ url: "http://localhost:8080" }))`) and make sure

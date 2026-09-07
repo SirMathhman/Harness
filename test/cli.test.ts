@@ -122,7 +122,7 @@ describe("fresh start (v0.8.0, AC 9)", () => {
         "  reg.addProvider({",
         '    name: "stub",',
         "    async discoverModels() {",
-        '      return [{ name: "stub-model", baseUrl: "http://127.0.0.1:1", apiKey: "", maxContext: 8192 }];',
+        '      return [{ name: "stub-model", baseUrl: "http://127.0.0.1:1", apiKey: "" }];',
         "    },",
         "  });",
         "};",
@@ -470,7 +470,6 @@ describe("/model command", () => {
         baseUrl: "http://other:9999",
         apiKey: "secret",
         temperature: 0.9,
-        maxContext: 4096,
       });
     });
   }
@@ -493,7 +492,6 @@ describe("/model command", () => {
     expect(config.baseUrl).toBe("http://other:9999");
     expect(config.apiKey).toBe("secret");
     expect(config.temperature).toBe(0.9);
-    expect(config.maxContext).toBe(4096);
   });
 
   test("keeps the conversation and system prompt across a switch", () => {

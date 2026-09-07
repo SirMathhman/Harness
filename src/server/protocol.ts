@@ -128,7 +128,12 @@ export interface UIState {
   activeModel: string | null;
   /** The working directory the agent-server (and its tools) run in. */
   cwd: string;
-  context: { promptTokens: number | null; maxContext: number };
+  /**
+   * `maxContext` is `null` until the backend reports a window (a llama.cpp
+   * router only knows one once the model is loaded); the client renders that
+   * as "unknown" rather than 0.
+   */
+  context: { promptTokens: number | null; maxContext: number | null };
   profiles: { name: string; origin: string }[];
   models: { name: string; baseUrl: string; providerName: string | null }[];
   skills: { name: string; description: string }[];

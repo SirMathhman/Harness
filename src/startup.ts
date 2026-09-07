@@ -12,7 +12,6 @@ import { c } from "./cli/color.js";
 import {
   addDiscoveredModels,
   IMPLICIT_PROFILE_NAME,
-  MissingMaxContextError,
   resolveProfile,
   ViseConfigError,
   loadViseConfig,
@@ -64,14 +63,7 @@ export async function prepareSession(): Promise<PrepareResult> {
   // v0.8.0 removed the state file: a fresh start always begins at the built-in
   // `Agent` profile with normal model resolution (spec §3.5).
   const profile = IMPLICIT_PROFILE_NAME;
-  let resolved;
-  try {
-    resolved = resolveProfile(graph, profile);
-  } catch (err) {
-    if (err instanceof MissingMaxContextError)
-      return { ok: false, error: err.message };
-    throw err;
-  }
+  const resolved = resolveProfile(graph, profile);
   if (resolved.config.model === null) {
     return {
       ok: false,

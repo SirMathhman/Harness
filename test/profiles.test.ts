@@ -246,7 +246,6 @@ describe("profile resolution (profiles §3.5)", () => {
         baseUrl: "http://localhost:9",
         apiKey: "k",
         temperature: 0.9,
-        maxContext: 4096,
       });
       const hot = reg.createProfile({ name: "hot", systemPrompt: "h" });
       const cold = reg.createProfile({ name: "cold", systemPrompt: "c" });
@@ -256,7 +255,9 @@ describe("profile resolution (profiles §3.5)", () => {
     expect(resolveProfile(graph, "hot").config.temperature).toBe(0.9);
     expect(resolveProfile(graph, "cold").config.temperature).toBe(0.2);
     // The override is per-profile; the model itself is untouched.
-    expect(resolveProfile(graph, "hot").config.maxContext).toBe(4096);
+    expect(resolveProfile(graph, "hot").config.baseUrl).toBe(
+      "http://localhost:9",
+    );
   });
 
   test("a profile with no model edge and no whitelist picks up any declared model (providers spec §3.4)", () => {
@@ -265,7 +266,6 @@ describe("profile resolution (profiles §3.5)", () => {
         name: "solo",
         baseUrl: "http://localhost:9",
         apiKey: "",
-        maxContext: 8192,
       });
       reg.createProfile({ name: "plain", systemPrompt: "p" });
     });
@@ -440,13 +440,11 @@ describe("/profile command and switching (profiles §3.6, §3.9)", () => {
         name: "standard-model",
         baseUrl: "http://localhost:8080",
         apiKey: "",
-        maxContext: 8192,
       });
       const fast = reg.createModel({
         name: "fast-model",
         baseUrl: "http://localhost:1",
         apiKey: "",
-        maxContext: 8192,
       });
       const def = reg.createProfile({
         name: "default",
@@ -475,7 +473,6 @@ describe("/profile command and switching (profiles §3.6, §3.9)", () => {
       ...DEFAULT_CONFIG,
       model: "standard-model",
       baseUrl: "http://localhost:8080",
-      maxContext: 8192,
     },
     undefined,
   );
@@ -484,7 +481,6 @@ describe("/profile command and switching (profiles §3.6, §3.9)", () => {
       ...DEFAULT_CONFIG,
       model: "fast-model",
       baseUrl: "http://localhost:1",
-      maxContext: 8192,
     },
     undefined,
   );
@@ -564,7 +560,6 @@ describe("/profile command and switching (profiles §3.6, §3.9)", () => {
         ...DEFAULT_CONFIG,
         model: "test-model",
         baseUrl: "http://localhost:8080",
-        maxContext: 8192,
       },
       undefined,
     );
@@ -606,7 +601,6 @@ describe("/profile command and switching (profiles §3.6, §3.9)", () => {
         name: "m",
         baseUrl: "http://localhost:8080",
         apiKey: "",
-        maxContext: 8192,
       });
       const ok = reg.createProfile({ name: "default", systemPrompt: "ok" });
       reg.createConnection(ok, model);
@@ -822,7 +816,6 @@ describe("subagent policy (profiles §3.12)", () => {
         model: "test-model",
         apiKey: "",
         temperature: 0.2,
-        maxContext: 8192,
       },
     });
     expect(out).toBe("gave up");

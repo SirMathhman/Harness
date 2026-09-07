@@ -105,7 +105,15 @@ export interface Config {
   model: string | null;
   apiKey: string;
   temperature: number;
-  maxContext: number;
+  /**
+   * A user-pinned context window, or `null` to trust the backend.
+   *
+   * The real window is a property of a *loaded* model on a server, not of a
+   * model definition, so it is not resolved from the graph. `null` means the
+   * session discovers it at runtime (`Session.contextWindow`); a number here
+   * overrides whatever the server reports.
+   */
+  contextWindow: number | null;
   compactThreshold: number;
   compactKeepMessages: number;
   commandTimeoutMs: number;
@@ -139,6 +147,25 @@ export interface Session {
   config: Config;
   /** prompt_tokens from the most recent LLM call (for compaction). */
   lastPromptTokens: number | null;
+  /**
+   * The context window this session is actually running against, in tokens,
+   * or `null` while it is still unknown.
+   *
+   * Observed state, not configuration: a lazily-loading backend (a llama.cpp
+   * router) only knows a model's window once the model is loaded, so the value
+   * is seeded from `config.contextWindow` and otherwise filled in by
+   * `probeContextWindow` after the first completion. Compaction is disabled
+   * while it is `null` — there is no threshold to compare against.
+   */
+  contextWindow: number | null;
+  /**
+   * Ask the backend what context window the active model is running with.
+   *
+   * Resolves to `null` when the backend cannot say (yet). Set by
+   * `materializeProfile` from the active model's provider; absent for a model
+   * with no provider, which can only be pinned via `config.contextWindow`.
+   */
+  probeContextWindow?: () => Promise<number | null>;
   /** The lifecycle hooks this session dispatches to (hooks spec §2.2). */
   hooks: HookManager;
   /** Subagent nesting depth; 0 for the main session (hooks spec §3.7). */

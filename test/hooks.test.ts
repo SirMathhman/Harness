@@ -33,7 +33,6 @@ const stubParentModel = {
   model: "test-model",
   apiKey: "",
   temperature: 0.2,
-  maxContext: 8192,
 };
 
 /** Register hooks inline (no file), all attributed to `source`. */
@@ -569,17 +568,16 @@ describe("hooks in the agent loop (hooks §3.5, AC 1, 2, 3)", () => {
   test("on:compaction fires before the recap call", async () => {
     const fired: string[] = [];
     // A tiny window makes the very first prompt-token count exceed the
-    // threshold. maxContext comes from the model, not setRuntime.
+    // threshold. Nothing here talks to a backend, so the window is pinned.
     const { session, registry } = createSession({
       graph: graphFrom((reg) => {
-        reg.setRuntime({ compactThreshold: 0.5 });
+        reg.setRuntime({ contextWindow: 10, compactThreshold: 0.5 });
         reg.createConnection(
           reg.builtins.defaultProfile,
           reg.createModel({
             name: "test-model",
             baseUrl: "http://localhost:8080",
             apiKey: "",
-            maxContext: 10,
           }),
         );
         reg.createConnection(

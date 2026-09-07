@@ -351,7 +351,10 @@ function Panel(props: { title: string; children: JSX.Element }) {
 function contextLabel(state: UIState | null): string {
   if (!state) return "context: —";
   const { promptTokens, maxContext } = state.context;
-  if (promptTokens === null || maxContext === 0) return "context: —";
+  // maxContext is null until the server reports a window; 0 kept for snapshots
+  // from an older agent-server that used it as the same "unknown" sentinel.
+  if (promptTokens === null || maxContext === null || maxContext === 0)
+    return "context: —";
   const pct = Math.round((promptTokens / maxContext) * 100);
   return `context: ${promptTokens} / ${maxContext} (${pct}%)`;
 }

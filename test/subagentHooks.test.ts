@@ -13,7 +13,6 @@ const stubParentModel = {
   model: "test-model",
   apiKey: "",
   temperature: 0.2,
-  maxContext: 8192,
 };
 
 /** A scripted LLM client that records the messages it is asked to chat with. */

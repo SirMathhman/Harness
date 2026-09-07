@@ -39,6 +39,7 @@ Your final \`finish\` answer is the only thing returned to the parent agent, so 
  * `reg.setRuntime()` (profiles spec §3.2).
  */
 export const DEFAULT_RUNTIME: RuntimeSettings = {
+  contextWindow: null,
   compactThreshold: 0.8,
   compactKeepMessages: 6,
   commandTimeoutMs: 60000,
@@ -53,18 +54,16 @@ export const DEFAULT_RUNTIME: RuntimeSettings = {
 };
 
 /**
- * A fully defaulted `Config`, minus `maxContext`: the runtime settings plus
- * the default model's parameters. `model` is intentionally null — when unset,
- * Vise auto-discovers the first model from the running server's `/v1/models`
- * (spec §3.10).
+ * A fully defaulted `Config`: the runtime settings plus the default model's
+ * parameters. `model` is intentionally null — when unset, Vise auto-discovers
+ * the first model from the running server's `/v1/models` (spec §3.10).
  *
- * There is no default context-window size (providers spec §3.11): a resolved
- * model that reports none — no connection prop, no `maxContext` on its
- * definition, no usable value from provider discovery — is a fatal
- * `MissingMaxContextError` rather than a silent guess, since compaction has
- * no threshold to compare against without it.
+ * `contextWindow` is null by default and stays that way unless the user pins
+ * it with `setRuntime` (v0.9.0 spec §2, §3). It is not a property of a model
+ * definition: the real window belongs to a *loaded* model on a server, so the
+ * session learns it at runtime and compaction stays off until it does.
  */
-export const DEFAULT_CONFIG: Omit<Config, "maxContext"> = {
+export const DEFAULT_CONFIG: Config = {
   ...DEFAULT_RUNTIME,
   baseUrl: "http://localhost:8080",
   model: null,
