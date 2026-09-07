@@ -29,9 +29,9 @@ async function main(): Promise<void> {
 
   const prepared = await prepareSession();
   if (!prepared.ok) return fail(prepared.error);
-  const { graph, profile, lastModel, statePath } = prepared.session;
+  const { graph, profile } = prepared.session;
 
-  await startRepl(graph, profile, statePath, lastModel, args.task);
+  await startRepl(graph, profile, args.task);
 }
 
 function fail(message: string): void {

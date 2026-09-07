@@ -3,11 +3,8 @@ import { runTurn, type AgentCallbacks } from "../agent/loop.js";
 import { createSession, type SessionHandle } from "../agent/session.js";
 import type { SubagentRender } from "../agent/subagent.js";
 import { LLMError } from "../llm/errors.js";
-import {
-  IMPLICIT_PROFILE_NAME,
-  writeStateFile,
-  type ResourceGraph,
-} from "../profiles/index.js";
+import { IMPLICIT_PROFILE_NAME, type ResourceGraph } from "../profiles/index.js";
+import { autoSaveLast, sessionsDir } from "../sessions/index.js";
 import { c } from "./color.js";
 import { commandArgs, findCommand, type ReplContext } from "./commands.js";
 import {
@@ -62,24 +59,18 @@ function shouldDisableReadlineEcho(): boolean {
  *
  * `graph` is the resource graph built from `.vise/index.ts`, including every
  * model discovered from its providers (providers spec §3.6); omitted → the
- * built-in defaults (profiles spec §3.8). `profile` is the starting profile,
- * already resolved from the state file (config spec §3.7); `statePath` is
- * where that profile and the active model are saved back to on a clean exit
- * (config spec §3.8.3). `lastModel` is the model name saved alongside it,
- * used to pin the active model whenever a profile is (re)selected (providers
- * spec §3.4, §3.9).
+ * built-in defaults (profiles spec §3.8). `profile` is the starting profile
+ * (always the built-in `Agent` — v0.8.0 removed the state file, so a fresh
+ * start always begins there; spec §3.5).
  */
 export async function startRepl(
   graph: ResourceGraph,
   profile: string,
-  statePath: string,
-  lastModel: string | null,
   initialTask?: string | null,
 ): Promise<void> {
   const handle = createSession({
     graph,
     profile,
-    lastModel,
     render: makeSubagentRender(),
     log: (message) => process.stderr.write(`${c.yellow(message)}\n`),
   });
@@ -125,7 +116,7 @@ export async function startRepl(
     await executeTurn(handle, callbacks, initialTask);
   }
 
-  const ctx: ReplContext = { handle };
+  const ctx: ReplContext = { handle, sessionsDir: sessionsDir() };
   for (;;) {
     if (closed) break;
     const line = await prompt(rl, `${c.bold(c.cyan(promptLabel(handle)))}> `);
@@ -150,12 +141,19 @@ export async function startRepl(
   const ended = handle.session.hooks.dispatch("session:end", { depth: 0 });
   if (ended.advisory) process.stdout.write(`${ended.advisory}\n`);
 
-  // Profile persistence (config spec §3.8.3): every path out of the loop above
-  // is a clean exit (`/exit`, bare `exit`/`quit`, or stdin closing on Ctrl-D),
-  // so the active profile and model are saved here unconditionally. Ctrl-C
-  // mid-turn never reaches this point — it aborts the turn and returns to the
-  // prompt instead (§3.8.3, C13).
-  writeStateFile(statePath, handle.profile, handle.session.config.model ?? "");
+  // Auto-save (spec §3.4, W5): every path out of the loop above is a clean
+  // exit (`/exit`, bare `exit`/`quit`, or stdin closing on Ctrl-D), so the
+  // conversation is persisted to `last.json` here — but only when it has
+  // content (R7). Ctrl-C mid-turn never reaches this point — it aborts the
+  // turn and returns to the prompt instead. A failure to write is a warning,
+  // never fatal (E13).
+  try {
+    autoSaveLast(ctx.sessionsDir, handle);
+  } catch (err) {
+    process.stderr.write(
+      `${c.yellow(`warning: could not auto-save session: ${(err as Error).message}\n`)}`,
+    );
+  }
 
   handle.manager.killAll();
   rl.close();

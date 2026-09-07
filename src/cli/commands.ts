@@ -4,6 +4,7 @@ import type { SessionHandle } from "../agent/session.js";
 import { HookManager } from "../hooks/index.js";
 import {
   AmbiguousModelError,
+  IMPLICIT_PROFILE_NAME,
   MissingMaxContextError,
   ModelNotAvailableError,
   ProfileHasNoModelError,
@@ -12,10 +13,25 @@ import {
   writeConfigStub,
   type ResourceId,
 } from "../profiles/index.js";
+import {
+  autoName,
+  deleteSession,
+  listSessions,
+  loadSession,
+  renameSession,
+  sanitizeName,
+  saveSession,
+  stripSystemMessages,
+  SessionError,
+  type SavedSession,
+  type SessionInfo,
+} from "../sessions/index.js";
 
 /** The context a REPL command receives when it runs. */
 export interface ReplContext {
   handle: SessionHandle;
+  /** The sessions store directory (spec §2.2), computed once at REPL start. */
+  sessionsDir: string;
 }
 
 /** Split the whitespace-separated arguments off a command line. */
@@ -67,6 +83,35 @@ export const REPL_COMMANDS: ReplCommand[] = [
       ctx.handle.clearConversation();
       return "conversation cleared.";
     },
+  },
+  {
+    name: "/save",
+    summary: "Save the conversation; `/save <name>` names it.",
+    run: (ctx, args) => saveCommand(ctx, args),
+    takesArgs: true,
+  },
+  {
+    name: "/load",
+    summary: "Load a saved session, replacing the conversation.",
+    run: (ctx, args) => loadCommand(ctx, args),
+    takesArgs: true,
+  },
+  {
+    name: "/sessions",
+    summary: "List saved sessions.",
+    run: (ctx) => sessionsCommand(ctx),
+  },
+  {
+    name: "/rename",
+    summary: "Rename a saved session: `/rename <old> <new>`.",
+    run: (ctx, args) => renameCommand(ctx, args),
+    takesArgs: true,
+  },
+  {
+    name: "/delete",
+    summary: "Delete a saved session: `/delete <name>`.",
+    run: (ctx, args) => deleteCommand(ctx, args),
+    takesArgs: true,
   },
   {
     name: "/profile",
@@ -358,4 +403,193 @@ export function initCommand(root: string, displayName: string): string {
   return writeConfigStub(root)
     ? `created ${displayName}.`
     : `${displayName} already exists — edit it by hand.`;
+}
+
+/**
+ * The `/save` command (spec §3.1, W1): persist the current conversation,
+ * stripping the leading system message(s) (R1). With no argument the name is
+ * auto-generated from the timestamp (R4); with one it is sanitized (R5). A
+ * save is idempotent per name — an existing file is overwritten (E8).
+ */
+export function saveCommand(ctx: ReplContext, args: string[] = []): string {
+  const [name, ...rest] = args;
+  if (rest.length > 0) {
+    return "Usage: /save [<name>] (session names cannot contain spaces).";
+  }
+  let clean: string;
+  try {
+    clean = name === undefined ? autoName() : sanitizeName(name);
+  } catch (err) {
+    if (err instanceof SessionError) return err.message;
+    throw err;
+  }
+  const messages = stripSystemMessages(ctx.handle.session.messages);
+  const saved: SavedSession = {
+    version: 1,
+    name: clean,
+    title: clean,
+    profile: ctx.handle.session.profile,
+    model: ctx.handle.session.config.model ?? "",
+    savedAt: new Date().toISOString(),
+    messages,
+  };
+  try {
+    saveSession(ctx.sessionsDir, saved);
+  } catch (err) {
+    return `Could not save session: ${(err as Error).message}.`;
+  }
+  return `saved session "${clean}" (${messages.length} messages).`;
+}
+
+/**
+ * The `/load` command (spec §3.1, W3): read and validate a saved session,
+ * then replace the current conversation with it (R2, R3). A missing name
+ * reports the error and lists the sessions that do exist (E1); a stale
+ * profile or model warns and falls back (R6, E5, E6).
+ */
+export function loadCommand(ctx: ReplContext, args: string[] = []): string {
+  const [name, ...rest] = args;
+  if (name === undefined) {
+    return "Usage: /load <name> (see /sessions for available names).";
+  }
+  if (rest.length > 0) {
+    return "Usage: /load <name> (session names cannot contain spaces).";
+  }
+  let saved: SavedSession;
+  try {
+    saved = loadSession(ctx.sessionsDir, name);
+  } catch (err) {
+    if (err instanceof SessionError) {
+      const list = sessionsListing(listSessions(ctx.sessionsDir));
+      return `${err.message}\n${list}`;
+    }
+    return `Could not load session: ${(err as Error).message}.`;
+  }
+
+  // R6: fall back to the built-in profile when the saved one is gone.
+  const profiles = ctx.handle.profiles();
+  let profile = saved.profile;
+  const warnings: string[] = [];
+  if (!profiles.includes(profile)) {
+    warnings.push(
+      `Warning: saved profile "${profile}" not found; using "${IMPLICIT_PROFILE_NAME}".`,
+    );
+    profile = IMPLICIT_PROFILE_NAME;
+  }
+
+  // R6: warn when the saved model is no longer available.
+  let model: string | null = saved.model === "" ? null : saved.model;
+  if (model !== null) {
+    const available = ctx.handle
+      .modelEntries()
+      .map((e) => e.name)
+      .includes(model);
+    if (!available) {
+      warnings.push(
+        `Warning: saved model "${model}" not available; using the profile's default.`,
+      );
+      model = null;
+    }
+  }
+
+  try {
+    ctx.handle.loadConversation(saved.messages, profile, model);
+  } catch (err) {
+    if (
+      err instanceof UnknownProfileError ||
+      err instanceof ProfileHasNoModelError ||
+      err instanceof MissingMaxContextError
+    ) {
+      return err.message;
+    }
+    throw err;
+  }
+  const lines = [
+    ...warnings,
+    `loaded session "${name}" (profile: ${profile}, model: ${
+      ctx.handle.session.config.model ?? "none"
+    }, ${saved.messages.length} messages).`,
+  ];
+  return lines.join("\n");
+}
+
+/**
+ * The `/sessions` command (spec §3.1, W2): list every saved session as a
+ * table of name / title / model / savedAt. Corrupt files are shown as
+ * unreadable (E2, E3). An empty store prints an empty-state message.
+ */
+export function sessionsCommand(ctx: ReplContext): string {
+  return sessionsListing(listSessions(ctx.sessionsDir));
+}
+
+/** Format a session listing as a table (spec §3.1 `/sessions`). */
+export function sessionsListing(sessions: SessionInfo[]): string {
+  if (sessions.length === 0) return "No saved sessions.";
+  const nameW = Math.max(...sessions.map((s) => s.name.length));
+  const titleW = Math.max(...sessions.map((s) => s.title.length));
+  const lines = ["Sessions:"];
+  for (const s of sessions) {
+    if (!s.readable) {
+      lines.push(`  ${s.name.padEnd(nameW)}  (unreadable)`);
+      continue;
+    }
+    lines.push(
+      `  ${s.name.padEnd(nameW)}  ${s.title.padEnd(titleW)}  ${s.model}  ${s.savedAt}`,
+    );
+  }
+  return lines.join("\n");
+}
+
+/**
+ * The `/rename` command (spec §3.1): rename a saved session, updating the
+ * filename and `name`/`title`. A missing source lists the available sessions
+ * (E9); renaming onto an existing name is rejected (E10).
+ */
+export function renameCommand(ctx: ReplContext, args: string[] = []): string {
+  const [oldName, newName, ...rest] = args;
+  if (oldName === undefined || newName === undefined) {
+    return "Usage: /rename <old> <new>.";
+  }
+  if (rest.length > 0) {
+    return "Usage: /rename <old> <new> (session names cannot contain spaces).";
+  }
+  try {
+    renameSession(ctx.sessionsDir, oldName, newName);
+  } catch (err) {
+    if (err instanceof SessionError) {
+      if (err.reason === "not-found") {
+        return `${err.message}\n${sessionsListing(listSessions(ctx.sessionsDir))}`;
+      }
+      return err.message;
+    }
+    return `Could not rename session: ${(err as Error).message}.`;
+  }
+  return `renamed session "${oldName}" to "${newName}".`;
+}
+
+/**
+ * The `/delete` command (spec §3.1): remove a saved session file. A missing
+ * name reports the error and lists the available sessions (E11). Deleting the
+ * reserved `last` is allowed (E12).
+ */
+export function deleteCommand(ctx: ReplContext, args: string[] = []): string {
+  const [name, ...rest] = args;
+  if (name === undefined) {
+    return "Usage: /delete <name>.";
+  }
+  if (rest.length > 0) {
+    return "Usage: /delete <name> (session names cannot contain spaces).";
+  }
+  try {
+    deleteSession(ctx.sessionsDir, name);
+  } catch (err) {
+    if (err instanceof SessionError) {
+      if (err.reason === "not-found") {
+        return `${err.message}\n${sessionsListing(listSessions(ctx.sessionsDir))}`;
+      }
+      return err.message;
+    }
+    return `Could not delete session: ${(err as Error).message}.`;
+  }
+  return `deleted session "${name}".`;
 }
