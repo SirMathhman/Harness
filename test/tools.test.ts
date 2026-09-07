@@ -97,6 +97,20 @@ describe("file tools (AC 4)", () => {
     expect((await readFileTool.handler({ path: p })).trim()).toBe("1: y y y");
   });
 
+  test("edit_file treats $-patterns in newString literally", async () => {
+    const p = path.join(dir, "edit5.txt");
+    writeFileSync(p, "foo bar foo");
+    const out = await editFileTool.handler({
+      path: p,
+      oldString: "bar",
+      newString: "$&",
+    });
+    expect(out).not.toContain("Error");
+    expect((await readFileTool.handler({ path: p })).trim()).toBe(
+      "1: foo $& foo",
+    );
+  });
+
   test("list_dir shows file/dir markers", async () => {
     const sub = path.join(dir, "ld");
     mkdirSync(sub);
