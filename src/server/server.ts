@@ -23,7 +23,8 @@ import {
   type SubagentRender,
   type SubagentRenderEvent,
 } from "../agent/subagent.js";
-import { writeStateFile, type ResourceGraph } from "../profiles/index.js";
+import { type ResourceGraph } from "../profiles/index.js";
+import { autoSaveLast, sessionsDir } from "../sessions/index.js";
 import { newId } from "../utils.js";
 import {
   DEFAULT_GUI_PORT,
@@ -44,10 +45,6 @@ export interface AgentServerOptions {
   graph: ResourceGraph;
   /** The profile to start under. */
   profile: string;
-  /** The model name saved in the state file, or null. */
-  lastModel: string | null;
-  /** The state file path (for clean-exit persistence). */
-  statePath: string;
   /** The directory of built UI assets to serve, or null (dev mode). */
   staticDir?: string | null;
   /** Where log lines go. Defaults to stderr. */
@@ -61,7 +58,6 @@ export interface AgentServerOptions {
  */
 export class AgentServer {
   private readonly handle: SessionHandle;
-  private readonly statePath: string;
   private readonly staticDir: string | null;
   private readonly log: (message: string) => void;
 
@@ -81,13 +77,11 @@ export class AgentServer {
   private server: ReturnType<typeof Bun.serve> | null = null;
 
   constructor(options: AgentServerOptions) {
-    this.statePath = options.statePath;
     this.staticDir = options.staticDir ?? null;
     this.log = options.log ?? ((m) => console.error(m));
     this.handle = createSession({
       graph: options.graph,
       profile: options.profile,
-      lastModel: options.lastModel,
       render: this.makeSubagentRender(),
       log: this.log,
     });
@@ -109,10 +103,14 @@ export class AgentServer {
     return server.port ?? port;
   }
 
-  /** Stop the server and persist the state file (GUI spec §6.2). */
+  /** Stop the server and auto-save the conversation (spec §3.4, W5). */
   async stop(): Promise<void> {
     this.handle.manager.killAll();
-    this.writeState();
+    try {
+      autoSaveLast(sessionsDir(), this.handle);
+    } catch (err) {
+      this.log(`warning: could not auto-save session: ${(err as Error).message}`);
+    }
     this.server?.stop(true);
     this.server = null;
   }
@@ -493,15 +491,5 @@ export class AgentServer {
     this.subagentIds.clear();
     this.send({ type: "turnEnd", answer, kind, finished });
     this.send({ type: "state", patch: this.buildState() });
-  }
-
-  /** Persist the active profile + model to the shared state file. */
-  private writeState(): void {
-    writeStateFile(
-      this.statePath,
-      this.handle.profile,
-      this.handle.session.config.model ?? "",
-      this.log,
-    );
   }
 }

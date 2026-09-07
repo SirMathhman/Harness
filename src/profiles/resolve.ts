@@ -106,8 +106,8 @@ export interface ResolvedProfile {
  * The profile a session starts under when nothing else says otherwise
  * (config spec §3.7): always the implicit built-in profile. Naming a profile
  * `"default"` no longer has any special effect — the only way to start under
- * a specific profile is to pass one explicitly, or to restore one from the
- * state file (see `resolveStartingProfile` in `state.ts`).
+ * a specific profile is to pass one explicitly (v0.8.0 removed the state
+ * file, so there is no longer a saved starting profile to restore).
  */
 export function defaultProfileName(graph: ResourceGraph): string {
   void graph;

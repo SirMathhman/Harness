@@ -43,13 +43,6 @@ export interface SessionOptions {
    * other specific one) must resolve it and pass it explicitly.
    */
   profile?: string;
-  /**
-   * The model name saved in the state file at the previous exit (providers
-   * spec §3.4, §3.9). Pins the active model whenever a profile is (re)selected
-   * — at session start and on every `/profile` switch — as long as that model
-   * is still in the profile's available set. Ignored by subagent spawn.
-   */
-  lastModel?: string | null;
   /** The LLM client used by the session and any subagents it spawns. */
   client?: LLMClient;
   /** Renders subagent live output (spec §3.8.6); omitted → silent. */
@@ -160,7 +153,6 @@ export interface SessionHandle {
 export function createSession(options: SessionOptions = {}): SessionHandle {
   const graph = options.graph ?? defaultGraph();
   const startingProfile = options.profile ?? defaultProfileName(graph);
-  const lastModel = options.lastModel ?? null;
 
   // One mutable flag, read by every hook manager the session ever builds, so
   // `/hooks off` keeps holding after a profile switch and inside subagents.
@@ -175,9 +167,7 @@ export function createSession(options: SessionOptions = {}): SessionHandle {
     ...(options.log !== undefined ? { log: options.log } : {}),
   };
 
-  const startingResolved = resolveProfile(graph, startingProfile, {
-    modelNameHint: lastModel,
-  });
+  const startingResolved = resolveProfile(graph, startingProfile);
   const initial = materializeProfile(startingResolved, ctx, 0);
 
   const session: Session = {
@@ -254,9 +244,7 @@ export function createSession(options: SessionOptions = {}): SessionHandle {
     switchProfile(name: string) {
       // Resolve *before* touching anything, so an unknown or unusable profile
       // leaves the session exactly as it was (spec §4).
-      const resolved = resolveProfile(graph, name, {
-        modelNameHint: lastModel,
-      });
+      const resolved = resolveProfile(graph, name);
       const next = materializeProfile(resolved, ctx, 0);
       if (next.config.model === null) throw new ProfileHasNoModelError(name);
 

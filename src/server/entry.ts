@@ -28,7 +28,7 @@ export async function runServer(
 ): Promise<void> {
   const prepared = await prepareSession();
   if (!prepared.ok) return fail(prepared.error);
-  const { graph, profile, lastModel, statePath } = prepared.session;
+  const { graph, profile } = prepared.session;
 
   // Locate the built UI assets (gui/dist), relative to this source file.
   // fileURLToPath handles Windows drive-letter paths correctly.
@@ -43,8 +43,6 @@ export async function runServer(
   const server = new AgentServer({
     graph,
     profile,
-    lastModel,
-    statePath,
     staticDir: existsSync(staticDir) ? staticDir : null,
   });
 

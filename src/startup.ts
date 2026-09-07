@@ -11,10 +11,9 @@
 import { c } from "./cli/color.js";
 import {
   addDiscoveredModels,
+  IMPLICIT_PROFILE_NAME,
   MissingMaxContextError,
   resolveProfile,
-  resolveStartingProfile,
-  stateFilePath,
   ViseConfigError,
   loadViseConfig,
   type DiscoveryResult,
@@ -26,8 +25,6 @@ import {
 export interface PreparedSession {
   graph: ResourceGraph;
   profile: string;
-  lastModel: string | null;
-  statePath: string;
   /** The model the profile resolved to, or null when it has no usable model. */
   model: string | null;
 }
@@ -64,13 +61,12 @@ export async function prepareSession(): Promise<PrepareResult> {
   }
 
   graph = addDiscoveredModels(graph, results);
-  const statePath = stateFilePath();
-  const starting = resolveStartingProfile(graph, statePath);
+  // v0.8.0 removed the state file: a fresh start always begins at the built-in
+  // `Agent` profile with normal model resolution (spec §3.5).
+  const profile = IMPLICIT_PROFILE_NAME;
   let resolved;
   try {
-    resolved = resolveProfile(graph, starting.profile, {
-      modelNameHint: starting.lastModel,
-    });
+    resolved = resolveProfile(graph, profile);
   } catch (err) {
     if (err instanceof MissingMaxContextError)
       return { ok: false, error: err.message };
@@ -80,7 +76,7 @@ export async function prepareSession(): Promise<PrepareResult> {
     return {
       ok: false,
       error:
-        `Profile '${starting.profile}' has no available models.\n` +
+        `Profile '${profile}' has no available models.\n` +
         "Connect a Model resource to it in ./.vise/index.ts, or make sure a " +
         "registered provider can reach its server.\n",
     };
@@ -90,9 +86,7 @@ export async function prepareSession(): Promise<PrepareResult> {
     ok: true,
     session: {
       graph,
-      profile: starting.profile,
-      lastModel: starting.lastModel,
-      statePath,
+      profile,
       model: resolved.config.model,
     },
   };

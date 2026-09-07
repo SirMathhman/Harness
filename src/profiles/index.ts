@@ -59,10 +59,3 @@ export {
   loadViseConfig,
   writeConfigStub,
 } from "./load.js";
-export {
-  resolveStartingProfile,
-  stateFilePath,
-  writeStateFile,
-  type StartingProfile,
-  type StateFile,
-} from "./state.js";
