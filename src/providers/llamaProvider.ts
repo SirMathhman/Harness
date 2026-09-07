@@ -2,7 +2,7 @@ import { unlink } from "node:fs/promises";
 import { join } from "node:path";
 import type { Hook, HookContext } from "../hooks/types.js";
 import type { ModelDef } from "../profiles/types.js";
-import type { Provider } from "./types.js";
+import type { ModelAdmission, Provider } from "./types.js";
 
 /** Options for constructing a `LlamaProvider` (providers spec §3.2). */
 export interface LlamaProviderOptions {
@@ -48,6 +48,30 @@ export interface LlamaProviderOptions {
    * `log` (stderr) so informational output never mixes with warnings.
    */
   note?: (message: string) => void;
+  /**
+   * Free VRAM in MiB right now, or `null` when it cannot be determined
+   * (v0.10.0 spec §3.3).
+   *
+   * llama.cpp exposes no device memory over HTTP — `/props` carries the slot
+   * count and nothing about memory, and `/v1/models` reports a model's size only
+   * once it is already loaded. So the VRAM half of the capacity check has to come
+   * from the host, and Vise will not shell out to a GPU tool itself: that would
+   * make a platform-neutral harness depend on `nvidia-smi`. Supply the probe if
+   * you want VRAM checked, e.g.
+   *
+   * ```ts
+   * freeVramMiB: () =>
+   *   Number(
+   *     runCommand(
+   *       "nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits",
+   *     ).stdout.trim(),
+   *   )
+   * ```
+   *
+   * Omitted → VRAM is never checked and only the slot count gates a switch.
+   * A callback that throws is treated exactly like one returning `null`.
+   */
+  freeVramMiB?: () => Promise<number | null> | number | null;
 }
 
 /** One entry of llama.cpp's `GET /v1/models` response (wire shape). */
@@ -56,9 +80,17 @@ interface LlamaModelEntry {
   /**
    * llama.cpp metadata; `n_ctx` is the runtime context window in tokens.
    * Present only once the model is actually loaded — a router lists models it
-   * has never loaded, and those entries carry no `meta` at all.
+   * has never loaded, and those entries carry no `meta` at all. The presence of
+   * `meta` is therefore what marks an entry as *resident*.
    */
-  meta?: { n_ctx?: number };
+  meta?: {
+    n_ctx?: number;
+    /**
+     * The model's size in **bytes** — weights only, excluding the KV cache and
+     * compute buffers, so it is a floor on what the model costs once resident.
+     */
+    size?: number;
+  };
 }
 
 /** The `GET /v1/models` response body (wire shape). */
@@ -71,6 +103,11 @@ interface LlamaPropsResponse {
   /** `"router"` on a multi-model router, absent on a plain single-model server. */
   role?: string;
   default_generation_settings?: { n_ctx?: number };
+  /**
+   * Router mode only: how many models the server can hold resident at once,
+   * i.e. what it was started with as `--models-max`.
+   */
+  max_instances?: number;
 }
 
 /** The cache file owned by the agent at `depth` (KV spec §3.8). */
@@ -104,6 +141,20 @@ export class LlamaProvider implements Provider {
   private readonly slotSavePath: string;
   private readonly log: (message: string) => void;
   private readonly note: (message: string) => void;
+  /** The host's free-VRAM probe, or `undefined` when VRAM is not checked. */
+  private readonly freeVramMiB?: () => Promise<number | null> | number | null;
+  /**
+   * `max_instances` once it has been read successfully. Static for a server's
+   * lifetime, so it is worth caching — but only a *positive* reading is stored:
+   * a momentarily unreachable server must not poison the cache for the session.
+   */
+  private cachedSlotCount: number | null = null;
+  /**
+   * Sizes in bytes, learned from `meta.size` whenever a `/v1/models` response
+   * happens to carry one. Only loaded models report it, so a model that has
+   * never been resident stays unknown — which the gate treats as "allow".
+   */
+  private readonly modelSizes = new Map<string, number>();
   /**
    * The depths whose `subagent:before` save actually succeeded. A restore is
    * only attempted for a depth in this set, so a failed save is never followed
@@ -127,6 +178,7 @@ export class LlamaProvider implements Provider {
       options.log ?? ((message) => process.stderr.write(`${message}\n`));
     this.note =
       options.note ?? ((message) => process.stdout.write(`${message}\n`));
+    this.freeVramMiB = options.freeVramMiB;
 
     // KV spec §3.1: without the directory the provider cannot delete its cache
     // files, which would leave the disk dirty — a fatal config error, not a
@@ -170,6 +222,7 @@ export class LlamaProvider implements Provider {
       return [];
     }
     if (!Array.isArray(data.data)) return [];
+    this.learnSizes(data);
 
     return data.data
       .filter(
@@ -202,6 +255,7 @@ export class LlamaProvider implements Provider {
    */
   async contextWindow(model: string): Promise<number | null> {
     const models = await this.getJson<LlamaModelsResponse>("/v1/models");
+    this.learnSizes(models);
     const entry = models?.data?.find((candidate) => candidate?.id === model);
     const fromModel = positiveInt(entry?.meta?.n_ctx);
     if (fromModel !== null) return fromModel;
@@ -209,6 +263,114 @@ export class LlamaProvider implements Provider {
     const props = await this.getJson<LlamaPropsResponse>("/props");
     if (props === null || props.role === "router") return null;
     return positiveInt(props.default_generation_settings?.n_ctx);
+  }
+
+  /**
+   * Whether `model` can be loaded alongside what this server already holds
+   * (v0.10.0 spec §3).
+   *
+   * Two conditions, both required, and both read-only:
+   *  1. a free **model slot** — `/props` → `max_instances` against the number of
+   *     entries `/v1/models` reports as resident (an entry carries `meta` only
+   *     once it is loaded);
+   *  2. enough **VRAM** — but only when the host supplied a `freeVramMiB` probe
+   *     *and* the model's size has been learned. llama.cpp reports neither device
+   *     memory nor an unloaded model's size, so either being unknown means the
+   *     slot check stands alone rather than blocking a run on a guess.
+   *
+   * Never forces a load: asking the server to load the model to find out whether
+   * it fits would evict the very model this check exists to protect.
+   */
+  async admitModel(model: string): Promise<ModelAdmission | null> {
+    const models = await this.getJson<LlamaModelsResponse>("/v1/models");
+    if (models === null) return null;
+    this.learnSizes(models);
+
+    const loaded: string[] = [];
+    for (const entry of models.data ?? []) {
+      if (typeof entry?.id === "string" && entry.id !== "" && entry.meta) {
+        loaded.push(entry.id);
+      }
+    }
+
+    // Already resident: using it costs nothing and evicts nothing.
+    if (loaded.includes(model)) return { ok: true, loaded };
+
+    const slots = await this.readSlotCount();
+    if (slots === null) {
+      return {
+        ok: false,
+        reason: "does not report how many models it can hold at once",
+        loaded,
+      };
+    }
+    if (loaded.length >= slots) {
+      return {
+        ok: false,
+        reason: `has no free model slot (${loaded.length} of ${slots} in use)`,
+        loaded,
+      };
+    }
+
+    const free = await this.readFreeVram();
+    const size = this.modelSizes.get(model);
+    if (free === null || size === undefined) return { ok: true, loaded };
+
+    const needMiB = Math.ceil(size / (1024 * 1024));
+    if (needMiB <= free) return { ok: true, loaded };
+    return {
+      ok: false,
+      reason: `does not have enough free VRAM (needs ~${needMiB} MiB, ${free} MiB free)`,
+      loaded,
+    };
+  }
+
+  /**
+   * `max_instances` from `/props`, or `null` when the server genuinely will not
+   * say. A plain (non-router) server omits the field because it holds exactly one
+   * model, which is an answer of 1 rather than an unknown.
+   */
+  private async readSlotCount(): Promise<number | null> {
+    if (this.cachedSlotCount !== null) return this.cachedSlotCount;
+
+    const props = await this.getJson<LlamaPropsResponse>("/props");
+    const reported = positiveInt(props?.max_instances);
+    if (reported !== null) {
+      this.cachedSlotCount = reported;
+      return reported;
+    }
+    if (props !== null && props.role !== "router") {
+      this.cachedSlotCount = 1;
+      return 1;
+    }
+    return null;
+  }
+
+  /**
+   * The host's free-VRAM reading in MiB, or `null` when there is no probe or it
+   * cannot say. The probe is user code on a path contracted never to throw, so a
+   * throw is caught here and reported as "unknown" like any other failure.
+   */
+  private async readFreeVram(): Promise<number | null> {
+    if (this.freeVramMiB === undefined) return null;
+    try {
+      const value = await this.freeVramMiB();
+      return typeof value === "number" && Number.isFinite(value) && value >= 0
+        ? Math.floor(value)
+        : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Record any `meta.size` a `/v1/models` response happens to carry. */
+  private learnSizes(models: LlamaModelsResponse | null): void {
+    for (const entry of models?.data ?? []) {
+      const size = positiveInt(entry?.meta?.size);
+      if (typeof entry?.id === "string" && entry.id !== "" && size !== null) {
+        this.modelSizes.set(entry.id, size);
+      }
+    }
   }
 
   /** `GET {base}{path}` as JSON, or `null` for any failure. */

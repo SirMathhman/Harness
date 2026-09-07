@@ -15,7 +15,7 @@ import { runTurn, type AgentCallbacks } from "./loop.js";
 import { LLMError } from "../llm/errors.js";
 import { defaultLLMClient, type LLMClient } from "../llm/client.js";
 import { HookManager, type RegisteredHook } from "../hooks/index.js";
-import type { Provider } from "../providers/index.js";
+import type { ModelAdmission, Provider } from "../providers/index.js";
 import {
   availableModelIds,
   allProfileNames,
@@ -323,6 +323,20 @@ export function makeSubagentRunner(
       inheritParent = true;
     }
 
+    // Capacity gate (v0.10.0 spec §3, E-P9). Switching to a second model on the
+    // *same* backend can evict the one the parent is using, so the backend is
+    // asked whether it can hold both first. A refusal fails the subagent rather
+    // than quietly falling back to the parent's model: the profile asked for a
+    // specific model, and silently running on a different one would hide that.
+    // Checked before `resolveProfile` so a refusal costs no materialization.
+    if (!inheritParent && modelId !== null) {
+      const refusal = await capacityRefusal(ctx.graph, opts, modelId);
+      if (refusal !== null) {
+        emit({ kind: "end", ok: false, label: "failed" });
+        return refusal;
+      }
+    }
+
     let resolved: ResolvedProfile;
     try {
       resolved = resolveProfile(ctx.graph, opts.profile, {
@@ -499,6 +513,60 @@ function activeProvider(
   const providerId =
     resource?.kind === "model" ? resource.def.provider : undefined;
   return providerId !== undefined ? graph.providers.get(providerId) : undefined;
+}
+
+/**
+ * `null` when `candidateModelId` is safe to use, otherwise the failure string the
+ * runner returns verbatim (v0.10.0 spec §3, E-P9).
+ *
+ * Only a switch *within one backend* can evict anything: two providers are two
+ * servers, and a model declared with `reg.createModel()` has no provider to ask.
+ * Everything else — the same model, a provider with no `admitModel`, an "I cannot
+ * say" answer — is allowed, so the gate only ever blocks on a definite no.
+ */
+async function capacityRefusal(
+  graph: ResourceGraph,
+  opts: SubagentRunOptions,
+  candidateModelId: ResourceId,
+): Promise<string | null> {
+  // The parent's own model is already resident by definition.
+  if (candidateModelId === opts.parentModel.modelId) return null;
+
+  const parent = activeProvider(graph, opts.parentModel.modelId ?? null);
+  const candidate = activeProvider(graph, candidateModelId);
+  if (parent === undefined || candidate === undefined || parent !== candidate) {
+    return null;
+  }
+
+  const ask = candidate.admitModel;
+  const name = modelNameOf(graph, candidateModelId);
+  if (ask === undefined || name === null) return null;
+
+  let verdict: ModelAdmission | null;
+  try {
+    verdict = await ask.call(candidate, name);
+  } catch {
+    // `admitModel` is contracted never to throw; one that breaks the contract
+    // must not take the subagent down with it.
+    return null;
+  }
+  if (verdict === null || verdict.ok) return null;
+
+  const because =
+    verdict.reason ?? "cannot hold it alongside what it already has loaded";
+  const loaded = verdict.loaded.length > 0 ? verdict.loaded.join(", ") : "none";
+  return (
+    `subagent failed: profile "${opts.profile}" requested model "${name}" on ` +
+    `provider "${candidate.name}", which ${because}. Try a model that is ` +
+    `already loaded on "${candidate.name}" (currently loaded: ${loaded}) or a ` +
+    `different provider.`
+  );
+}
+
+/** The name of a `Model` resource, or `null` when `id` is not one. */
+function modelNameOf(graph: ResourceGraph, id: ResourceId): string | null {
+  const resource = graph.resources.get(id);
+  return resource?.kind === "model" ? resource.def.name : null;
 }
 
 /** A provider's contributed hooks, tagged with where they came from (§3.2). */

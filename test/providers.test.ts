@@ -809,3 +809,361 @@ describe("subagent model inheritance (providers spec §3.7)", () => {
     expect(seenConfigs[0].baseUrl).toBe("http://b");
   });
 });
+
+describe("LlamaProvider.admitModel (v0.10.0 spec §3)", () => {
+  /** A stub llama.cpp whose `/v1/models` and `/props` bodies can change. */
+  function serveMutable(state: { models: unknown; props: unknown }) {
+    const hits = { props: 0, models: 0 };
+    const server = Bun.serve({
+      port: 0,
+      fetch(req) {
+        const { pathname } = new URL(req.url);
+        if (pathname === "/v1/models") {
+          hits.models++;
+          return Response.json(state.models);
+        }
+        if (pathname === "/props") {
+          hits.props++;
+          return Response.json(state.props);
+        }
+        return new Response("nope", { status: 404 });
+      },
+    });
+    return { server, hits, url: `http://127.0.0.1:${server.port}` };
+  }
+
+  const router = (max?: number) => ({
+    role: "router",
+    ...(max === undefined ? {} : { max_instances: max }),
+  });
+  /** `a` resident (with a size), `b` known to the router but not loaded. */
+  const aLoaded = {
+    data: [
+      { id: "a", meta: { n_ctx: 4096, size: 1024 * 1024 * 100 } },
+      { id: "b" },
+    ],
+  };
+
+  test("admits a model when a slot is free", async () => {
+    const { server, url } = serveMutable({ models: aLoaded, props: router(2) });
+    try {
+      const verdict = await new LlamaProvider({ url }).admitModel("b");
+      expect(verdict).toEqual({ ok: true, loaded: ["a"] });
+    } finally {
+      server.stop();
+    }
+  });
+
+  test("refuses when every slot is in use", async () => {
+    const { server, url } = serveMutable({ models: aLoaded, props: router(1) });
+    try {
+      const verdict = await new LlamaProvider({ url }).admitModel("b");
+      expect(verdict?.ok).toBe(false);
+      expect(verdict?.loaded).toEqual(["a"]);
+      expect(verdict?.reason).toBe("has no free model slot (1 of 1 in use)");
+    } finally {
+      server.stop();
+    }
+  });
+
+  test("always admits a model that is already loaded", async () => {
+    // Even with every slot in use: using what is resident evicts nothing.
+    const { server, url } = serveMutable({ models: aLoaded, props: router(1) });
+    try {
+      const verdict = await new LlamaProvider({ url }).admitModel("a");
+      expect(verdict).toEqual({ ok: true, loaded: ["a"] });
+    } finally {
+      server.stop();
+    }
+  });
+
+  test("admits a model whose size is unknown", async () => {
+    // `b` has never been resident, so no `meta.size` was ever reported for it
+    // and there is nothing to weigh against free VRAM (spec §2.3).
+    const { server, url } = serveMutable({ models: aLoaded, props: router(2) });
+    try {
+      const provider = new LlamaProvider({ url, freeVramMiB: () => 1 });
+      expect((await provider.admitModel("b"))?.ok).toBe(true);
+    } finally {
+      server.stop();
+    }
+  });
+
+  test("refuses when the model is larger than free VRAM", async () => {
+    // `b` is resident first, so its size is learned; then it is evicted and
+    // asked about again — the case a real router actually produces.
+    const state = {
+      models: { data: [{ id: "b", meta: { size: 1024 * 1024 * 500 } }] },
+      props: router(2),
+    };
+    const { server, url } = serveMutable(state);
+    try {
+      const provider = new LlamaProvider({ url, freeVramMiB: () => 200 });
+      await provider.discoverModels();
+      state.models = aLoaded;
+
+      const verdict = await provider.admitModel("b");
+      expect(verdict?.ok).toBe(false);
+      expect(verdict?.reason).toBe(
+        "does not have enough free VRAM (needs ~500 MiB, 200 MiB free)",
+      );
+    } finally {
+      server.stop();
+    }
+  });
+
+  test("a VRAM probe that throws leaves VRAM unchecked", async () => {
+    const state = {
+      models: { data: [{ id: "b", meta: { size: 1024 * 1024 * 500 } }] },
+      props: router(2),
+    };
+    const { server, url } = serveMutable(state);
+    try {
+      const provider = new LlamaProvider({
+        url,
+        freeVramMiB: () => {
+          throw new Error("no nvidia-smi here");
+        },
+      });
+      await provider.discoverModels();
+      state.models = aLoaded;
+      expect((await provider.admitModel("b"))?.ok).toBe(true);
+    } finally {
+      server.stop();
+    }
+  });
+
+  test("does not check VRAM without a probe", async () => {
+    const state = {
+      models: { data: [{ id: "b", meta: { size: 1024 * 1024 * 500 } }] },
+      props: router(2),
+    };
+    const { server, url } = serveMutable(state);
+    try {
+      const provider = new LlamaProvider({ url });
+      await provider.discoverModels();
+      state.models = aLoaded;
+      expect((await provider.admitModel("b"))?.ok).toBe(true);
+    } finally {
+      server.stop();
+    }
+  });
+
+  test("refuses when a router will not report capacity", async () => {
+    const { server, url } = serveMutable({
+      models: aLoaded,
+      props: router(undefined),
+    });
+    try {
+      const verdict = await new LlamaProvider({ url }).admitModel("b");
+      expect(verdict?.ok).toBe(false);
+      expect(verdict?.reason).toBe(
+        "does not report how many models it can hold at once",
+      );
+    } finally {
+      server.stop();
+    }
+  });
+
+  test("treats a plain server as a single slot", async () => {
+    // No `role: "router"` and no `max_instances`: it holds exactly one model,
+    // which is an answer of 1 rather than an unknown (spec §3.2).
+    const { server, url } = serveMutable({
+      models: aLoaded,
+      props: { default_generation_settings: { n_ctx: 4096 } },
+    });
+    try {
+      const verdict = await new LlamaProvider({ url }).admitModel("b");
+      expect(verdict?.ok).toBe(false);
+      expect(verdict?.reason).toBe("has no free model slot (1 of 1 in use)");
+    } finally {
+      server.stop();
+    }
+  });
+
+  test("caches a positive slot count", async () => {
+    const { server, hits, url } = serveMutable({
+      models: aLoaded,
+      props: router(2),
+    });
+    try {
+      const provider = new LlamaProvider({ url });
+      await provider.admitModel("b");
+      await provider.admitModel("b");
+      // `/props` is fixed by the server's command line; `/v1/models` is not.
+      expect(hits.props).toBe(1);
+      expect(hits.models).toBe(2);
+    } finally {
+      server.stop();
+    }
+  });
+
+  test("does not cache a failed slot-count read", async () => {
+    const state: { models: unknown; props: unknown } = {
+      models: aLoaded,
+      props: router(undefined),
+    };
+    const { server, url } = serveMutable(state);
+    try {
+      const provider = new LlamaProvider({ url });
+      expect((await provider.admitModel("b"))?.ok).toBe(false);
+      state.props = router(2);
+      expect((await provider.admitModel("b"))?.ok).toBe(true);
+    } finally {
+      server.stop();
+    }
+  });
+
+  test("reports null for an unreachable server, never throws", async () => {
+    const provider = new LlamaProvider({ url: "http://127.0.0.1:1" });
+    expect(await provider.admitModel("b")).toBeNull();
+  });
+});
+
+describe("subagent capacity gate (v0.10.0 spec §3.4, E-P9)", () => {
+  type Admit = NonNullable<Provider["admitModel"]>;
+
+  /**
+   * A parent on `a` and a "worker" profile whose whitelist selects `b`, both
+   * discovered from one provider whose `admitModel` is scripted by `admit`.
+   */
+  function gateGraph(
+    admit: Admit | undefined,
+    calls: string[],
+    whitelistPattern = "b",
+  ): ResourceGraph {
+    return withDiscovered(
+      (reg) => {
+        reg.addProvider({
+          name: "llama",
+          async discoverModels() {
+            return [];
+          },
+          ...(admit === undefined
+            ? {}
+            : {
+                admitModel: (model: string) => {
+                  calls.push(model);
+                  return admit(model);
+                },
+              }),
+        });
+        reg.createProfile({
+          name: "worker",
+          systemPrompt: "w",
+          models: [["llama", whitelistPattern]],
+        });
+      },
+      {
+        llama: [
+          { name: "a", baseUrl: "http://a", apiKey: "" },
+          { name: "b", baseUrl: "http://a", apiKey: "" },
+        ],
+      },
+    );
+  }
+
+  const client: LLMClient = {
+    async chat() {
+      return finish("done");
+    },
+  };
+
+  const spawn = (graph: ResourceGraph) =>
+    createSession({ graph, client })
+      .registry.get("spawn_subagent")!
+      .handler({ task: "t", maxIterations: 3, profile: "worker" });
+
+  test("fails the subagent when the backend refuses", async () => {
+    const calls: string[] = [];
+    const graph = gateGraph(
+      async () => ({
+        ok: false,
+        reason: "has no free model slot (1 of 1 in use)",
+        loaded: ["a"],
+      }),
+      calls,
+    );
+    const out = await spawn(graph);
+    expect(calls).toEqual(["b"]);
+    expect(out).toContain("subagent failed");
+    expect(out).toContain('profile "worker"');
+    expect(out).toContain('model "b"');
+    expect(out).toContain("has no free model slot (1 of 1 in use)");
+    expect(out).toContain("currently loaded: a");
+    expect(out).toContain("a different provider");
+  });
+
+  test("runs the subagent when the backend admits", async () => {
+    const calls: string[] = [];
+    const graph = gateGraph(async () => ({ ok: true, loaded: ["a"] }), calls);
+    expect(await spawn(graph)).toBe("done");
+    expect(calls).toEqual(["b"]);
+  });
+
+  test("never asks about the parent's own model", async () => {
+    // The whitelist re-selects `a`, which the parent already has resident.
+    const calls: string[] = [];
+    const graph = gateGraph(
+      async () => ({ ok: false, reason: "should never be asked", loaded: [] }),
+      calls,
+      "a",
+    );
+    expect(await spawn(graph)).toBe("done");
+    expect(calls).toEqual([]);
+  });
+
+  test("never gates a provider that cannot answer", async () => {
+    expect(await spawn(gateGraph(undefined, []))).toBe("done");
+  });
+
+  test("an admitModel that cannot say allows the run", async () => {
+    const calls: string[] = [];
+    expect(await spawn(gateGraph(async () => null, calls))).toBe("done");
+    expect(calls).toEqual(["b"]);
+  });
+
+  test("an admitModel that throws allows the run", async () => {
+    const calls: string[] = [];
+    const graph = gateGraph(async () => {
+      throw new Error("contract broken");
+    }, calls);
+    expect(await spawn(graph)).toBe("done");
+  });
+
+  test("never gates a model on a different provider", async () => {
+    // Two providers are two servers: loading on one evicts nothing on the other.
+    const calls: string[] = [];
+    const graph = withDiscovered(
+      (reg) => {
+        reg.addProvider({
+          name: "llama",
+          async discoverModels() {
+            return [];
+          },
+          admitModel: async (model: string) => {
+            calls.push(model);
+            return { ok: false, reason: "should never be asked", loaded: [] };
+          },
+        });
+        reg.addProvider({
+          name: "other",
+          async discoverModels() {
+            return [];
+          },
+        });
+        reg.createProfile({
+          name: "worker",
+          systemPrompt: "w",
+          models: ["other"],
+        });
+      },
+      {
+        llama: [{ name: "a", baseUrl: "http://a", apiKey: "" }],
+        other: [{ name: "b", baseUrl: "http://b", apiKey: "" }],
+      },
+    );
+    expect(await spawn(graph)).toBe("done");
+    expect(calls).toEqual([]);
+  });
+});

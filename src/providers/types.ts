@@ -9,6 +9,26 @@
 import type { Hook } from "../hooks/types.js";
 import type { ModelDef } from "../profiles/types.js";
 
+/**
+ * A backend's verdict on loading one more model (v0.10.0 spec §2).
+ *
+ * Returned by `Provider.admitModel()`. `loaded` is carried alongside the verdict
+ * so a refusal can name the models that *are* resident without a second round
+ * trip — the subagent gate puts them in its failure message so the model can
+ * pick one of them instead.
+ */
+export interface ModelAdmission {
+  /** Whether the backend can hold the asked-about model too. */
+  ok: boolean;
+  /**
+   * Why not, when `ok` is false. A sentence fragment completing "…, which
+   * <reason>", e.g. `"has no free model slot (1 of 1 in use)"`.
+   */
+  reason?: string;
+  /** The models the backend currently has resident. May be empty. */
+  loaded: string[];
+}
+
 export interface Provider {
   /**
    * The provider's name. Used for disambiguation in model-selection specs
@@ -60,6 +80,26 @@ export interface Provider {
    * contextWindow })` can supply it.
    */
   contextWindow?(model: string): Promise<number | null>;
+
+  /**
+   * Ask the backend whether `model` can be made resident alongside the models it
+   * already has loaded (v0.10.0 spec §3).
+   *
+   * Capacity is a property of the *backend*, not of a model definition: a
+   * llama.cpp router holds at most `--models-max` models at once, so letting a
+   * subagent switch to a second model on the same server would evict the one its
+   * parent is using and reload it again afterwards. The subagent gate asks this
+   * before allowing the switch, and refuses the run when the answer is no.
+   *
+   * The implementation determines residency itself — the caller knows only its
+   * own model, never the full set the server currently holds.
+   *
+   * Implementations MUST be read-only — never force a load — and MUST never
+   * throw: "cannot say" is reported by resolving to `null`, which the gate reads
+   * as "no known limit, allow". Default: absent, i.e. the backend never reports
+   * capacity and the gate never blocks.
+   */
+  admitModel?(model: string): Promise<ModelAdmission | null>;
 
   /**
    * True when subagent runs must be serialized while this provider is active

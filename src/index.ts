@@ -51,5 +51,9 @@ export type { Skill } from "./types.js";
  * The provider API (providers spec §3.1, §3.2): `Provider` for a custom
  * backend, `LlamaProvider` for an OpenAI-compatible llama.cpp server.
  */
-export type { Provider, LlamaProviderOptions } from "./providers/index.js";
+export type {
+  ModelAdmission,
+  Provider,
+  LlamaProviderOptions,
+} from "./providers/index.js";
 export { LlamaProvider } from "./providers/index.js";

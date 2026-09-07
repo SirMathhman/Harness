@@ -1,4 +1,4 @@
-export type { Provider } from "./types.js";
+export type { ModelAdmission, Provider } from "./types.js";
 export {
   kvCacheFileName,
   LlamaProvider,
