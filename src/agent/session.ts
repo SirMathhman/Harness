@@ -1,4 +1,4 @@
-import type { Session, Skill } from "../types.js";
+import type { Message, Session, Skill } from "../types.js";
 import type { ToolRegistry, BackgroundCommandManager } from "../tools/index.js";
 import type { LLMClient } from "../llm/client.js";
 import {
@@ -13,6 +13,7 @@ import {
   profileEntries,
   profileNames,
   resolveProfile,
+  systemPromptOf,
   UnknownModelError,
   UnknownProfileError,
   type ModelListEntry,
@@ -130,6 +131,19 @@ export interface SessionHandle {
    * profile/model are untouched.
    */
   clearConversation(): void;
+  /**
+   * Replace the conversation with a loaded one (spec §3.3 R2, R3): re-resolve
+   * the system prompt for `profile`, prepend it, then install `messages`.
+   * Resets `lastPromptTokens` and sets the active profile/model. Assumes
+   * `profile` names a profile in the graph; the caller handles the R6
+   * fallback for a missing profile.
+   *
+   * @throws UnknownProfileError when no such profile exists.
+   * @throws ProfileHasNoModelError when the profile resolves to no model.
+   * @throws MissingMaxContextError when the resolved model reports no
+   *   context-window size.
+   */
+  loadConversation(messages: Message[], profile: string, model: string | null): void;
 }
 
 /**
@@ -207,6 +221,35 @@ export function createSession(options: SessionOptions = {}): SessionHandle {
       }
       session.messages = session.messages.slice(0, i);
       session.lastPromptTokens = null;
+    },
+    loadConversation(messages: Message[], profile: string, model: string | null) {
+      // Resolve *before* touching anything, so a failed load leaves the
+      // session exactly as it was (spec §4).
+      const resolved = resolveProfile(graph, profile, {
+        modelNameHint: model,
+      });
+      const next = materializeProfile(resolved, ctx, 0);
+      if (next.config.model === null) throw new ProfileHasNoModelError(profile);
+
+      // The outgoing profile's background commands belong to the profile, not
+      // the conversation, so they die with it (E21).
+      handle.manager.killAll();
+
+      // R2: re-derive the system prompt from the profile; R3: replace the
+      // conversation with the freshly-resolved prompt + the saved messages.
+      session.messages = [
+        { role: "system", content: systemPromptOf(resolved) },
+        ...messages,
+      ];
+      session.config = next.config;
+      session.hooks = next.hooks;
+      session.profile = profile;
+      session.lastPromptTokens = null;
+      handle.registry = next.registry;
+      handle.manager = next.manager;
+      handle.profile = profile;
+      activeModelId = resolved.modelId;
+      currentAvailable = resolved.availableModelIds;
     },
     switchProfile(name: string) {
       // Resolve *before* touching anything, so an unknown or unusable profile
