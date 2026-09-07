@@ -92,11 +92,15 @@ async function startServer(opts: {
   staticDir?: string | null;
   sessionsDir?: string;
 }): Promise<{ port: number; stop: () => Promise<void> }> {
+  // Always isolate the sessions dir so a test never writes into the real
+  // project's `.vise/sessions` (the server auto-saves `last` on stop).
+  const sessionsDir =
+    opts.sessionsDir ?? mkdtempSync(path.join(tmpdir(), "vise-server-sess-"));
   const server = new AgentServer({
     graph: opts.graph,
     profile: opts.profile ?? "Agent",
     staticDir: opts.staticDir ?? null,
-    sessionsDir: opts.sessionsDir,
+    sessionsDir,
     log: () => {},
   });
   const port = await server.start(0);
