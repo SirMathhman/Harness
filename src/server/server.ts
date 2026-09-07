@@ -23,8 +23,24 @@ import {
   type SubagentRender,
   type SubagentRenderEvent,
 } from "../agent/subagent.js";
-import { type ResourceGraph } from "../profiles/index.js";
-import { autoSaveLast, sessionsDir } from "../sessions/index.js";
+import {
+  IMPLICIT_PROFILE_NAME,
+  type ResourceGraph,
+} from "../profiles/index.js";
+import {
+  autoName,
+  autoSaveLast,
+  deleteSession,
+  listSessions,
+  loadSession,
+  renameSession,
+  saveSession,
+  sanitizeName,
+  sessionsDir,
+  stripSystemMessages,
+  SessionError,
+  type SavedSession,
+} from "../sessions/index.js";
 import { newId } from "../utils.js";
 import {
   DEFAULT_GUI_PORT,
@@ -304,6 +320,21 @@ export class AgentServer {
       case "hooks":
         this.doHooks(command.enabled);
         return;
+      case "save":
+        this.doSave(command.name);
+        return;
+      case "load":
+        this.doLoad(command.name);
+        return;
+      case "sessions":
+        this.doSessions();
+        return;
+      case "rename":
+        this.doRename(command.old, command.new);
+        return;
+      case "delete":
+        this.doDelete(command.name);
+        return;
       default:
         this.send({
           type: "commandResult",
@@ -477,6 +508,189 @@ export class AgentServer {
     }
     this.handle.setHooksEnabled(enabled);
     this.send({ type: "state", patch: { hooksEnabled: enabled } });
+  }
+
+  /** Save the current conversation (v0.8.0 spec §3.2, W1). */
+  private doSave(name: unknown): void {
+    if (this.turnActive) {
+      this.send({
+        type: "commandResult",
+        ok: false,
+        error: "Cannot save while a turn is running.",
+      });
+      return;
+    }
+    let clean: string;
+    try {
+      clean =
+        typeof name === "string" && name.length > 0
+          ? sanitizeName(name)
+          : autoName();
+    } catch (err) {
+      if (err instanceof SessionError) {
+        this.send({ type: "commandResult", ok: false, error: err.message });
+        return;
+      }
+      throw err;
+    }
+    const messages = stripSystemMessages(this.handle.session.messages);
+    const saved: SavedSession = {
+      version: 1,
+      name: clean,
+      title: clean,
+      profile: this.handle.session.profile,
+      model: this.handle.session.config.model ?? "",
+      savedAt: new Date().toISOString(),
+      messages,
+    };
+    try {
+      saveSession(sessionsDir(), saved);
+    } catch (err) {
+      this.send({
+        type: "commandResult",
+        ok: false,
+        error: `Could not save session: ${(err as Error).message}.`,
+      });
+      return;
+    }
+    this.send({ type: "sessionSaved", name: clean });
+  }
+
+  /** Load a saved conversation, replacing the current one (spec §3.2, W3). */
+  private doLoad(name: unknown): void {
+    if (typeof name !== "string" || name.length === 0) {
+      this.send({
+        type: "commandResult",
+        ok: false,
+        error: "load requires a `name`.",
+      });
+      return;
+    }
+    if (this.turnActive) {
+      this.send({
+        type: "commandResult",
+        ok: false,
+        error: "Cannot load while a turn is running.",
+      });
+      return;
+    }
+    let saved: SavedSession;
+    try {
+      saved = loadSession(sessionsDir(), name);
+    } catch (err) {
+      if (err instanceof SessionError) {
+        this.send({ type: "commandResult", ok: false, error: err.message });
+        return;
+      }
+      this.send({
+        type: "commandResult",
+        ok: false,
+        error: `Could not load session: ${(err as Error).message}.`,
+      });
+      return;
+    }
+
+    // R6: fall back to the built-in profile when the saved one is gone.
+    const profiles = this.handle.profiles();
+    let profile = saved.profile;
+    if (!profiles.includes(profile)) {
+      profile = IMPLICIT_PROFILE_NAME;
+    }
+
+    // R6: warn when the saved model is no longer available.
+    let model: string | null = saved.model === "" ? null : saved.model;
+    if (model !== null) {
+      const available = this.handle
+        .modelEntries()
+        .map((e) => e.name)
+        .includes(model);
+      if (!available) model = null;
+    }
+
+    try {
+      this.handle.loadConversation(saved.messages, profile, model);
+    } catch (err) {
+      this.send({
+        type: "commandResult",
+        ok: false,
+        error: (err as Error).message,
+      });
+      return;
+    }
+    this.send({
+      type: "sessionLoaded",
+      name,
+      profile,
+      model: this.handle.session.config.model ?? "",
+      messageCount: saved.messages.length,
+    });
+    // The loaded conversation replaces the current one; send a fresh snapshot
+    // so the client's history reflects it (the snapshot carries the messages).
+    this.send(this.buildSnapshot());
+  }
+
+  /** List saved sessions (spec §3.2, W2). */
+  private doSessions(): void {
+    this.send({ type: "sessions", sessions: listSessions(sessionsDir()) });
+  }
+
+  /** Rename a saved session (spec §3.2, W4). */
+  private doRename(oldName: unknown, newName: unknown): void {
+    if (
+      typeof oldName !== "string" ||
+      oldName.length === 0 ||
+      typeof newName !== "string" ||
+      newName.length === 0
+    ) {
+      this.send({
+        type: "commandResult",
+        ok: false,
+        error: "rename requires `old` and `new`.",
+      });
+      return;
+    }
+    try {
+      renameSession(sessionsDir(), oldName, newName);
+    } catch (err) {
+      if (err instanceof SessionError) {
+        this.send({ type: "commandResult", ok: false, error: err.message });
+        return;
+      }
+      this.send({
+        type: "commandResult",
+        ok: false,
+        error: `Could not rename session: ${(err as Error).message}.`,
+      });
+      return;
+    }
+    this.send({ type: "sessions", sessions: listSessions(sessionsDir()) });
+  }
+
+  /** Delete a saved session (spec §3.2, W4). */
+  private doDelete(name: unknown): void {
+    if (typeof name !== "string" || name.length === 0) {
+      this.send({
+        type: "commandResult",
+        ok: false,
+        error: "delete requires a `name`.",
+      });
+      return;
+    }
+    try {
+      deleteSession(sessionsDir(), name);
+    } catch (err) {
+      if (err instanceof SessionError) {
+        this.send({ type: "commandResult", ok: false, error: err.message });
+        return;
+      }
+      this.send({
+        type: "commandResult",
+        ok: false,
+        error: `Could not delete session: ${(err as Error).message}.`,
+      });
+      return;
+    }
+    this.send({ type: "sessionDeleted", name });
   }
 
   /** Mark a turn complete and return to idle (GUI spec §2.3.1). */

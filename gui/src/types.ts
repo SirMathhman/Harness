@@ -50,7 +50,17 @@ export type ServerEvent =
     }
   | { type: "cleared" }
   | { type: "pong" }
-  | { type: "serverEvent"; name: string; payload: Record<string, unknown> };
+  | { type: "serverEvent"; name: string; payload: Record<string, unknown> }
+  | { type: "sessions"; sessions: SessionInfo[] }
+  | { type: "sessionSaved"; name: string }
+  | {
+      type: "sessionLoaded";
+      name: string;
+      profile: string;
+      model: string;
+      messageCount: number;
+    }
+  | { type: "sessionDeleted"; name: string };
 
 export type ClientCommand =
   | { type: "task"; text: string }
@@ -60,7 +70,21 @@ export type ClientCommand =
   | { type: "clear" }
   | { type: "newSession" }
   | { type: "hooks"; enabled: boolean }
-  | { type: "ping" };
+  | { type: "ping" }
+  | { type: "save"; name?: string }
+  | { type: "load"; name: string }
+  | { type: "sessions" }
+  | { type: "rename"; old: string; new: string }
+  | { type: "delete"; name: string };
+
+/** A saved session as listed by the server (v0.8.0 spec §2.2). */
+export interface SessionInfo {
+  name: string;
+  title: string;
+  model: string;
+  savedAt: string;
+  readable: boolean;
+}
 
 export type ConversationItem =
   | { kind: "userMessage"; text: string }
