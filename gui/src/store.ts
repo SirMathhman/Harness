@@ -10,7 +10,7 @@
 
 import { batch, createSignal } from "solid-js";
 import { createStore as createSolidStore } from "solid-js/store";
-import type { ConversationItem, ServerEvent, UIState } from "./types";
+import type { ConversationItem, ServerEvent, SessionInfo, UIState } from "./types";
 
 /** A rendered conversation row, with its nesting depth (0 = main). */
 export interface Row {
@@ -65,6 +65,10 @@ export function createStore() {
   });
   const [state, setState] = createSignal<UIState | null>(null);
   const [lastError, setLastError] = createSignal<string | null>(null);
+  // Saved sessions, refreshed by the server's `sessions` event (and after
+  // save/rename/delete). Kept as a plain signal: the list is small and replaced
+  // wholesale, never streamed.
+  const [sessions, setSessions] = createSignal<SessionInfo[]>([]);
   // Bumped by every authoritative reset (snapshot / cleared). The view layer
   // uses it to drop measurements, disclosure state and caches that belong to
   // the previous generation.
@@ -400,6 +404,17 @@ export function createStore() {
         if (!event.ok && event.error) setLastError(event.error);
         return;
       }
+      case "sessions": {
+        setSessions(event.sessions);
+        return;
+      }
+      case "sessionSaved":
+      case "sessionDeleted":
+      case "sessionLoaded":
+        // The list refresh and the conversation reset are driven elsewhere:
+        // save/delete trigger a `sessions` request from the view, and load is
+        // followed by an authoritative snapshot that rebuilds the rows.
+        return;
       case "pong":
       case "serverEvent":
         return;
@@ -420,6 +435,7 @@ export function createStore() {
     blocks: (): readonly Block[] => doc.blocks,
     state,
     lastError,
+    sessions,
     generation,
     activeReasoning: (): Set<number> => {
       const out = new Set<number>();

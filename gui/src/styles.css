@@ -188,6 +188,70 @@ body {
   word-break: break-word;
 }
 
+.panel-item.muted {
+  color: var(--fg-muted);
+}
+
+/* Sessions panel (v0.8.0) */
+.session-save {
+  display: flex;
+  gap: 0.35rem;
+  margin-bottom: 0.4rem;
+}
+
+.session-name {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.82rem;
+}
+
+.session-item {
+  padding: 0.3rem 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.session-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  margin-bottom: 0.3rem;
+}
+
+.session-title {
+  font-size: 0.85rem;
+  word-break: break-word;
+}
+
+.session-sub {
+  font-size: 0.72rem;
+  color: var(--fg-muted);
+}
+
+.session-actions {
+  display: flex;
+  gap: 0.3rem;
+}
+
+.session-actions .control {
+  font-size: 0.75rem;
+  padding: 0.15rem 0.4rem;
+}
+
+.control.danger {
+  color: var(--fg);
+  border-color: var(--border);
+}
+
+.control.danger:hover {
+  border-color: #c0392b;
+  color: #c0392b;
+}
+
 /* Conversation rows */
 .row {
   max-width: 75ch;

@@ -92,6 +92,35 @@ export function App() {
   const state = () => store.state();
   const turnActive = () => state()?.turnActive ?? false;
 
+  // Sessions panel (v0.8.0). The list is server-authoritative: we request it on
+  // connect and after every mutation; the server replies with a `sessions`
+  // event that the store applies.
+  const [saveName, setSaveName] = createSignal("");
+  const refreshSessions = () => client.send({ type: "sessions" });
+  createEffect(() => {
+    if (client.connectionState() === "open") refreshSessions();
+  });
+  const doSave = () => {
+    const name = saveName().trim();
+    client.send(name ? { type: "save", name } : { type: "save" });
+    setSaveName("");
+    refreshSessions();
+  };
+  const doLoad = (name: string) => client.send({ type: "load", name });
+  const doRename = (name: string) => {
+    const next = window.prompt("Rename session to:", name);
+    if (next === null) return;
+    const trimmed = next.trim();
+    if (!trimmed || trimmed === name) return;
+    client.send({ type: "rename", old: name, new: trimmed });
+    refreshSessions();
+  };
+  const doDelete = (name: string) => {
+    if (!window.confirm(`Delete session "${name}"?`)) return;
+    client.send({ type: "delete", name });
+    refreshSessions();
+  };
+
   return (
     <div class="app">
       <header class="topbar">
@@ -205,6 +234,67 @@ export function App() {
         />
 
         <aside class="sidebar">
+          <Panel title={`sessions (${store.sessions().length})`}>
+            <div class="session-save">
+              <input
+                class="session-name"
+                placeholder="name (optional)"
+                value={saveName()}
+                onInput={(e) =>
+                  setSaveName((e.target as HTMLInputElement).value)
+                }
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") doSave();
+                }}
+              />
+              <button
+                class="control"
+                disabled={turnActive()}
+                onClick={doSave}
+              >
+                save
+              </button>
+            </div>
+            <Show
+              when={store.sessions().length > 0}
+              fallback={<div class="panel-item muted">no saved sessions</div>}
+            >
+              <For each={store.sessions()}>
+                {(s) => (
+                  <div class="session-item">
+                    <div class="session-meta" title={s.savedAt}>
+                      <span class="session-title">{s.title}</span>
+                      <span class="session-sub">
+                        {s.model || "—"} · {s.savedAt}
+                      </span>
+                    </div>
+                    <div class="session-actions">
+                      <button
+                        class="control"
+                        disabled={turnActive() || !s.readable}
+                        onClick={() => doLoad(s.name)}
+                      >
+                        load
+                      </button>
+                      <button
+                        class="control"
+                        disabled={!s.readable}
+                        onClick={() => doRename(s.name)}
+                      >
+                        rename
+                      </button>
+                      <button
+                        class="control danger"
+                        onClick={() => doDelete(s.name)}
+                      >
+                        delete
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </For>
+            </Show>
+          </Panel>
           <Panel title={`skills (${state()?.skills.length ?? 0})`}>
             <For each={state()?.skills ?? []}>
               {(s) => (
