@@ -1,0 +1,18 @@
+{
+  "hooks": {
+    "SubagentStart": [
+      {
+        "type": "command",
+        "command": "bun scripts/kv-slot.ts",
+        "timeout": 30
+      }
+    ],
+    "SubagentStop": [
+      {
+        "type": "command",
+        "command": "bun scripts/kv-slot.ts",
+        "timeout": 30
+      }
+    ]
+  }
+}

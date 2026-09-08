@@ -88,7 +88,7 @@ gui/                # SolidJS + Vite browser client
     conversation/   # ConversationViewport.tsx, viewModel.ts, eventQueue.ts
   e2e/              # Playwright browser specs + the mock-WebSocket fixture
 test/               # *.test.ts (unit + integration), helpers.ts
-specs/              # v0.1.0/ … v0.8.0/ + gui/ — the specification documents
+specs/              # v0.1.0/ … v0.10.0/ + gui/ — the specification documents
 .vise/              # project-level config (index.ts) + sessions/ (gitignored)
 ```
 
@@ -256,7 +256,7 @@ exposes it over a WebSocket, mirroring the REPL. It reuses the same session mach
   hooks, profiles, troubleshooting.
 - `gui/AGENTS.md` — the browser client: rendering invariants, known traps, debugging
   recipes, test map, and change recipes. Read it before editing anything in `gui/`.
-- `specs/v0.1.0/` … `specs/v0.7.0/` — the specification documents (the
+- `specs/v0.1.0/` … `specs/v0.10.0/` — the specification documents (the
   source of truth for behavior and acceptance criteria). `specs/gui/` is the GUI spec.
 - `WBS.md` — work breakdown structure and acceptance-criteria traceability (v0.1.0-era;
   it does not yet cover the GUI, `fetch_webpage`, or the v0.6.0 hooks/`runCommand`).

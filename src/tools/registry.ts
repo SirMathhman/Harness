@@ -1,4 +1,10 @@
-import type { JsonSchema, Tool, ToolCall, ToolResult } from "../types.js";
+import type {
+  JsonSchema,
+  JsonSchemaProperty,
+  Tool,
+  ToolCall,
+  ToolResult,
+} from "../types.js";
 import { truncate } from "../utils.js";
 
 /**
@@ -51,6 +57,82 @@ export class ToolRegistry {
 }
 
 /**
+ * Validate a single value against a property schema.
+ * Returns a list of human-readable problems (empty when valid).
+ */
+function validateValue(
+  prop: JsonSchemaProperty,
+  value: unknown,
+  key: string,
+): string[] {
+  const problems: string[] = [];
+  if (value === undefined || value === null) return problems;
+
+  const actual =
+    typeof value === "number"
+      ? Number.isInteger(value)
+        ? "integer"
+        : "number"
+      : typeof value;
+
+  if (prop.type === "integer" && actual !== "integer") {
+    problems.push(`parameter "${key}" must be an integer`);
+  } else if (
+    prop.type === "number" &&
+    actual !== "number" &&
+    actual !== "integer"
+  ) {
+    problems.push(`parameter "${key}" must be a number`);
+  } else if (
+    prop.type !== "integer" &&
+    prop.type !== "number" &&
+    actual !== prop.type
+  ) {
+    problems.push(`parameter "${key}" must be of type ${prop.type}`);
+  }
+
+  if (prop.enum && !prop.enum.includes(value as string | number)) {
+    problems.push(
+      `parameter "${key}" must be one of: ${prop.enum.join(", ")}`,
+    );
+  }
+
+  // Array handling
+  if (prop.type === "array") {
+    if (!Array.isArray(value)) {
+      problems.push(`parameter "${key}" must be an array`);
+      return problems;
+    }
+    if (prop.maxItems !== undefined && value.length > prop.maxItems) {
+      problems.push(
+        `parameter "${key}" must have at most ${prop.maxItems} items`,
+      );
+    }
+    if (prop.items) {
+      for (let i = 0; i < value.length; i++) {
+        const elem = value[i];
+        if (prop.items.type === "object") {
+          // Validate each element against the items schema (required + properties).
+          const elemProblems = validateArgs(
+            prop.items,
+            (elem ?? {}) as Record<string, unknown>,
+          );
+          for (const p of elemProblems) {
+            problems.push(`parameter "${key}[${i}]: ${p}`);
+          }
+        } else if (prop.items.type === "string") {
+          if (typeof elem !== "string") {
+            problems.push(`parameter "${key}[${i}]" must be a string`);
+          }
+        }
+      }
+    }
+  }
+
+  return problems;
+}
+
+/**
  * Validate arguments against a tool's JSON schema.
  * Returns a list of human-readable problems (empty when valid).
  */
@@ -71,33 +153,7 @@ export function validateArgs(
       problems.push(`unknown parameter "${key}"`);
       continue;
     }
-    if (value === undefined || value === null) continue;
-    const actual =
-      typeof value === "number"
-        ? Number.isInteger(value)
-          ? "integer"
-          : "number"
-        : typeof value;
-    if (prop.type === "integer" && actual !== "integer") {
-      problems.push(`parameter "${key}" must be an integer`);
-    } else if (
-      prop.type === "number" &&
-      actual !== "number" &&
-      actual !== "integer"
-    ) {
-      problems.push(`parameter "${key}" must be a number`);
-    } else if (
-      prop.type !== "integer" &&
-      prop.type !== "number" &&
-      actual !== prop.type
-    ) {
-      problems.push(`parameter "${key}" must be of type ${prop.type}`);
-    }
-    if (prop.enum && !prop.enum.includes(value as string | number)) {
-      problems.push(
-        `parameter "${key}" must be one of: ${prop.enum.join(", ")}`,
-      );
-    }
+    problems.push(...validateValue(prop, value, key));
   }
   return problems;
 }

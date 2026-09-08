@@ -20,6 +20,9 @@ export const CORE_TOOL_NAMES = [
   // `search_tools` round-trip first.
   "list_skills",
   "read_skill",
+  // An interactive tool should not require a `search_tools` round-trip to
+  // discover (v0.7.0 spec §2.4).
+  "ask_questions",
 ] as const;
 
 /**

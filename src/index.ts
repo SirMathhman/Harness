@@ -42,6 +42,18 @@ export type { CommandOutput, RunCommandOptions } from "./command.js";
 export type { JsonSchema, JsonSchemaProperty, Tool } from "./types.js";
 
 /**
+ * The user-input channel (v0.7.0 spec §2.1): the surface the `ask_questions`
+ * tool asks the user through. A presentation layer (REPL, agent-server)
+ * implements it and passes it to `createSession`.
+ */
+export type {
+  AskResult,
+  Question,
+  QuestionAnswer,
+  UserInputChannel,
+} from "./agent/userInput.js";
+
+/**
  * A skill — a named body of deferred context created with
  * `reg.createSkill()` (skills spec §2.1).
  */

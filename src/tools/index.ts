@@ -17,6 +17,8 @@ import {
 } from "./metaTools.js";
 import { makeListSkillsTool, makeReadSkillTool, NO_SKILLS } from "./skills.js";
 import { makeFetchWebpageTool } from "./webTools.js";
+import { makeAskQuestionsTool } from "./askQuestions.js";
+import type { UserInputChannel } from "../agent/userInput.js";
 
 /** Which tools a session's registry should hold (profiles spec §3.5 rule 2). */
 export interface ToolSelection {
@@ -54,6 +56,7 @@ export interface ToolSelection {
 export function buildToolRegistry(
   config: Config,
   selection: ToolSelection = {},
+  opts: { channel?: UserInputChannel; depth?: number } = {},
 ): {
   registry: ToolRegistry;
   manager: BackgroundCommandManager;
@@ -78,6 +81,9 @@ export function buildToolRegistry(
     makeCheckCommandTool(manager, config.maxToolOutputChars),
     makeFetchWebpageTool(),
     finishTool,
+    // Bound to the session's user-input channel (v0.7.0 spec §3.2); `depth`
+    // tags which agent the tool is bound to.
+    makeAskQuestionsTool(opts.channel, opts.depth ?? 0),
   ];
   for (const tool of builtins) {
     if (wanted(tool.name)) registry.register(tool);

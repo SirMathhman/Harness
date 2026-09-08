@@ -18,7 +18,7 @@
     "dev": "bun run src/cli.ts",
     "start": "bun run src/cli.ts",
     "gui": "bun run src/cli.ts gui",
-    "serve": "bun run src/cli.ts serve",
+    "serve": "bun run --watch src/cli.ts serve",
     "gui:dev": "bun run --parallel serve gui:vite",
     "gui:vite": "cd gui && bun run dev",
     "test": "bun test --conditions=browser",

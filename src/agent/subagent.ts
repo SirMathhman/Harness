@@ -12,6 +12,7 @@ import {
   type SubagentRunner,
 } from "../tools/spawnSubagent.js";
 import { runTurn, type AgentCallbacks } from "./loop.js";
+import type { UserInputChannel } from "./userInput.js";
 import { LLMError } from "../llm/errors.js";
 import { defaultLLMClient, type LLMClient } from "../llm/client.js";
 import { HookManager, type RegisteredHook } from "../hooks/index.js";
@@ -70,6 +71,12 @@ export interface AgentContext {
   cwd?: string;
   /** Where hook errors and warnings go. Defaults to stderr. */
   log?: (message: string) => void;
+  /**
+   * The user-input channel the `ask_questions` tool asks through (v0.7.0 spec
+   * §3.2). Shared by reference across the whole agent tree; omitted → the tool
+   * reports the user as unavailable.
+   */
+  channel?: UserInputChannel;
 }
 
 /**
@@ -175,13 +182,19 @@ export function materializeProfile(
       : {}),
   };
 
-  const { registry, manager } = buildToolRegistry(config, {
-    builtins: resolved.builtinTools,
-    custom: resolved.customTools,
-    // Skills are global (skills spec §3.7): every agent, at every depth, gets
-    // the same store behind `list_skills` / `read_skill`.
-    skills: ctx.graph.skills,
-  });
+  const { registry, manager } = buildToolRegistry(
+    config,
+    {
+      builtins: resolved.builtinTools,
+      custom: resolved.customTools,
+      // Skills are global (skills spec §3.7): every agent, at every depth, gets
+      // the same store behind `list_skills` / `read_skill`.
+      skills: ctx.graph.skills,
+    },
+    // The user-input channel is shared by reference across the tree (v0.7.0
+    // spec §3.2); `depth` tags which agent the `ask_questions` tool is bound to.
+    { channel: ctx.channel, depth },
+  );
 
   // The provider behind this agent's active model may contribute hooks of its
   // own — the KV persistence hook (KV spec §3.2, §8.2). They are merged into

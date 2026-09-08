@@ -27,6 +27,7 @@ import {
   type AgentContext,
   type SubagentRender,
 } from "./subagent.js";
+import type { UserInputChannel } from "./userInput.js";
 
 /** Optional dependencies for a session. All have working defaults. */
 export interface SessionOptions {
@@ -51,6 +52,11 @@ export interface SessionOptions {
   cwd?: string;
   /** Where hook errors and warnings go. Defaults to stderr. */
   log?: (message: string) => void;
+  /**
+   * The user-input channel the `ask_questions` tool asks through (v0.7.0 spec
+   * §3.2). Omitted → the tool reports the user as unavailable.
+   */
+  channel?: UserInputChannel;
 }
 
 /**
@@ -164,6 +170,7 @@ export function createSession(options: SessionOptions = {}): SessionHandle {
     ...(options.render !== undefined ? { render: options.render } : {}),
     ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
     ...(options.log !== undefined ? { log: options.log } : {}),
+    ...(options.channel !== undefined ? { channel: options.channel } : {}),
   };
 
   const startingResolved = resolveProfile(graph, startingProfile);

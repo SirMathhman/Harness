@@ -80,10 +80,17 @@ export interface JsonSchema {
 }
 
 export interface JsonSchemaProperty {
-  type: "string" | "number" | "integer" | "boolean" | "object";
+  type: "string" | "number" | "integer" | "boolean" | "object" | "array";
   description?: string;
   enum?: (string | number)[];
   default?: unknown;
+  /**
+   * When `type` is `"array"`: the schema for each element. An object schema
+   * (validated recursively) or a bare `{ type: "string" }` for a string array.
+   */
+  items?: JsonSchema | { type: "string" };
+  /** When `type` is `"array"`: maximum number of elements. */
+  maxItems?: number;
 }
 
 /** A shell command running asynchronously. */
