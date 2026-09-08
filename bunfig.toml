@@ -1,8 +1,0 @@
-# Bun test discovery.
-#
-# Tests live in test/. Confining discovery there keeps the Playwright browser
-# specs under gui/e2e/ (which use the *.spec.ts convention, and which Bun 1.3
-# would otherwise collect) out of `bun test`. Run those with `bun run
-# test:browser` from gui/.
-[test]
-root = "test"
